@@ -28,8 +28,10 @@ export interface OutlookMap {
   lineupAcc: number | null;
   /** Filled only when there is an opponent to measure against. */
   versus: {
+    /** The two groups shown, head to head. */
     winProbability: number;
-    expectedMargin: number;
+    /** Averaged over every group either side could field instead. */
+    anyPairing: number;
     opponentLineup: OutlookPlayer[];
   } | null;
 }
@@ -129,8 +131,8 @@ export async function buildPoolOutlook(
       lineupAcc: meanAcc(lineupIds, map.leaderboardId),
       versus: value
         ? {
-            winProbability: value.expected,
-            expectedMargin: value.expectedMargin,
+            winProbability: value.worstCase,
+            anyPairing: value.expected,
             opponentLineup: toPlayers(value.opponentBestGroup),
           }
         : null,

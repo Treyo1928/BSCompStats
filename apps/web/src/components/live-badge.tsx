@@ -34,9 +34,14 @@ export function LiveBadge({
 
   useEffect(() => {
     if (!lastAt || lastHandled.current === lastAt) return;
-    lastHandled.current = lastAt;
-    router.refresh();
-    onUpdate?.();
+    // Scores arrive in bursts - a sync writes a whole roster at once - and each
+    // refresh re-runs the prediction model. One refresh per burst is enough.
+    const timer = setTimeout(() => {
+      lastHandled.current = lastAt;
+      router.refresh();
+      onUpdate?.();
+    }, 1500);
+    return () => clearTimeout(timer);
   }, [lastAt, router, onUpdate]);
 
   const latest = updates[0];
@@ -48,9 +53,9 @@ export function LiveBadge({
         : 'bg-[var(--color-edge)] text-[var(--color-muted)]';
 
   return (
-    <div className="flex items-center gap-2 text-xs">
+    <div className="flex min-w-0 items-center gap-2 text-xs">
       <span
-        className={`inline-flex items-center gap-1.5 rounded px-2 py-1 ${tone}`}
+        className={`inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${tone}`}
         title={EXPLANATIONS[status]}
       >
         <span
@@ -62,7 +67,7 @@ export function LiveBadge({
         // Unlabelled, a bare player name next to "Live" reads as "this person
         // is live", which is not what it means.
         <span
-          className="text-[var(--color-muted)]"
+          className="min-w-0 truncate text-[var(--color-muted)]"
           title="The most recent score to arrive on one of these maps while this page has been open."
         >
           Latest score: {latest.playerName} · {(latest.accuracy * 100).toFixed(2)}%

@@ -17,7 +17,6 @@ import {
   AvatarStack,
   chanceColor,
   pct,
-  num,
 } from '@/components/ui';
 import { PoolBoardTable } from '@/components/pool-board';
 import { LiveBadge } from '@/components/live-badge';
@@ -107,7 +106,7 @@ export default async function PoolPage({
         <Panel>
           <Empty>
             No players yet. Add teams and rosters on the{' '}
-            <Link href={`/t/${slug}/teams`} className="text-accent hover:underline">
+            <Link href={`/t/${slug}/teams`} className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent">
               teams page
             </Link>{' '}
             and their scores will fill in automatically.
@@ -179,8 +178,18 @@ export default async function PoolPage({
                       {outlookOpponent && (
                         <>
                           <th className="px-3 py-2 font-medium">{outlookOpponent.teamName}&apos;s best</th>
-                          <th className="px-3 py-2 text-right font-medium">Win chance</th>
-                          <th className="px-4 py-2 text-right font-medium">Margin</th>
+                          <th
+                            className="px-3 py-2 text-right font-medium"
+                            title="Chance of taking the map when both teams field the groups shown."
+                          >
+                            Win chance
+                          </th>
+                          <th
+                            className="px-4 py-2 text-right font-medium"
+                            title="Chance of taking the map averaged over every group either team could field - how the map leans before anyone picks a lineup."
+                          >
+                            Any lineups
+                          </th>
                         </>
                       )}
                     </tr>
@@ -226,9 +235,7 @@ export default async function PoolPage({
                                 {row.versus ? pct(row.versus.winProbability, 0) : '—'}
                               </td>
                               <td className="px-4 py-2 text-right tabular text-muted">
-                                {row.versus
-                                  ? `${row.versus.expectedMargin >= 0 ? '+' : '−'}${num(Math.abs(Math.round(row.versus.expectedMargin)))}`
-                                  : '—'}
+                                {row.versus ? pct(row.versus.anyPairing, 0) : '—'}
                               </td>
                             </>
                           )}
@@ -395,10 +402,10 @@ function TeamPill({
       scroll={false}
       aria-current={active ? 'true' : undefined}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium transition ${
-        active ? 'border-faint bg-raised text-ink' : 'border-edge text-muted hover:border-faint hover:text-ink'
+        active ? 'border-accent bg-accent/15 text-ink' : 'border-edge-strong text-muted hover:border-faint hover:text-ink'
       }`}
     >
-      <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+      <span className="h-2 w-2 rounded-full ring-1 ring-white/25" style={{ background: color }} />
       {name}
     </Link>
   );

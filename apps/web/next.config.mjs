@@ -13,6 +13,9 @@ const nextConfig = {
       { protocol: 'https', hostname: 'cdn.discordapp.com' },
     ],
   },
+  // BeatLeader's .bplist files embed a multi-megabyte cover image, and the
+  // default 1 MB cap rejected them before the import's own 25 MB check ran.
+  experimental: { serverActions: { bodySizeLimit: '25mb' } },
   eslint: { ignoreDuringBuilds: true },
 };
 

@@ -9,6 +9,7 @@ import {
   canOverrideViolations,
   parseFormat,
   prepareAction,
+  PickBanError,
   resolveMapPlan,
   validateLineups,
   assertPoolIsBigEnough,
@@ -16,7 +17,7 @@ import {
   type LineupInput,
 } from './match-helpers';
 import { buildPickBanContext } from './matches';
-import { getActor } from './session';
+import { getActor, realUser } from './session';
 
 /**
  * Match mutations.
@@ -120,8 +121,17 @@ export async function submitPickBan(formData: FormData): Promise<void> {
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
   const ctx = buildPickBanContext(match, format);
 
-  // Throws PickBanError on out-of-turn, already-used, or finished.
-  const action = prepareAction(ctx, { teamId, poolMapId });
+  // Out of turn, already used, or finished. Almost always a tab that is a
+  // step behind - the other captain just acted - so the honest response is to
+  // show the match as it now stands, not an error page.
+  let action: ReturnType<typeof prepareAction>;
+  try {
+    action = prepareAction(ctx, { teamId, poolMapId });
+  } catch (err) {
+    if (!(err instanceof PickBanError)) throw err;
+    revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+    return;
+  }
 
   const actingForSomeoneElse = !isCaptainOf(actor, teamId);
   const captainSeat = actingForSomeoneElse
@@ -135,7 +145,12 @@ export async function submitPickBan(formData: FormData): Promise<void> {
   // (matchId, seq) is unique - that is what stops two captains both taking
   // the same step. An undone action still holds its seq as a tombstone, so it
   // has to make way before the step can be retaken, or the insert collides.
-  await prisma.$transaction([
+  // While an admin is viewing as someone, the record should still say who was
+  // really at the keyboard.
+  const operator = (await realUser())?.id ?? actor.userId;
+
+  try {
+    await prisma.$transaction([
     prisma.matchAction.deleteMany({
       where: { matchId, seq: action.seq, undoneAt: { not: null } },
     }),
@@ -146,12 +161,19 @@ export async function submitPickBan(formData: FormData): Promise<void> {
         type: action.type,
         teamId: action.teamId,
         poolMapId: action.poolMapId,
-        actingUserId: actor.userId,
+        actingUserId: operator,
         // Recorded so the timeline reads honestly when an organiser stands in.
         onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
       },
     }),
-  ]);
+    ]);
+  } catch (err) {
+    // The unique (matchId, seq) did its job: someone else took this step a
+    // moment earlier. Same answer as a stale tab.
+    if ((err as { code?: string }).code !== 'P2002') throw err;
+    revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+    return;
+  }
 
   await materializeMaps(matchId);
   revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
@@ -163,6 +185,10 @@ export async function undoLastAction(formData: FormData): Promise<void> {
   const actor = await getActor(match.tournamentId);
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'UNDO_ACTION');
+
+  // Undoing under a final result would delete the maps that justify it while
+  // leaving the winner in place. Reopen the match first.
+  if (match.state === 'COMPLETE') return;
 
   const last = await prisma.matchAction.findFirst({
     where: { matchId, undoneAt: null },
@@ -181,7 +207,12 @@ export async function undoLastAction(formData: FormData): Promise<void> {
   revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
 }
 
-export async function saveLineup(formData: FormData): Promise<void> {
+/**
+ * Rule violations come back as a value, not a throw: production builds replace
+ * a thrown message with a generic one, and "which rule did I break" is the one
+ * thing a captain needs to read here.
+ */
+export async function saveLineup(formData: FormData): Promise<{ error?: string }> {
   const matchId = String(formData.get('matchId'));
   const teamId = String(formData.get('teamId'));
   const matchMapId = String(formData.get('matchMapId'));
@@ -252,28 +283,32 @@ export async function saveLineup(formData: FormData): Promise<void> {
   const override = formData.get('override') === 'on';
 
   if (blocking.length && !override) {
-    throw new Error(blocking.map((v) => v.message).join(' '));
+    return { error: blocking.map((v) => v.message).join(' ') };
   }
   if (blocking.length && override && !canOverrideViolations(actor)) {
     // The real scrim needed this - a three-player team cannot field four legal
     // duos - but it has to be a deliberate act by somebody running the event.
-    throw new Error(
-      'That lineup breaks the rules, and only an organiser or admin can override it.',
-    );
+    return {
+      error: 'That lineup breaks the rules, and only an organiser or admin can override it.',
+    };
   }
 
-  const lineup = await prisma.lineup.upsert({
-    where: { matchMapId_teamId: { matchMapId, teamId } },
-    create: { matchMapId, teamId },
-    update: {},
-  });
-
-  await prisma.lineupSlot.deleteMany({ where: { lineupId: lineup.id } });
-  await prisma.lineupSlot.createMany({
-    data: playerIds.map((playerId, slot) => ({ lineupId: lineup.id, playerId, slot })),
+  // One transaction: two people saving the same map at once must not end up
+  // with a mixture, and a failure must not leave the lineup empty.
+  await prisma.$transaction(async (tx) => {
+    const lineup = await tx.lineup.upsert({
+      where: { matchMapId_teamId: { matchMapId, teamId } },
+      create: { matchMapId, teamId },
+      update: {},
+    });
+    await tx.lineupSlot.deleteMany({ where: { lineupId: lineup.id } });
+    await tx.lineupSlot.createMany({
+      data: playerIds.map((playerId, slot) => ({ lineupId: lineup.id, playerId, slot })),
+    });
   });
 
   revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  return {};
 }
 
 /**
@@ -386,12 +421,11 @@ async function materializeMaps(matchId: string): Promise<void> {
   }
 
   const complete = plan.length >= format.pickBanSequence.filter((s) => s.action === 'PICK').length;
-  if (complete) {
-    await prisma.match.updateMany({
-      where: { id: matchId, state: 'PICKBAN' },
-      data: { state: 'PLAYING' },
-    });
-  }
+  // Both directions: an undo that reopens pick/ban has to say so.
+  await prisma.match.updateMany({
+    where: { id: matchId, state: complete ? 'PICKBAN' : 'PLAYING' },
+    data: { state: complete ? 'PLAYING' : 'PICKBAN' },
+  });
 }
 
 async function loadForMutation(matchId: string) {

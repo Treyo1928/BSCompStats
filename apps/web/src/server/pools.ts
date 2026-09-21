@@ -100,10 +100,16 @@ export async function importPool(options: {
 
   // Replace the pool's contents rather than merging: re-importing a playlist
   // should mean "this is the pool now", including removals.
+  //
+  // Except maps a match has already picked, banned or played: those rows
+  // cascade into the match record, so removing one would quietly erase
+  // finished matches. They stay in the pool instead.
   await prisma.poolMap.deleteMany({
     where: {
       poolId: pool.id,
       leaderboardId: { notIn: resolved.map((r) => r.leaderboard.id) },
+      matchMaps: { none: {} },
+      bans: { none: {} },
     },
   });
 

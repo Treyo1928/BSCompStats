@@ -222,6 +222,7 @@ export async function buildPoolBoard(
     });
 
     const played = cells.filter((c) => c.acc != null);
+    const counted = played.filter((c) => !c.isDnf);
 
     return {
       playerId: member.player.id,
@@ -233,8 +234,9 @@ export async function buildPoolBoard(
       teamColor: member.team.color,
       teamColorSecondary: member.team.colorSecondary,
       cells,
-      meanAcc: played.length
-        ? played.reduce((acc, c) => acc + (c.acc ?? 0), 0) / played.length
+      // Abandoned runs are left out, as the legend under the board promises.
+      meanAcc: counted.length
+        ? counted.reduce((acc, c) => acc + (c.acc ?? 0), 0) / counted.length
         : null,
       played: played.length,
     };

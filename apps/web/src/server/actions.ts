@@ -77,7 +77,11 @@ export async function importPoolAction(formData: FormData): Promise<void> {
     // A .bplist is JSON. Cap the size - BeatLeader's own playlists embed a
     // multi-megabyte cover image and there is no reason to accept more.
     if (file.size > 25 * 1024 * 1024) throw new Error('That playlist file is too large.');
-    rawPlaylist = JSON.parse(await file.text());
+    try {
+      rawPlaylist = JSON.parse(await file.text());
+    } catch {
+      throw new Error('That file is not a playlist - a .bplist is JSON.');
+    }
   } else if (!source) {
     throw new Error('Paste a playlist link or choose a .bplist file.');
   }
@@ -334,12 +338,27 @@ export async function addPlayerToTeam(
 export async function removePlayerFromTeam(memberId: string): Promise<void> {
   const member = await prisma.teamMember.findUnique({
     where: { id: memberId },
-    select: { teamId: true },
+    select: { teamId: true, playerId: true },
   });
   if (!member) return;
 
   await requireTeamManager(member.teamId);
-  await prisma.teamMember.delete({ where: { id: memberId } });
+  await prisma.$transaction([
+    // Finished matches keep their lineups. Unfinished ones must not: a slot
+    // held by someone no longer on the team fails roster validation on every
+    // later save, and the captain has no way to deselect a player who is no
+    // longer listed.
+    prisma.lineupSlot.deleteMany({
+      where: {
+        playerId: member.playerId,
+        lineup: {
+          teamId: member.teamId,
+          matchMap: { match: { state: { not: 'COMPLETE' } } },
+        },
+      },
+    }),
+    prisma.teamMember.delete({ where: { id: memberId } }),
+  ]);
   revalidatePath('/t', 'layout');
 }
 

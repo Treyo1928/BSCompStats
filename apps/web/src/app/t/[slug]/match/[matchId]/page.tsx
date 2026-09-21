@@ -423,7 +423,10 @@ export default async function MatchPage({
                       <div className="grid gap-3 p-3 sm:grid-cols-2">
                         {[match.teamA, match.teamB].map((team) => (
                           <LineupEditor
-                            key={team.id}
+                            // Keyed on the saved lineup too: the editor keeps its own
+                            // selection, and must drop it when someone else saves or
+                            // an undo clears the map.
+                            key={`${team.id}:${(planned.lineups[team.id] ?? []).join(',')}`}
                             matchId={match.id}
                             matchMapId={planned.matchMapId}
                             team={team}
@@ -482,7 +485,7 @@ export default async function MatchPage({
                     return (
                       <li
                         key={value.mapId}
-                        className={`flex items-center gap-2.5 ${used ? 'opacity-40' : ''}`}
+                        className={`flex items-center gap-2.5 ${used ? 'opacity-60' : ''}`}
                         title={used ? 'Already picked or banned' : undefined}
                       >
                         <MapCover src={map?.coverImage} size={30} rounded="rounded-md" />
@@ -618,7 +621,7 @@ function Strategy({
   );
 
   return (
-    <div className={highlight ? 'rounded-lg border border-accent/30 bg-accent/5 p-2.5' : 'px-2.5 opacity-70'}>
+    <div className={highlight ? 'rounded-lg border border-accent/30 bg-accent/5 p-2.5' : 'px-2.5 opacity-85'}>
       <div className="mb-1 flex items-center justify-between">
         <span className="font-medium">{label}</span>
         <span className="tabular">{pct(result.winProbability, 1)}</span>

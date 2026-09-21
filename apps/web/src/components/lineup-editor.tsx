@@ -125,9 +125,10 @@ export function LineupEditor({
             setSaving(true);
             setError(null);
             try {
-              await saveLineup(formData);
-            } catch (err) {
-              setError((err as Error).message);
+              const result = await saveLineup(formData);
+              if (result.error) setError(result.error);
+            } catch {
+              setError('Could not save the lineup. Reload the page and try again.');
             } finally {
               setSaving(false);
             }
