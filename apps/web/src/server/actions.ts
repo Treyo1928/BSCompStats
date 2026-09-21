@@ -104,8 +104,8 @@ export async function setPoolMapMeta(formData: FormData): Promise<void> {
   revalidatePath(`/t`, 'layout');
 }
 
-export async function addPlayer(formData: FormData): Promise<void> {
-  const teamId = String(formData.get('teamId'));
+/** Loads a team and checks the caller may manage rosters in its tournament. */
+async function requireTeamManager(teamId: string) {
   const team = await prisma.team.findUnique({
     where: { id: teamId },
     select: { division: { select: { tournamentId: true } } },
@@ -115,64 +115,225 @@ export async function addPlayer(formData: FormData): Promise<void> {
   const actor = await getActor(team.division.tournamentId);
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TEAMS');
+  return actor;
+}
 
-  const query = String(formData.get('player') ?? '').trim();
-  if (!query) throw new Error('Enter a BeatLeader ID, profile link, or name.');
+export interface PlayerCandidate {
+  beatLeaderId: string;
+  name: string;
+  avatar: string | null;
+  country: string | null;
+  pp: number;
+  rank: number;
+  /** Name of the app account that has claimed this profile, if any. */
+  accountName: string | null;
+  /** True when the app account, not the BeatLeader name, is what matched. */
+  linked: boolean;
+  onTeam: boolean;
+}
 
-  const player = await resolvePlayer(query);
+/**
+ * Who might the organiser mean? Whatever they typed - a BeatLeader ID, a
+ * profile URL, or a name - is looked up in two places:
+ *
+ *   - this app, by player name and by the name of the account that linked the
+ *     profile (someone known as "Trey" on Discord may play as something else)
+ *   - BeatLeader's own player search
+ *
+ * Results are returned rather than acted on, so the organiser picks from a list
+ * instead of silently getting whoever happened to rank first.
+ *
+ * Errors come back as a value: a thrown message is scrubbed in production
+ * builds, and "BeatLeader is down" is worth telling the user.
+ */
+export async function searchPlayerCandidates(
+  teamId: string,
+  rawQuery: string,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
+  await requireTeamManager(teamId);
 
-  const count = await prisma.teamMember.count({ where: { teamId } });
+  const query = rawQuery.trim();
+  if (!query) return { candidates: [], error: 'Enter a BeatLeader ID, profile link, or name.' };
+
+  const fromUrl = query.match(/beatleader\.(?:com|xyz)\/u\/([^/?#]+)/i)?.[1];
+  const term = fromUrl ?? query;
+
+  const local = await prisma.player.findMany({
+    where: {
+      OR: [
+        { beatLeaderId: term },
+        { name: { contains: term, mode: 'insensitive' } },
+        { user: { name: { contains: term, mode: 'insensitive' } } },
+      ],
+    },
+    orderBy: { pp: 'desc' },
+    take: 10,
+    select: {
+      beatLeaderId: true,
+      name: true,
+      avatar: true,
+      country: true,
+      pp: true,
+      rank: true,
+      user: { select: { name: true } },
+    },
+  });
+
+  let remote: Awaited<ReturnType<typeof beatLeader.searchPlayers>> = [];
+  let error: string | undefined;
+  try {
+    // A long run of digits is a Steam ID; anything else gets searched by name.
+    const exact =
+      fromUrl || /^\d{5,}$/.test(term) ? await beatLeader.getPlayer(term) : null;
+    remote = exact ? [exact] : await beatLeader.searchPlayers(term);
+  } catch {
+    error = 'BeatLeader could not be reached - showing players already known here.';
+  }
+
+  const candidates = new Map<string, PlayerCandidate>();
+  for (const p of local) {
+    candidates.set(p.beatLeaderId, {
+      beatLeaderId: p.beatLeaderId,
+      name: p.name,
+      avatar: p.avatar,
+      country: p.country,
+      pp: p.pp,
+      rank: p.rank,
+      accountName: p.user?.name ?? null,
+      linked: Boolean(p.user),
+      onTeam: false,
+    });
+  }
+  for (const p of remote) {
+    const known = candidates.get(p.id);
+    // BeatLeader's figures are fresher than our cache; ours know about accounts.
+    candidates.set(p.id, {
+      beatLeaderId: p.id,
+      name: p.name ?? known?.name ?? `Player ${p.id}`,
+      avatar: p.avatar ?? known?.avatar ?? null,
+      country: p.country ?? known?.country ?? null,
+      pp: p.pp ?? known?.pp ?? 0,
+      rank: p.rank ?? known?.rank ?? 0,
+      accountName: known?.accountName ?? null,
+      linked: known?.linked ?? false,
+      onTeam: false,
+    });
+  }
+
+  const ids = [...candidates.keys()];
+
+  // Remote-only hits may still belong to someone with an account here.
+  const unlinked = ids.filter((id) => !candidates.get(id)!.linked);
+  if (unlinked.length > 0) {
+    const owners = await prisma.player.findMany({
+      where: { beatLeaderId: { in: unlinked }, userId: { not: null } },
+      select: { beatLeaderId: true, user: { select: { name: true } } },
+    });
+    for (const owner of owners) {
+      const c = candidates.get(owner.beatLeaderId)!;
+      c.linked = true;
+      c.accountName = owner.user?.name ?? null;
+    }
+  }
+
+  const members = await prisma.teamMember.findMany({
+    where: { teamId, player: { beatLeaderId: { in: ids } } },
+    select: { player: { select: { beatLeaderId: true } } },
+  });
+  for (const m of members) candidates.get(m.player.beatLeaderId)!.onTeam = true;
+
+  // People with an account here are the likeliest intent, so they lead.
+  const sorted = [...candidates.values()].sort(
+    (a, b) => Number(b.linked) - Number(a.linked) || b.pp - a.pp,
+  );
+
+  if (sorted.length === 0 && !error) error = `No player matching "${query}".`;
+  return { candidates: sorted.slice(0, 20), error };
+}
+
+/** Adds one specific BeatLeader profile - the one picked from the candidates. */
+export async function addPlayerToTeam(
+  teamId: string,
+  beatLeaderId: string,
+): Promise<{ error?: string }> {
+  const actor = await requireTeamManager(teamId);
+
+  let player = await prisma.player.findUnique({ where: { beatLeaderId } });
+  if (!player) {
+    let profile;
+    try {
+      profile = await beatLeader.getPlayer(beatLeaderId);
+    } catch {
+      return { error: 'BeatLeader could not be reached. Try again in a moment.' };
+    }
+    if (!profile) return { error: 'BeatLeader has no such player.' };
+
+    player = await prisma.player.upsert({
+      where: { beatLeaderId: profile.id },
+      create: {
+        beatLeaderId: profile.id,
+        name: profile.name ?? `Player ${profile.id}`,
+        avatar: profile.avatar ?? null,
+        country: profile.country ?? null,
+        pp: profile.pp ?? 0,
+        rank: profile.rank ?? 0,
+      },
+      update: {},
+    });
+  }
+
+  // Max + 1 rather than the count: removals leave gaps, and a count would then
+  // hand out an order that is already taken.
+  const last = await prisma.teamMember.aggregate({ where: { teamId }, _max: { order: true } });
   await prisma.teamMember.upsert({
     where: { teamId_playerId: { teamId, playerId: player.id } },
-    create: { teamId, playerId: player.id, order: count },
+    create: { teamId, playerId: player.id, order: (last._max.order ?? -1) + 1 },
     update: {},
   });
 
   await requestRefresh(undefined, actor.userId);
   revalidatePath('/t', 'layout');
+  return {};
 }
 
 /**
- * Find or create a Player from whatever the organiser pasted: a BeatLeader ID,
- * a profile URL, or a name to search for.
+ * Takes a player off a roster. Only the membership goes: the Player, their
+ * scores and any lineups they already appeared in are keyed by player, not by
+ * membership, so match history survives.
  */
-async function resolvePlayer(query: string) {
-  const fromUrl = query.match(/beatleader\.(?:com|xyz)\/u\/([^/?#]+)/i)?.[1];
-  const candidate = fromUrl ?? query;
-
-  const existing = await prisma.player.findFirst({
-    where: {
-      OR: [
-        { beatLeaderId: candidate },
-        { name: { equals: candidate, mode: 'insensitive' } },
-      ],
-    },
+export async function removePlayerFromTeam(memberId: string): Promise<void> {
+  const member = await prisma.teamMember.findUnique({
+    where: { id: memberId },
+    select: { teamId: true },
   });
-  if (existing) return existing;
+  if (!member) return;
 
-  // A long run of digits is a Steam ID; anything else gets searched by name.
-  let profile = /^\d{5,}$/.test(candidate)
-    ? await beatLeader.getPlayer(candidate)
-    : null;
+  await requireTeamManager(member.teamId);
+  await prisma.teamMember.delete({ where: { id: memberId } });
+  revalidatePath('/t', 'layout');
+}
 
-  if (!profile) {
-    const results = await beatLeader.searchPlayers(candidate);
-    profile = results[0] ?? null;
-  }
-  if (!profile) throw new Error(`BeatLeader has no player matching "${query}".`);
-
-  return prisma.player.upsert({
-    where: { beatLeaderId: profile.id },
-    create: {
-      beatLeaderId: profile.id,
-      name: profile.name ?? `Player ${profile.id}`,
-      avatar: profile.avatar ?? null,
-      country: profile.country ?? null,
-      pp: profile.pp ?? 0,
-      rank: profile.rank ?? 0,
-    },
-    update: { name: profile.name ?? undefined, avatar: profile.avatar ?? undefined },
+/**
+ * Marks (or unmarks) a roster member as captain.
+ *
+ * This is the whole of captain assignment: authority over picks, bans and
+ * lineups follows from it in getActor, via whoever has linked the player's
+ * BeatLeader profile. A captain with no account yet simply gains control the
+ * first time they sign in with BeatLeader.
+ */
+export async function setTeamCaptain(memberId: string, captain: boolean): Promise<void> {
+  const member = await prisma.teamMember.findUnique({
+    where: { id: memberId },
+    select: { teamId: true },
   });
+  if (!member) return;
+
+  await requireTeamManager(member.teamId);
+  await prisma.teamMember.update({
+    where: { id: memberId },
+    data: { role: captain ? 'CAPTAIN' : 'PLAYER' },
+  });
+  revalidatePath('/t', 'layout');
 }
 
 export async function createTeam(formData: FormData): Promise<void> {

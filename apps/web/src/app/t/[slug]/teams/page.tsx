@@ -15,7 +15,8 @@ import {
   teamWash,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { addPlayer, createTeam } from '@/server/actions';
+import { createTeam } from '@/server/actions';
+import { AddPlayerForm, MemberControls } from '@/components/roster-controls';
 import { createMatch } from '@/server/match-actions';
 
 export const dynamic = 'force-dynamic';
@@ -53,7 +54,14 @@ export default async function TeamsPage({
                   id: true,
                   role: true,
                   player: {
-                    select: { id: true, name: true, beatLeaderId: true, pp: true, avatar: true },
+                    select: {
+                      id: true,
+                      name: true,
+                      beatLeaderId: true,
+                      pp: true,
+                      avatar: true,
+                      userId: true,
+                    },
                   },
                 },
               },
@@ -104,12 +112,12 @@ export default async function TeamsPage({
             ) : (
               <ul className="-my-1 text-sm">
                 {team.members.map((member) => (
-                  <li key={member.id}>
+                  <li key={member.id} className="flex items-center gap-1">
                     <a
                       href={`https://beatleader.com/u/${member.player.beatLeaderId}`}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="-mx-2 flex items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised"
+                      className="-ml-2 flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised"
                     >
                       <Avatar
                         src={member.player.avatar}
@@ -120,33 +128,35 @@ export default async function TeamsPage({
                       <span className="min-w-0 flex-1 truncate font-medium">
                         {member.player.name}
                       </span>
-                      {member.role === 'CAPTAIN' && <Badge tone="accent">Captain</Badge>}
+                      {member.role === 'CAPTAIN' &&
+                        (member.player.userId ? (
+                          <Badge tone="accent">Captain</Badge>
+                        ) : (
+                          <Badge
+                            tone="warn"
+                            title="Has not signed in yet. They get control of picks, bans and lineups once they sign in with BeatLeader."
+                          >
+                            Captain · no account
+                          </Badge>
+                        ))}
                       <span className="w-16 text-right text-xs tabular text-muted">
                         {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
                       </span>
                     </a>
+                    {canManage && (
+                      <MemberControls
+                        memberId={member.id}
+                        playerName={member.player.name}
+                        teamName={team.name}
+                        isCaptain={member.role === 'CAPTAIN'}
+                      />
+                    )}
                   </li>
                 ))}
               </ul>
             )}
 
-            {canManage && (
-              <form
-                action={addPlayer}
-                className="mt-3 flex items-end gap-2 border-t border-[var(--color-edge)] pt-3"
-              >
-                <input type="hidden" name="teamId" value={team.id} />
-                <div className="flex-1">
-                  <Field
-                    label="Add player"
-                    hint="BeatLeader ID, profile link, or name to search"
-                  >
-                    <input name="player" className={inputClass} required />
-                  </Field>
-                </div>
-                <Button type="submit">Add</Button>
-              </form>
-            )}
+            {canManage && <AddPlayerForm teamId={team.id} teamName={team.name} />}
             </div>
           </Panel>
         ))}
