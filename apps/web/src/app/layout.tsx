@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { SiteHeader } from '@/components/site-header';
+import { ViewAsBanner } from '@/components/view-as-banner';
 
 export const metadata: Metadata = {
   title: 'BSCompStats',
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="min-h-screen">
         <SiteHeader />
+        <ViewAsBanner />
         <main className="mx-auto w-full max-w-7xl px-4 py-6">{children}</main>
       </body>
     </html>

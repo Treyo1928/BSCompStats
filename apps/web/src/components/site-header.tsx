@@ -1,12 +1,15 @@
 import Link from 'next/link';
 import { prisma } from '@bscs/db';
-import { currentUser } from '@/server/session';
+import { cookies } from 'next/headers';
+import { currentUser, realUser, VIEW_AS_COOKIE } from '@/server/session';
 import { signOut } from '@/lib/auth';
 import { hasBeatLeaderAuth, hasDiscordAuth } from '@/lib/env';
 import { Avatar } from './ui';
 
 export async function SiteHeader() {
   const user = await currentUser();
+  // The Users link follows the real account, so it stays reachable mid view-as.
+  const isAdmin = (await realUser())?.role === 'ADMIN';
   const authConfigured = hasDiscordAuth || hasBeatLeaderAuth;
 
   // Signed in through Discord but with no BeatLeader profile attached: offer
@@ -34,10 +37,16 @@ export async function SiteHeader() {
           <Link href="/" className="rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink">
             Tournaments
           </Link>
+          {isAdmin && (
+            <Link href="/admin/users" className="rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink">
+              Users
+            </Link>
+          )}
           {user ? (
             <form
               action={async () => {
                 'use server';
+                (await cookies()).delete(VIEW_AS_COOKIE);
                 await signOut({ redirectTo: '/' });
               }}
               className="ml-2 flex items-center gap-2 border-l border-edge pl-3"
