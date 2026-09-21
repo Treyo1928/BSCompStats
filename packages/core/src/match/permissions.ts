@@ -29,8 +29,11 @@ export interface Actor {
   globalRole: GlobalRole;
   /** Their role in the tournament in question, if any. */
   tournamentRole?: TournamentRole | null;
-  /** The team they captain, when tournamentRole is CAPTAIN. */
-  captainOfTeamId?: string | null;
+  /**
+   * Teams they captain. Independent of tournamentRole on purpose: the person
+   * running a scrim is usually also captaining a side in it.
+   */
+  captainOfTeamIds?: readonly string[];
 }
 
 export type Action =
@@ -66,7 +69,7 @@ export function isStaff(actor: Actor): boolean {
 /** Whether this actor speaks for the given team. */
 export function isCaptainOf(actor: Actor, teamId: string | null | undefined): boolean {
   if (!teamId) return false;
-  return actor.tournamentRole === 'CAPTAIN' && actor.captainOfTeamId === teamId;
+  return actor.captainOfTeamIds?.includes(teamId) ?? false;
 }
 
 export function can(actor: Actor, action: Action, context: ActionContext = {}): boolean {

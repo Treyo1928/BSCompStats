@@ -19,12 +19,30 @@ export async function getActor(tournamentId?: string): Promise<Actor | null> {
   };
 
   if (tournamentId) {
-    const membership = await prisma.tournamentMember.findUnique({
-      where: { tournamentId_userId: { tournamentId, userId: session.user.id } },
-      select: { role: true, teamId: true },
-    });
-    actor.tournamentRole = (membership?.role as TournamentRole) ?? null;
-    actor.captainOfTeamId = membership?.teamId ?? null;
+    const [membership, captaincies] = await Promise.all([
+      prisma.tournamentMember.findUnique({
+        where: { tournamentId_userId: { tournamentId, userId: session.user.id } },
+        select: { role: true, teamId: true },
+      }),
+      // Captaincy hangs off the roster, not off a user: an organiser marks a
+      // *player* as captain, and whoever has linked that BeatLeader profile
+      // inherits the authority - including someone who only signs in later.
+      prisma.teamMember.findMany({
+        where: {
+          role: 'CAPTAIN',
+          player: { userId: session.user.id },
+          team: { division: { tournamentId } },
+        },
+        select: { teamId: true },
+      }),
+    ]);
+
+    const teamIds = new Set(captaincies.map((c) => c.teamId));
+    if (membership?.role === 'CAPTAIN' && membership.teamId) teamIds.add(membership.teamId);
+
+    actor.captainOfTeamIds = [...teamIds];
+    actor.tournamentRole =
+      (membership?.role as TournamentRole | undefined) ?? (teamIds.size > 0 ? 'CAPTAIN' : null);
   }
 
   return actor;

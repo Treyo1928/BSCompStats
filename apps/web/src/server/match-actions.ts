@@ -112,9 +112,10 @@ export async function submitPickBan(formData: FormData): Promise<void> {
 
   const actingForSomeoneElse = !isCaptainOf(actor, teamId);
   const captainSeat = actingForSomeoneElse
-    ? await prisma.tournamentMember.findFirst({
-        where: { tournamentId: match.tournamentId, teamId, role: 'CAPTAIN' },
-        select: { userId: true },
+    ? await prisma.teamMember.findFirst({
+        where: { teamId, role: 'CAPTAIN', player: { userId: { not: null } } },
+        orderBy: { order: 'asc' },
+        select: { player: { select: { userId: true } } },
       })
     : null;
 
@@ -127,7 +128,7 @@ export async function submitPickBan(formData: FormData): Promise<void> {
       poolMapId: action.poolMapId,
       actingUserId: actor.userId,
       // Recorded so the timeline reads honestly when an organiser stands in.
-      onBehalfOfUserId: captainSeat?.userId ?? actor.userId,
+      onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
     },
   });
 

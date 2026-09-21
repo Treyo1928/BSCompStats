@@ -3,8 +3,8 @@ import { can, canOverrideViolations, assertCan, ForbiddenError, type Actor } fro
 
 const admin: Actor = { userId: 'u1', globalRole: 'ADMIN' };
 const organizer: Actor = { userId: 'u2', globalRole: 'USER', tournamentRole: 'ORGANIZER' };
-const captain: Actor = { userId: 'u3', globalRole: 'USER', tournamentRole: 'CAPTAIN', captainOfTeamId: 'maroon' };
-const playerCaptainWhoRunsTheEvent: Actor = { userId: 'u4', globalRole: 'ADMIN', tournamentRole: 'CAPTAIN', captainOfTeamId: 'white' };
+const captain: Actor = { userId: 'u3', globalRole: 'USER', tournamentRole: 'CAPTAIN', captainOfTeamIds: ['maroon'] };
+const playerCaptainWhoRunsTheEvent: Actor = { userId: 'u4', globalRole: 'ADMIN', tournamentRole: 'CAPTAIN', captainOfTeamIds: ['white'] };
 const player: Actor = { userId: 'u5', globalRole: 'USER', tournamentRole: 'PLAYER' };
 const stranger: Actor = { userId: 'u6', globalRole: 'USER' };
 
