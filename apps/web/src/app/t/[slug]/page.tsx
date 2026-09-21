@@ -23,6 +23,7 @@ import {
   createTeam,
   triggerRefresh,
   setTournamentVisibility,
+  setCaptainsEnterScores,
 } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,7 @@ export default async function TournamentPage({
       slug: true,
       description: true,
       isPublic: true,
+      captainsEnterScores: true,
       pools: {
         orderBy: { createdAt: 'asc' },
         select: {
@@ -120,6 +122,23 @@ export default async function TournamentPage({
                 {!tournament.isPublic && <input type="hidden" name="isPublic" value="on" />}
                 <Button variant="ghost" type="submit">
                   {tournament.isPublic ? 'Make private' : 'Make public'}
+                </Button>
+              </form>
+            )}
+            {can(actor, 'MANAGE_TOURNAMENT') && (
+              <form action={setCaptainsEnterScores}>
+                <input type="hidden" name="tournamentId" value={tournament.id} />
+                {!tournament.captainsEnterScores && <input type="hidden" name="allow" value="on" />}
+                <Button
+                  variant="ghost"
+                  type="submit"
+                  title={
+                    tournament.captainsEnterScores
+                      ? 'Captains can enter their own team\'s match scores. Click to make it organisers only.'
+                      : 'Only organisers and admins can enter match scores. Click to let captains enter their own team\'s.'
+                  }
+                >
+                  Scores: {tournament.captainsEnterScores ? 'captains + staff' : 'staff only'}
                 </Button>
               </form>
             )}

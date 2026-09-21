@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { prisma } from '@bscs/db';
 import { can, isCaptainOf, isStaff } from '@/server/match-helpers';
 import {
   Panel,
@@ -7,6 +8,7 @@ import {
   Empty,
   Button,
   Badge,
+  inputClass,
   AvatarStack,
   DifficultyChip,
   MapCover,
@@ -24,7 +26,9 @@ import { getActorOrAnonymous } from '@/server/session';
 import {
   submitPickBan,
   undoLastAction,
-  pullScores,
+  saveScores,
+  callReplay,
+  cancelReplay,
   completeMatch,
   reopenMatch,
 } from '@/server/match-actions';
@@ -84,6 +88,37 @@ export default async function MatchPage({
       : actor.userId
         ? 'You are watching. Only team captains and organisers can pick, ban or set lineups.'
         : null;
+
+  // Hidden lineups: until both teams have set every map, each side sees only
+  // its own. Someone on a team in this match is held to that even if they also
+  // run the event - otherwise the organiser-captain of a scrim sees the other
+  // card. Staff with no side see everything.
+  const rosterSpots = actor.userId
+    ? await prisma.teamMember.findMany({
+        where: { teamId: { in: [match.teamA.id, match.teamB.id] }, player: { userId: actor.userId } },
+        select: { teamId: true },
+      })
+    : [];
+  const mySides = new Set([
+    ...rosterSpots.map((spot) => spot.teamId),
+    ...[match.teamA.id, match.teamB.id].filter((id) => isCaptainOf(actor, id)),
+  ]);
+  const everyLineupSet =
+    !match.pending &&
+    match.plannedMaps.length > 0 &&
+    match.plannedMaps.every((pm) =>
+      [match.teamA.id, match.teamB.id].every(
+        (id) => (pm.lineups[id] ?? []).length >= match.format.playersPerMap,
+      ),
+    );
+  const lineupsRevealed = !match.blindLineups || everyLineupSet || match.state === 'COMPLETE';
+  const canSeeLineup = (teamId: string) =>
+    lineupsRevealed || (mySides.size > 0 ? mySides.has(teamId) : isStaff(actor));
+
+  const replaysUsed = new Map<string, number>();
+  for (const pm of match.plannedMaps) {
+    for (const id of pm.replayCalledByTeamIds) replaysUsed.set(id, (replaysUsed.get(id) ?? 0) + 1);
+  }
 
   const coverOf = new Map(match.pool.maps.map((m) => [m.poolMapId, m.coverImage]));
   const stateLabel: Record<string, string> = {
@@ -299,17 +334,9 @@ export default async function MatchPage({
           {match.plannedMaps.length > 0 && (
             <Panel
               title="Maps"
-              subtitle="Set each team's players, then pull scores"
+              subtitle="Set each team's players, then enter what they scored"
               actions={
                 <div className="flex items-center gap-2">
-                  {can(actor, 'ENTER_SCORE') && match.state !== 'COMPLETE' && (
-                    <form action={pullScores}>
-                      <input type="hidden" name="matchId" value={match.id} />
-                      <Button variant="ghost" type="submit">
-                        Pull scores
-                      </Button>
-                    </form>
-                  )}
                   {can(actor, 'MANAGE_TOURNAMENT') && (
                     <form action={match.state === 'COMPLETE' ? reopenMatch : completeMatch}>
                       <input type="hidden" name="matchId" value={match.id} />
@@ -440,10 +467,17 @@ export default async function MatchPage({
                             matchId={match.id}
                             matchMapId={planned.matchMapId}
                             team={team}
-                            selected={planned.lineups[team.id] ?? []}
+                            selected={canSeeLineup(team.id) ? (planned.lineups[team.id] ?? []) : []}
                             playersPerMap={match.format.playersPerMap}
-                            scores={planned.scores[team.id] ?? []}
-                            canEdit={can(actor, 'SET_LINEUP', { teamId: team.id })}
+                            scores={canSeeLineup(team.id) ? (planned.scores[team.id] ?? []) : []}
+                            hidden={
+                              canSeeLineup(team.id)
+                                ? undefined
+                                : (planned.lineups[team.id] ?? []).length >= match.format.playersPerMap
+                                  ? 'Set. Hidden until both teams have set every map.'
+                                  : 'Not set yet. Hidden until both teams have set every map.'
+                            }
+                            canEdit={canSeeLineup(team.id) && can(actor, 'SET_LINEUP', { teamId: team.id })}
                             canOverride={can(actor, 'OVERRIDE_RULES')}
                             recommended={
                               team.id === myTeamId
@@ -455,6 +489,103 @@ export default async function MatchPage({
                           />
                         ))}
                       </div>
+
+                      {/* Scores and replays */}
+                      {planned.matchMapId && (
+                        <div className="space-y-3 border-t border-edge p-3">
+                          {planned.replayCalledByTeamIds.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                              {planned.replayCalledByTeamIds.map((id, i) => (
+                                <Badge key={i} tone="warn">
+                                  Replay called by {id === match.teamA.id ? match.teamA.name : match.teamB.name}
+                                </Badge>
+                              ))}
+                              <span>Both teams play again; each player&apos;s best run counts.</span>
+                              {can(actor, 'UNDO_ACTION') && match.state !== 'COMPLETE' && (
+                                <form action={cancelReplay}>
+                                  <input type="hidden" name="matchId" value={match.id} />
+                                  <input type="hidden" name="matchMapId" value={planned.matchMapId} />
+                                  <button type="submit" className="underline decoration-faint underline-offset-2 hover:text-ink">
+                                    Cancel last replay
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                          )}
+
+                          {match.state !== 'COMPLETE' && (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {[match.teamA, match.teamB].map((team) => {
+                                const lineup = canSeeLineup(team.id) ? (planned.lineups[team.id] ?? []) : [];
+                                const mayEnter = can(actor, 'ENTER_SCORE', {
+                                  teamId: team.id,
+                                  captainsEnterScores: match.tournament.captainsEnterScores,
+                                });
+                                const mayReplay =
+                                  can(actor, 'SET_LINEUP', { teamId: team.id }) &&
+                                  (replaysUsed.get(team.id) ?? 0) < match.format.rules.replaysPerTeam;
+                                if (lineup.length === 0 || (!mayEnter && !mayReplay)) return <div key={team.id} />;
+                                const runs = 1 + planned.replayCalledByTeamIds.length;
+                                const entered = planned.runs[team.id] ?? {};
+
+                                return (
+                                  <div key={team.id} className="space-y-2">
+                                    {mayEnter && (
+                                      <form
+                                        // Uncontrolled inputs keep what was typed; re-key so a
+                                        // save by someone else shows up.
+                                        key={JSON.stringify([entered, runs])}
+                                        action={saveScores}
+                                        className="space-y-1.5"
+                                      >
+                                        <input type="hidden" name="matchId" value={match.id} />
+                                        <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
+                                        <input type="hidden" name="teamId" value={team.id} />
+                                        {lineup.map((playerId) => (
+                                          <label key={playerId} className="flex items-center gap-2 text-xs">
+                                            <span className="w-24 shrink-0 truncate text-muted">
+                                              {team.players.find((p) => p.id === playerId)?.name ?? 'Player'}
+                                            </span>
+                                            {Array.from({ length: runs }, (_, i) => i + 1).map((attempt) => (
+                                              <input
+                                                key={attempt}
+                                                name={`score:${playerId}:${attempt}`}
+                                                inputMode="numeric"
+                                                autoComplete="off"
+                                                defaultValue={entered[playerId]?.[attempt] ?? ''}
+                                                placeholder={attempt === 1 ? 'Score' : `Replay ${attempt - 1}`}
+                                                aria-label={`${team.players.find((p) => p.id === playerId)?.name ?? 'Player'}, ${attempt === 1 ? 'score' : `replay ${attempt - 1}`}`}
+                                                className={`${inputClass} h-8 min-w-0 flex-1 tabular`}
+                                              />
+                                            ))}
+                                          </label>
+                                        ))}
+                                        <Button variant="ghost" type="submit" className="h-8">
+                                          Save {team.name} scores
+                                        </Button>
+                                      </form>
+                                    )}
+                                    {mayReplay && (
+                                      <form action={callReplay}>
+                                        <input type="hidden" name="matchId" value={match.id} />
+                                        <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
+                                        <input type="hidden" name="teamId" value={team.id} />
+                                        <button
+                                          type="submit"
+                                          title={`Spend ${team.name}'s replay on this map. Both teams play it again and each player's best run counts.`}
+                                          className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
+                                        >
+                                          Call {team.name}&apos;s replay on this map
+                                        </button>
+                                      </form>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </article>
                   );
                 })}

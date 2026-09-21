@@ -21,6 +21,7 @@ export function LineupEditor({
   canEdit,
   canOverride,
   recommended,
+  hidden,
 }: {
   matchId: string;
   matchMapId: string | null;
@@ -37,6 +38,8 @@ export function LineupEditor({
   canEdit: boolean;
   canOverride: boolean;
   recommended?: string[];
+  /** Set when this team's lineup is being kept from the viewer; says why. */
+  hidden?: string;
 }) {
   const [chosen, setChosen] = useState<string[]>(selected);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +83,9 @@ export function LineupEditor({
         )}
       </div>
 
-      <div className="space-y-1">
+      {hidden && <p className="px-1 py-2 text-xs text-muted">{hidden}</p>}
+
+      <div className="space-y-1" hidden={Boolean(hidden)}>
         {team.players.map((player) => {
           const isChosen = chosen.includes(player.id);
           const score = scoreBy.get(player.id);

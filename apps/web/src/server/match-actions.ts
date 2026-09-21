@@ -113,6 +113,7 @@ export async function createMatch(formData: FormData): Promise<void> {
         `${teamA?.name ?? 'Team A'} vs ${teamB?.name ?? 'Team B'}`,
       state: 'PICKBAN',
       startedAt: new Date(),
+      blindLineups: formData.get('blindLineups') === 'on',
     },
   });
 
@@ -329,82 +330,156 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
 }
 
 /**
- * Pull each lineup player's current score on their map into the match.
+ * Record what was scored in the match.
  *
- * Scores are matched from what the ingestion worker has already stored, rather
- * than fetched here, so this is instant and works the same whether the score
- * arrived over the live socket or a poll.
+ * Typed in rather than pulled from BeatLeader, because BeatLeader only keeps a
+ * player's best ever run on a map: someone who practised to a 96 and scores a
+ * 93 on the night would be credited with the 96. The run that counts is the one
+ * played here.
+ *
+ * One form per team per map. A blank field removes that run. Where a replay
+ * has been called there are further runs, and each player's best one counts.
  */
-export async function pullScores(formData: FormData): Promise<void> {
+export async function saveScores(formData: FormData): Promise<void> {
   const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
+  const teamId = String(formData.get('teamId'));
+
   const match = await loadForMutation(matchId);
   const actor = await getActor(match.tournamentId);
   if (!actor) throw new Error('Sign in first.');
-  assertCan(actor, 'ENTER_SCORE');
+  if (teamId !== match.teamAId && teamId !== match.teamBId) {
+    throw new Error('That team is not in this match.');
+  }
+  assertCan(actor, 'ENTER_SCORE', {
+    teamId,
+    captainsEnterScores: match.tournament.captainsEnterScores,
+  });
 
-  // BeatLeader reports a player's *current* best, not what they scored on the
-  // night. Re-pulling a finished match would quietly rewrite its result weeks
-  // later as people improve on the same maps - so a completed match is frozen
-  // and its recorded attempts stand.
+  const back = `/t/${match.tournament.slug}/match/${matchId}`;
   if (match.state === 'COMPLETE') {
-    throw new Error(
-      'This match is complete. Its scores are frozen so later practice cannot ' +
-        'change the result. Reopen it first if you really need to re-pull.',
+    failBack(back, 'This match is complete, so its scores are frozen. Reopen it to correct them.');
+  }
+
+  const matchMap = await prisma.matchMap.findFirst({
+    where: { id: matchMapId, matchId },
+    select: {
+      replayCalledByTeamIds: true,
+      poolMap: { select: { leaderboard: { select: { maxScore: true } } } },
+      lineups: { where: { teamId }, select: { slots: { select: { playerId: true } } } },
+    },
+  });
+  if (!matchMap) throw new Error('That map is not part of this match.');
+
+  const maxScore = matchMap.poolMap.leaderboard.maxScore;
+  const runsAllowed = 1 + matchMap.replayCalledByTeamIds.length;
+  const fielded = new Set(matchMap.lineups.flatMap((l) => l.slots.map((slot) => slot.playerId)));
+
+  const writes = [];
+  for (const playerId of fielded) {
+    for (let attempt = 1; attempt <= runsAllowed; attempt++) {
+      const raw = String(formData.get(`score:${playerId}:${attempt}`) ?? '').replace(/[\s,._]/g, '');
+      const key = { matchMapId_teamId_playerId_attempt: { matchMapId, teamId, playerId, attempt } };
+
+      if (raw === '') {
+        writes.push(prisma.matchMapAttempt.deleteMany({ where: { matchMapId, teamId, playerId, attempt } }));
+        continue;
+      }
+
+      const score = Number(raw);
+      if (!Number.isInteger(score) || score < 0) {
+        failBack(back, `"${raw}" is not a score. Enter the number shown on the results screen.`);
+      }
+      if (maxScore > 0 && score > maxScore) {
+        failBack(back, `${score.toLocaleString('en-US')} is more than this map's maximum of ${maxScore.toLocaleString('en-US')}.`);
+      }
+
+      const accuracy = maxScore > 0 ? score / maxScore : 0;
+      writes.push(
+        prisma.matchMapAttempt.upsert({
+          where: key,
+          create: { matchMapId, teamId, playerId, attempt, score, accuracy, source: 'MANUAL' },
+          update: { score, accuracy, source: 'MANUAL', beatLeaderScoreId: null, replayUrl: null },
+        }),
+      );
+    }
+  }
+  await prisma.$transaction(writes);
+
+  await matchChanged(match.tournament.slug, matchId);
+}
+
+/**
+ * Spend a team's replay on a map. Both teams then play it again, and each
+ * player's best run is the one that counts - so a replay can only help the
+ * team that calls it if they actually do better.
+ */
+export async function callReplay(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
+  const teamId = String(formData.get('teamId'));
+
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  if (teamId !== match.teamAId && teamId !== match.teamBId) {
+    throw new Error('That team is not in this match.');
+  }
+  if (!can(actor, 'SET_LINEUP', { teamId })) throw new Error('You cannot call a replay for this team.');
+
+  const back = `/t/${match.tournament.slug}/match/${matchId}`;
+  if (match.state === 'COMPLETE') failBack(back, 'This match is complete.');
+
+  const format = parseFormat(match.format ?? match.tournament.defaultFormat);
+  const maps = await prisma.matchMap.findMany({
+    where: { matchId },
+    select: { id: true, replayCalledByTeamIds: true },
+  });
+  const target = maps.find((m) => m.id === matchMapId);
+  if (!target) throw new Error('That map is not part of this match.');
+
+  const used = maps.reduce(
+    (count, m) => count + m.replayCalledByTeamIds.filter((id) => id === teamId).length,
+    0,
+  );
+  if (used >= format.rules.replaysPerTeam) {
+    failBack(
+      back,
+      format.rules.replaysPerTeam === 0
+        ? 'This format does not allow replays.'
+        : `This team has already used its ${format.rules.replaysPerTeam === 1 ? 'replay' : `${format.rules.replaysPerTeam} replays`}.`,
     );
   }
 
-  const maps = await prisma.matchMap.findMany({
-    where: { matchId },
-    include: {
-      poolMap: { select: { leaderboardId: true } },
-      lineups: { include: { slots: true } },
-    },
+  await prisma.matchMap.update({
+    where: { id: matchMapId },
+    data: { replayCalledByTeamIds: { push: teamId } },
   });
+  await matchChanged(match.tournament.slug, matchId);
+}
 
-  for (const matchMap of maps) {
-    for (const lineup of matchMap.lineups) {
-      for (const slot of lineup.slots) {
-        const score = await prisma.score.findUnique({
-          where: {
-            playerId_leaderboardId: {
-              playerId: slot.playerId,
-              leaderboardId: matchMap.poolMap.leaderboardId,
-            },
-          },
-        });
-        if (!score) continue;
+/** Take back a replay call. Staff only; removes the extra run's scores too. */
+export async function cancelReplay(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
 
-        await prisma.matchMapAttempt.upsert({
-          where: {
-            matchMapId_teamId_playerId_attempt: {
-              matchMapId: matchMap.id,
-              teamId: lineup.teamId,
-              playerId: slot.playerId,
-              attempt: 1,
-            },
-          },
-          create: {
-            matchMapId: matchMap.id,
-            teamId: lineup.teamId,
-            playerId: slot.playerId,
-            attempt: 1,
-            score: score.baseScore,
-            accuracy: score.accuracy,
-            source: 'AUTO',
-            beatLeaderScoreId: score.beatLeaderScoreId,
-            replayUrl: score.replayUrl,
-          },
-          update: {
-            score: score.baseScore,
-            accuracy: score.accuracy,
-            beatLeaderScoreId: score.beatLeaderScoreId,
-            replayUrl: score.replayUrl,
-          },
-        });
-      }
-    }
-  }
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'UNDO_ACTION');
+  if (match.state === 'COMPLETE') return;
 
+  const target = await prisma.matchMap.findFirst({
+    where: { id: matchMapId, matchId },
+    select: { replayCalledByTeamIds: true },
+  });
+  if (!target || target.replayCalledByTeamIds.length === 0) return;
+
+  const remaining = target.replayCalledByTeamIds.slice(0, -1);
+  await prisma.$transaction([
+    prisma.matchMap.update({ where: { id: matchMapId }, data: { replayCalledByTeamIds: remaining } }),
+    prisma.matchMapAttempt.deleteMany({ where: { matchMapId, attempt: { gt: 1 + remaining.length } } }),
+  ]);
   await matchChanged(match.tournament.slug, matchId);
 }
 
@@ -450,7 +525,7 @@ async function loadForMutation(matchId: string) {
   const match = await prisma.match.findUnique({
     where: { id: matchId },
     include: {
-      tournament: { select: { slug: true, defaultFormat: true } },
+      tournament: { select: { slug: true, defaultFormat: true, captainsEnterScores: true } },
       pool: { select: { maps: { orderBy: { order: 'asc' }, select: { id: true, isTiebreaker: true } } } },
       actions: {
         where: { undoneAt: null },

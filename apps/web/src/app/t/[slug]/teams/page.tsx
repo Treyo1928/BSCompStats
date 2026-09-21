@@ -301,6 +301,16 @@ export default async function TeamsPage({
                     ))}
                   </select>
                 </Field>
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" name="blindLineups" className="mt-1" />
+                  <span>
+                    Hide lineups until both teams are done
+                    <span className="block text-xs text-faint">
+                      Each team sees only its own player choices until every map has been set by
+                      both sides. Left off, lineups appear for everyone as they are saved.
+                    </span>
+                  </span>
+                </label>
                 <Button type="submit">Create match</Button>
               </form>
             </Panel>

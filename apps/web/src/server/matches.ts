@@ -31,7 +31,15 @@ export interface MatchView {
   id: string;
   name: string;
   state: 'SETUP' | 'PICKBAN' | 'PLAYING' | 'COMPLETE';
-  tournament: { id: string; slug: string; name: string; isPublic: boolean };
+  tournament: {
+    id: string;
+    slug: string;
+    name: string;
+    isPublic: boolean;
+    captainsEnterScores: boolean;
+  };
+  /** Lineups stay hidden from the other side until both teams have set every map. */
+  blindLineups: boolean;
   format: MatchFormat;
   teamA: TeamView;
   teamB: TeamView;
@@ -63,6 +71,10 @@ export interface MatchView {
     map: PoolMapView;
     lineups: Record<string, string[]>;
     scores: Record<string, Array<{ playerId: string; playerName: string; score: number; accuracy: number }>>;
+    /** Every run as entered: team -> player -> attempt number -> score. */
+    runs: Record<string, Record<string, Record<number, number>>>;
+    /** Teams that have spent a replay here; each adds one more run of the map. */
+    replayCalledByTeamIds: string[];
     totals: Record<string, number>;
   }>;
   scoreboard: { a: number; b: number };
@@ -94,7 +106,16 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
   const match = await prisma.match.findUnique({
     where: { id: matchId },
     include: {
-      tournament: { select: { id: true, slug: true, name: true, isPublic: true, defaultFormat: true } },
+      tournament: {
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          isPublic: true,
+          defaultFormat: true,
+          captainsEnterScores: true,
+        },
+      },
       teamA: { include: { members: { orderBy: { order: 'asc' }, include: { player: true } } } },
       teamB: { include: { members: { orderBy: { order: 'asc' }, include: { player: true } } } },
       pool: {
@@ -169,6 +190,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     const lineups: Record<string, string[]> = {};
     const scores: Record<string, Array<{ playerId: string; playerName: string; score: number; accuracy: number }>> = {};
     const totals: Record<string, number> = {};
+    const runs: Record<string, Record<string, Record<number, number>>> = {};
 
     for (const lineup of matchMap?.lineups ?? []) {
       lineups[lineup.teamId] = lineup.slots.map((s) => s.playerId);
@@ -177,6 +199,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     // A map replayed after a technical issue produces a second attempt; the
     // counted score is each player's best.
     for (const attempt of matchMap?.attempts ?? []) {
+      ((runs[attempt.teamId] ??= {})[attempt.playerId] ??= {})[attempt.attempt] = attempt.score;
       const list = (scores[attempt.teamId] ??= []);
       const existing = list.find((s) => s.playerId === attempt.playerId);
       if (existing) {
@@ -207,6 +230,8 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
       map: poolMapById.get(entry.poolMapId)!,
       lineups,
       scores,
+      runs,
+      replayCalledByTeamIds: matchMap?.replayCalledByTeamIds ?? [],
       totals,
     };
   });
@@ -236,6 +261,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     name: match.name,
     state: match.state,
     tournament: match.tournament,
+    blindLineups: match.blindLineups,
     format,
     teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),
     teamB: toTeamView(match.teamB, match.state === 'COMPLETE'),

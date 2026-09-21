@@ -63,6 +63,19 @@ export async function setTournamentVisibility(formData: FormData): Promise<void>
   revalidatePath('/', 'layout');
 }
 
+export async function setCaptainsEnterScores(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  await prisma.tournament.update({
+    where: { id: tournamentId },
+    data: { captainsEnterScores: formData.get('allow') === 'on' },
+  });
+  revalidatePath('/t', 'layout');
+}
+
 export async function importPoolAction(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
