@@ -61,10 +61,14 @@ export async function buildTournamentModel(
 ): Promise<TournamentModel> {
   const tournament = await prisma.tournament.findUnique({
     where: { id: tournamentId },
-    select: { defaultFormat: true },
+    select: { defaultFormat: true, statsScope: true },
   });
 
-  const stored = (tournament?.defaultFormat as { statsScope?: unknown } | null)?.statsScope;
+  // Its own column now. It used to sit inside defaultFormat, which is still
+  // read so an instance that had one there keeps it.
+  const stored =
+    tournament?.statsScope ??
+    (tournament?.defaultFormat as { statsScope?: unknown } | null)?.statsScope;
   const scope = statsScopeSchema.parse({
     ...(DEFAULT_STATS_SCOPE as object),
     ...(typeof stored === 'object' && stored ? stored : {}),

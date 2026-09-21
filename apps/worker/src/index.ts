@@ -4,6 +4,7 @@ import { log } from './log.js';
 import { CHANNELS, closeBus, createSubscriber, type RefreshRequest } from './bus.js';
 import { syncAll } from './sync.js';
 import { ScoreSocket } from './socket.js';
+import { syncHistories } from './history.js';
 
 /**
  * The ingestion worker.
@@ -32,6 +33,12 @@ async function poll(poolId?: string, reason = 'scheduled'): Promise<void> {
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     if (checked) {
       log.info(`${reason} poll: checked ${checked} pairs, wrote ${written} in ${seconds}s`);
+    }
+
+    // After the pool, so match-night scores are never waiting behind a backfill.
+    const history = await syncHistories();
+    if (history.written) {
+      log.info(`history: ${history.written} new scores across ${history.players} players`);
     }
   } catch (err) {
     log.error('poll failed', err);

@@ -7,6 +7,8 @@ import {
   Panel,
   PageHeader,
   Empty,
+  inputClass,
+  Field,
   Button,
   Badge,
   CoverStrip,
@@ -23,7 +25,7 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { buildPoolOutlook } from '@/server/outlook';
 import { getActorOrAnonymous } from '@/server/session';
-import { triggerRefresh } from '@/server/actions';
+import { setStatsScope, triggerRefresh } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -318,6 +320,58 @@ export default async function PoolPage({
             <span className="text-faint">Scope · </span>
             {describeScope(board.model.scope)}
           </p>
+
+          {can(actor, 'MANAGE_TOURNAMENT') && (
+            <form action={setStatsScope} className="mt-3 space-y-2 border-t border-edge pt-3">
+              <input type="hidden" name="tournamentId" value={pool.tournament.id} />
+              <Field
+                label="Learn from"
+                hint="The pool alone only knows the maps people chose to practise. A wider scope shows what a player is like on everything else - their weak styles included."
+              >
+                <select
+                  name="source"
+                  className={inputClass}
+                  defaultValue={
+                    board.model.scope.source === 'RANKED_ONLY'
+                      ? 'rankedOnly'
+                      : board.model.scope.source === 'FULL_HISTORY'
+                        ? 'fullHistory'
+                        : 'poolOnly'
+                  }
+                >
+                  <option value="poolOnly">This tournament&apos;s pools only</option>
+                  <option value="rankedOnly">Ranked maps each player has played</option>
+                  <option value="fullHistory">Every BeatLeader score</option>
+                </select>
+              </Field>
+              <Field label="Going back">
+                <select
+                  name="months"
+                  className={inputClass}
+                  defaultValue={String(
+                    board.model.scope.maxAgeDays
+                      ? Math.max(1, Math.round(board.model.scope.maxAgeDays / 30.5))
+                      : board.model.scope.source === 'POOL_ONLY'
+                        ? 6
+                        : 0,
+                  )}
+                >
+                  <option value="3">3 months</option>
+                  <option value="6">6 months</option>
+                  <option value="12">12 months</option>
+                  <option value="24">2 years</option>
+                  <option value="0">All time</option>
+                </select>
+              </Field>
+              <Button variant="ghost" type="submit">
+                Apply
+              </Button>
+              <p className="text-xs text-faint">
+                A wider scope is downloaded from BeatLeader in the background. Predictions settle
+                over the next minute or two as it arrives.
+              </p>
+            </form>
+          )}
 
           {Object.keys(board.model.excluded).length > 0 && (
             <div className="mt-3 border-t border-edge pt-3">

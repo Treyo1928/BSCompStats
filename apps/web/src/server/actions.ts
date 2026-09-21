@@ -9,6 +9,7 @@ import { importPool } from './pools';
 import { requestRefresh } from '@/lib/redis';
 import { beatLeader } from './pools';
 import { failBack } from './form-errors';
+import { SCOPE_PRESETS } from '@bscs/core/stats';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
 
@@ -73,6 +74,34 @@ export async function setCaptainsEnterScores(formData: FormData): Promise<void> 
     where: { id: tournamentId },
     data: { captainsEnterScores: formData.get('allow') === 'on' },
   });
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * What the prediction model learns from: the pool alone, or a player's wider
+ * BeatLeader history. Widening it also asks the worker to go and fetch that
+ * history, which is why predictions shift over the following minute or two
+ * rather than at once.
+ */
+export async function setStatsScope(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  const preset = SCOPE_PRESETS[String(formData.get('source'))] ?? SCOPE_PRESETS.poolOnly!;
+  const months = Number(formData.get('months'));
+  const scope =
+    preset.source === 'POOL_ONLY'
+      ? preset
+      : {
+          ...preset,
+          // 0 means "all time".
+          maxAgeDays: Number.isFinite(months) && months > 0 ? Math.round(months * 30.5) : null,
+        };
+
+  await prisma.tournament.update({ where: { id: tournamentId }, data: { statsScope: scope } });
+  await requestRefresh(undefined, actor.userId);
   revalidatePath('/t', 'layout');
 }
 
