@@ -241,7 +241,13 @@ export default async function PoolPage({
                             </span>
                           </td>
                           <td className="px-3 py-2">
-                            <LineupCell people={row.lineup} ring={outlookTeam.color} />
+                            {row.exhausted ? (
+                              <span className="text-xs text-faint">
+                                no unused {outlook.playersPerMap === 2 ? 'duo' : 'group'} left
+                              </span>
+                            ) : (
+                              <LineupCell people={row.lineup} ring={outlookTeam.color} />
+                            )}
                           </td>
                           <td className="px-3 py-2 text-right tabular">
                             {row.lineupAcc != null ? pct(row.lineupAcc) : '—'}

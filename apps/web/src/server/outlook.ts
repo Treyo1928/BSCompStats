@@ -27,6 +27,8 @@ export interface OutlookMap {
   /** Mean accuracy that group is expected to post. */
   lineupAcc: number | null;
   /** Filled only when there is an opponent to measure against. */
+  /** "Each group once" is on and the roster had no unused pairing left for this map. */
+  exhausted?: boolean;
   versus: {
     /** The two groups shown, head to head. */
     winProbability: number;
@@ -122,6 +124,8 @@ export async function buildPoolOutlook(
   // is best across the whole pool. The tiebreaker is exempt where the format
   // says so, as in a match.
   const assigned = new Map<string, { playerIds: string[]; vsTheirBest: number }>();
+  /** Maps left with no unused pairing to give them. */
+  const exhausted = new Set<string>();
   if (options.eachGroupOnce && values) {
     const constrained = board.maps.filter(
       (m) => !(m.isTiebreaker && format.rules.tiebreakerExemptFromDuos) && values.has(m.poolMapId),
@@ -132,6 +136,7 @@ export async function buildPoolOutlook(
     constrained.forEach((m, i) => {
       const group = chosen[i];
       if (group) assigned.set(m.poolMapId, group);
+      else exhausted.add(m.poolMapId);
     });
   }
 
@@ -140,6 +145,10 @@ export async function buildPoolOutlook(
     const forced = assigned.get(map.poolMapId);
     // Without an opponent there is nothing to simulate against, so the best
     // group is simply the k players expected to score highest.
+    if (exhausted.has(map.poolMapId)) {
+      return { poolMapId: map.poolMapId, lineup: [], lineupAcc: null, versus: null, exhausted: true };
+    }
+
     const lineupIds =
       forced?.playerIds ??
       value?.bestGroup ??
@@ -203,7 +212,10 @@ function assignDistinctGroups<T extends { playerIds: string[]; vsTheirBest: numb
       visit(i + 1, total + group.vsTheirBest);
       used.delete(key);
     }
+    // A small roster runs out of pairings before the pool runs out of maps.
+    // Leave this one empty rather than fail the whole assignment.
     current[i] = null;
+    visit(i + 1, total);
   };
   visit(0, 0);
   return best;
