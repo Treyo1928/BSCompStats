@@ -1,4 +1,4 @@
-import type { MatchFormat } from '../match/format.js';
+import { rulesForRoster, type MatchFormat } from '../match/format.js';
 import { duoKey } from '../match/rules.js';
 import { evaluateCandidate, makeComboMargins, type ComboMargins } from './evaluate.js';
 import type { LineupMap, ScoreSamples, SimMap } from './simulate.js';
@@ -105,7 +105,7 @@ function randomLegalLineup(
   random: () => number,
 ): LineupMap | null {
   const options = shuffle(combinations(roster, format.playersPerMap), random);
-  const rules = format.rules;
+  const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
   const appearances = new Map<string, number>();
   const usedDuos = new Set<string>();
   const chosen: Array<readonly string[]> = [];
@@ -213,7 +213,7 @@ function isLegal(
   maps: readonly SimMap[],
   format: MatchFormat,
 ): boolean {
-  const rules = format.rules;
+  const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
   const appearances = new Map<string, number>();
   const duos = new Set<string>();
 

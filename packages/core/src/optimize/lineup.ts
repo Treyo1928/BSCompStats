@@ -1,4 +1,4 @@
-import type { MatchFormat } from '../match/format.js';
+import { rulesForRoster, type MatchFormat } from '../match/format.js';
 import { duoKey } from '../match/rules.js';
 import {
   drawSamples,
@@ -93,7 +93,7 @@ export function explainInfeasible(
   format: MatchFormat,
 ): string | null {
   const k = format.playersPerMap;
-  const rules = format.rules;
+  const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
   const scoring = maps.filter((m) => !m.isTiebreaker);
   const slots = scoring.length * k;
 
@@ -264,7 +264,7 @@ export function enumerateLineups(
   maxCandidates = 50_000,
 ): EnumerationResult {
   const k = format.playersPerMap;
-  const rules = format.rules;
+  const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
 
   if (roster.length < k) return { lineups: [], truncated: false };
 

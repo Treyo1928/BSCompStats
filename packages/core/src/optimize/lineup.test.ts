@@ -355,19 +355,29 @@ describe('when no legal lineup exists', () => {
     expect(result.infeasible).toMatch(/Add 1 more player\./);
   });
 
-  it('explains an oversized roster against fixed appearance counts', () => {
-    // Six players must each play exactly twice - twelve slots - but four maps
-    // of two only provide eight.
+  it('fits the appearance minimum to an oversized roster rather than giving up', () => {
+    // Six players cannot each play twice - that is twelve slots and four duo
+    // maps provide eight. The minimum drops to what the slots allow: everyone
+    // plays, nobody more than twice.
+    const roster = ['a', 'b', 'c', 'd', 'e', 'f'];
     const result = recommendLineups(
-      { ...setup, playerIds: ['a', 'b', 'c', 'd', 'e', 'f', 'b1', 'b2'] },
-      {
-        maps, format: MSU_DUOS_FORMAT,
-        roster: ['a', 'b', 'c', 'd', 'e', 'f'], opponentLineups: opponent,
-      },
+      { ...setup, playerIds: [...roster, 'b1', 'b2'] },
+      { maps, format: MSU_DUOS_FORMAT, roster, opponentLineups: opponent },
     );
 
-    expect(result.best).toBeNull();
-    expect(result.infeasible).toMatch(/needs 12 slots.*only gives 8/i);
+    expect(result.infeasible).toBeUndefined();
+    expect(result.best).not.toBeNull();
+
+    const appearances = new Map<string, number>();
+    for (const map of maps.filter((m) => !m.isTiebreaker)) {
+      for (const id of result.best!.lineups[map.id] ?? []) {
+        appearances.set(id, (appearances.get(id) ?? 0) + 1);
+      }
+    }
+    for (const id of roster) {
+      expect(appearances.get(id) ?? 0).toBeGreaterThanOrEqual(1);
+      expect(appearances.get(id) ?? 0).toBeLessThanOrEqual(2);
+    }
   });
 
   it('is satisfiable for the roster the format was designed around', () => {

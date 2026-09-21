@@ -351,7 +351,8 @@ export async function buildAdvice(
   const setup = {
     maps: poolSimMaps,
     format: match.format,
-    playerIds: [...ourTeam.players, ...theirTeam.players].map((p) => p.id),
+    // A Set: a shared player is on both rosters but is one person with one run.
+    playerIds: [...new Set([...ourTeam.players, ...theirTeam.players].map((p) => p.id))],
     predict,
     iterations: 10_000,
     seed: hashSeed(match.id),
@@ -384,7 +385,13 @@ export async function buildAdvice(
   const lineups: MatchAdvice['lineups'] = { winProbability: null, expectedMargin: null };
   let lineupsInfeasible: string | null = null;
 
-  if (playedSimMaps.length && ourTeam.players.length >= match.format.playersPerMap) {
+  // ...and all of them: appearance limits and the duo rule are about the whole
+  // card, so advice for a half-picked one is either wrong or "impossible".
+  if (
+    !match.pending &&
+    playedSimMaps.length &&
+    ourTeam.players.length >= match.format.playersPerMap
+  ) {
     // The opponent's lineups are rarely known in advance, so assume they field
     // a reasonable spread rather than pretending we can see their card.
     const opponentLineups = assumeOpponentLineups(

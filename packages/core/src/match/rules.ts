@@ -1,4 +1,4 @@
-import type { MatchFormat } from './format.js';
+import { rulesForRoster, type MatchFormat } from './format.js';
 
 /**
  * Lineup legality.
@@ -71,9 +71,13 @@ export interface ValidateOptions {
 }
 
 export function validateLineups(options: ValidateOptions): ValidationResult {
-  const { format, lineups, roster } = options;
+  const { lineups, roster } = options;
   const name = options.playerName ?? ((id: string) => id);
   const rosterSet = new Set(roster);
+  const scoringMaps = lineups.filter(
+    (l) => !(l.isTiebreaker && options.format.rules.tiebreakerExemptFromDuos),
+  ).length;
+  const format = rulesForRoster(options.format, roster.length, scoringMaps);
   const rules = format.rules;
 
   const violations: Violation[] = [];

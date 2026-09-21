@@ -248,3 +248,38 @@ describe('duoKey', () => {
     expect(duoKey(['b', 'a'])).toBe(duoKey(['a', 'b']));
   });
 });
+
+describe('a roster bigger than the format expects', () => {
+  // Six players, four duo maps: eight slots. "Everyone plays twice" would need
+  // twelve, so taken literally no lineup could ever be legal.
+  const SIX = ['erin', 'trey', 'mia', 'will', 'kaiden', 'alex'];
+  const lineups: LineupInput[] = [
+    { matchMapId: 'm1', mapLabel: 'Map 1', isTiebreaker: false, playerIds: ['erin', 'trey'] },
+    { matchMapId: 'm2', mapLabel: 'Map 2', isTiebreaker: false, playerIds: ['mia', 'will'] },
+    { matchMapId: 'm3', mapLabel: 'Map 3', isTiebreaker: false, playerIds: ['kaiden', 'alex'] },
+    { matchMapId: 'm4', mapLabel: 'Map 4', isTiebreaker: false, playerIds: ['erin', 'mia'] },
+    { matchMapId: 'tb', mapLabel: 'Tiebreaker', isTiebreaker: true, playerIds: ['erin', 'trey'] },
+  ];
+
+  it('lowers the minimum to what the slots allow instead of rejecting everything', () => {
+    const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups, roster: SIX, playerName: nameOf });
+    expect(result.violations).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('still refuses to bench someone entirely', () => {
+    const benched = lineups.map((l) =>
+      l.matchMapId === 'm3' ? { ...l, playerIds: ['trey', 'will'] } : l,
+    );
+    const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups: benched, roster: SIX, playerName: nameOf });
+    expect(result.violations.map((v) => v.code)).toContain('TOO_FEW_APPEARANCES');
+  });
+
+  it('keeps the maximum, so nobody plays everything', () => {
+    const greedy = lineups.map((l) =>
+      l.matchMapId === 'm2' ? { ...l, playerIds: ['erin', 'will'] } : l,
+    );
+    const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups: greedy, roster: SIX, playerName: nameOf });
+    expect(result.violations.map((v) => v.code)).toContain('TOO_MANY_APPEARANCES');
+  });
+});

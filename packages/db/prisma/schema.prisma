@@ -635,7 +635,8 @@ model MatchMapAttempt {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([matchMapId, playerId, attempt])
+  /// Per team: a player rostered on both sides has their run counted for each.
+  @@unique([matchMapId, teamId, playerId, attempt])
   @@index([matchMapId])
 }
 

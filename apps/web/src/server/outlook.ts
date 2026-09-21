@@ -104,7 +104,7 @@ export async function buildPoolOutlook(
             setup: {
               maps: simMaps,
               format,
-              playerIds: [...roster, ...opponentRoster],
+              playerIds: [...new Set([...roster, ...opponentRoster])],
               predict,
               // Fewer draws than a match page: this re-renders on every live
               // score, and nobody is making a pick off the second decimal here.
@@ -131,7 +131,7 @@ export async function buildPoolOutlook(
       lineupAcc: meanAcc(lineupIds, map.leaderboardId),
       versus: value
         ? {
-            winProbability: value.worstCase,
+            winProbability: value.bestVsBest,
             anyPairing: value.expected,
             opponentLineup: toPlayers(value.opponentBestGroup),
           }

@@ -33,10 +33,13 @@ export const dynamic = 'force-dynamic';
 
 export default async function MatchPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string; matchId: string }>;
+  searchParams: Promise<{ as?: string }>;
 }) {
   const { slug, matchId } = await params;
+  const { as: requestedSide } = await searchParams;
 
   const match = await loadMatch(matchId);
   if (!match || match.tournament.slug !== slug) notFound();
@@ -46,11 +49,16 @@ export default async function MatchPage({
 
   // Advice is shown from the viewer's own side. Staff and spectators see it
   // from team A's perspective, which the heading makes explicit.
-  const myTeamId = isCaptainOf(actor, match.teamA.id)
-    ? match.teamA.id
-    : isCaptainOf(actor, match.teamB.id)
-      ? match.teamB.id
-      : match.teamA.id;
+  // Anyone can look at it from either side with ?as=<teamId>; the advice is
+  // built from public scores, so there is nothing here to keep from a viewer.
+  const myTeamId =
+    requestedSide === match.teamA.id || requestedSide === match.teamB.id
+      ? requestedSide
+      : isCaptainOf(actor, match.teamA.id)
+        ? match.teamA.id
+        : isCaptainOf(actor, match.teamB.id)
+          ? match.teamB.id
+          : match.teamA.id;
   const myTeam = myTeamId === match.teamA.id ? match.teamA : match.teamB;
 
   const advice = await buildAdvice(match, myTeamId);
@@ -472,7 +480,30 @@ export default async function MatchPage({
             );
           })()}
 
-          <Panel title="Win chance by map" subtitle={`From ${myTeam.name}'s side`}>
+          <Panel
+            title="Win chance by map"
+            subtitle={`From ${myTeam.name}'s side, averaged over every lineup either team could field`}
+            actions={
+              <div className="flex items-center gap-1 text-xs">
+                {[match.teamA, match.teamB].map((team) => (
+                  <Link
+                    key={team.id}
+                    href={`/t/${slug}/match/${match.id}?as=${team.id}`}
+                    scroll={false}
+                    aria-current={team.id === myTeamId ? 'true' : undefined}
+                    title={`See the advice from ${team.name}'s side`}
+                    className={`rounded-full border px-2 py-0.5 font-medium transition ${
+                      team.id === myTeamId
+                        ? 'border-accent bg-accent/15 text-ink'
+                        : 'border-edge-strong text-muted hover:border-faint hover:text-ink'
+                    }`}
+                  >
+                    {team.name}
+                  </Link>
+                ))}
+              </div>
+            }
+          >
             {advice.mapValues.length === 0 ? (
               <Empty>Both teams need a full roster before this can be estimated.</Empty>
             ) : (
@@ -511,6 +542,15 @@ export default async function MatchPage({
               </ul>
             )}
           </Panel>
+
+          {match.pending && match.plannedMaps.length > 0 && (
+            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
+              <p className="text-sm text-muted">
+                Lineup advice appears once every map has been picked. The rules about who can pair
+                up and how often span the whole card, so a lineup for part of it would mislead.
+              </p>
+            </Panel>
+          )}
 
           {advice.lineupsInfeasible && (
             <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>

@@ -83,7 +83,7 @@ describe('pool evaluation on the real MSU data', () => {
       // Committing your best duo cannot be worse than the average pairing.
       expect(v.bestCase).toBeGreaterThanOrEqual(v.expected - 0.01);
       // And the opponent answering with their best cannot be better than that.
-      expect(v.worstCase).toBeLessThanOrEqual(v.bestCase + 0.01);
+      expect(v.bestVsBest).toBeLessThanOrEqual(v.bestCase + 0.01);
       expect(v.bestGroup).toHaveLength(2);
     }
   });

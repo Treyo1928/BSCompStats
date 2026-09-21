@@ -359,8 +359,9 @@ export async function pullScores(formData: FormData): Promise<void> {
 
         await prisma.matchMapAttempt.upsert({
           where: {
-            matchMapId_playerId_attempt: {
+            matchMapId_teamId_playerId_attempt: {
               matchMapId: matchMap.id,
+              teamId: lineup.teamId,
               playerId: slot.playerId,
               attempt: 1,
             },

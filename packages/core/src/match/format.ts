@@ -138,6 +138,28 @@ export function parseFormat(raw: unknown): MatchFormat {
   return matchFormatSchema.parse(raw);
 }
 
+/**
+ * The format's rules as they apply to one roster.
+ *
+ * "Everyone plays at least twice" is written for the roster the format expects
+ * - four players across four duo maps. A team that brings six cannot satisfy
+ * it: there are eight slots and twelve would be needed. Rather than declare
+ * every lineup illegal, the minimum is lowered to what the slots allow, so it
+ * keeps its meaning (nobody is benched while someone else plays everything)
+ * without demanding the impossible.
+ */
+export function rulesForRoster(
+  format: MatchFormat,
+  rosterSize: number,
+  scoringMapCount: number,
+): MatchFormat {
+  const min = format.rules.minAppearances;
+  if (min == null || rosterSize <= 0) return format;
+  const achievable = Math.floor((scoringMapCount * format.playersPerMap) / rosterSize);
+  if (achievable >= min) return format;
+  return { ...format, rules: { ...format.rules, minAppearances: achievable } };
+}
+
 /** How many maps a format will produce, tiebreaker included. */
 export function expectedMapCount(format: MatchFormat): number {
   const picks = format.pickBanSequence.filter((s) => s.action === 'PICK').length;

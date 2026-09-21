@@ -19,7 +19,7 @@ import { comboKeyOf } from './evaluate.js';
  *               out-thinks the other. This is what ranking uses.
  *   bestCase  - our strongest group against their average. What the map is
  *               worth if we commit our best players to it.
- *   worstCase - our strongest against their strongest. Whether the map still
+ *   bestVsBest - our strongest against their strongest. Whether the map still
  *               holds up when they also try.
  *
  * A deliberate limit: this scores each map independently rather than searching
@@ -34,8 +34,14 @@ export interface MapValue {
   leaderboardId: string;
   /** Probability we take this map, averaged over every pairing. */
   expected: number;
+  /** Our strongest group, averaged over every group they could field. */
   bestCase: number;
-  worstCase: number;
+  /**
+   * Our strongest group against their strongest. Not a floor on `expected`:
+   * that average includes our weaker groups too, so a team with one dominant
+   * pairing can sit well above it here.
+   */
+  bestVsBest: number;
   /** Mean score difference, ours minus theirs, over every pairing. */
   expectedMargin: number;
   /** Our strongest group here. */
@@ -101,7 +107,7 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
     const bestTheirIndex = argmin(theirGroupWin);
 
     const bestCase = ourGroupWin[bestOurIndex]! / theirGroups.length;
-    const worstCase = pairWin(
+    const bestVsBest = pairWin(
       ourTotals[bestOurIndex]!,
       theirTotals[bestTheirIndex]!,
       iterations,
@@ -112,7 +118,7 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
       leaderboardId: map.leaderboardId,
       expected: pairs ? sumWin / pairs : 0,
       bestCase,
-      worstCase,
+      bestVsBest,
       expectedMargin: pairs ? sumMargin / pairs : 0,
       bestGroup: ourGroups[bestOurIndex]!,
       opponentBestGroup: theirGroups[bestTheirIndex]!,
@@ -174,10 +180,10 @@ export function recommendAction(
 function describePick(value: MapValue): string {
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   if (value.expected >= 0.65) {
-    return `Strong pick - about ${pct(value.expected)} to win it, ${pct(value.worstCase)} even if they send their best duo.`;
+    return `Strong pick - ${pct(value.bestVsBest)} with your best lineup against theirs, and about ${pct(value.expected)} averaged over every lineup either side could field.`;
   }
   if (value.expected >= 0.5) {
-    return `Slight edge at ${pct(value.expected)}, rising to ${pct(value.bestCase)} if you commit your best duo.`;
+    return `Slight edge - about ${pct(value.expected)} averaged over every lineup, ${pct(value.bestVsBest)} with your best lineup against theirs.`;
   }
   return `Against you at ${pct(value.expected)} - only worth taking if the rest of the pool is worse.`;
 }
