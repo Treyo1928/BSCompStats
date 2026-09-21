@@ -21,6 +21,7 @@ import {
   num,
 } from '@/components/ui';
 import { LiveBadge } from '@/components/live-badge';
+import { PlayerAvatarStack } from '@/components/player-card';
 import { MatchLive } from '@/components/match-live';
 import { getMatchSummary } from '@/server/summaries';
 import { ConfirmButton } from '@/components/confirm-button';
@@ -869,7 +870,7 @@ function TeamScore({
           {team.name}
         </p>
         <div className={`mt-2 flex ${right ? 'justify-end' : ''}`}>
-          <AvatarStack people={team.players} size={26} ring={team.color} />
+          <PlayerAvatarStack people={team.players} size={26} ring={team.color} />
         </div>
       </div>
       <span

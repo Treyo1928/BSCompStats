@@ -3,11 +3,13 @@ import { runChooseModel } from './advice-thread';
 import { announceMatchChange } from '@/lib/redis';
 import { prisma } from '@bscs/db';
 import { categorizeMap } from '@bscs/core/beatleader';
+import { loadScores, scoreSaberPulse, type ScoreSource } from './score-sources';
 import {
   applyScope,
   buildFailModel,
   buildPlayerProfiles,
   buildPlayStyles,
+  canonicalKind,
   classifyFails,
   fitSkillModel,
   type FitOptions,
@@ -16,6 +18,7 @@ import {
   type FailModel,
   type PlayerProfile,
   type PlayStyle,
+  type ScoreDetail,
   type ScopedScore,
   type SkillModel,
   type StatsScope,
@@ -56,6 +59,12 @@ export interface TournamentModel {
    * by `failKey`. They win over the model, for this viewer only.
    */
   estimates: Map<string, number>;
+  /**
+   * The scores the model was fitted on, and what kind of map each is on -
+   * what standings and like-for-like comparisons are worked out from.
+   */
+  scores: ScoreDetail[];
+  categories: Record<string, string | null>;
   /** Changes whenever anything the model was fitted on changes. */
   version: string;
 }
@@ -71,10 +80,22 @@ const modelCache = new Map<string, TournamentModel>();
 /** The fit settings cross-validation last chose per tournament, and for which scores. */
 const fitChoice = new Map<string, { dataKey: string; chosen: FitOptions }>();
 const fitChoosing = new Map<string, string>();
+/**
+ * Fits under way, so that everything asking for the same model at the same
+ * moment waits for one fit instead of each starting its own. One page asks
+ * several times over - once per pool board, once for its metadata, once for
+ * its preview image - and they all arrive before the first has finished, so
+ * every one of them missed the cache and fitted the model again. At two
+ * seconds a fit, on the thread that serves every request, that was the site
+ * standing still for eight.
+ */
+const building = new Map<string, { version: string; model: Promise<TournamentModel> }>();
 
 export async function buildTournamentModel(
   tournamentId: string,
   overrideScope?: Partial<StatsScope>,
+  /** Which platform's scores to learn from. Both, unless someone asks to see one alone. */
+  source: ScoreSource = 'both',
 ): Promise<TournamentModel> {
   const tournament = await prisma.tournament.findUnique({
     where: { id: tournamentId },
@@ -102,7 +123,7 @@ export async function buildTournamentModel(
   // Leaderboards belonging to any pool in this tournament.
   const poolMaps = await prisma.poolMap.findMany({
     where: { pool: { tournamentId } },
-    select: { leaderboardId: true },
+    select: { leaderboardId: true, category: true },
   });
   const poolLeaderboardIds = new Set(poolMaps.map((pm) => pm.leaderboardId));
 
@@ -117,40 +138,31 @@ export async function buildTournamentModel(
     scope,
     [...playerIds].sort(),
     [...poolLeaderboardIds].sort(),
+    // What kind each map is called feeds the styles, so relabelling one is a change too.
+    poolMaps.map((pm) => `${pm.leaderboardId}:${pm.category ?? ''}`).sort(),
     pulse._count,
     pulse._max.timeset,
     pulse._sum.baseScore,
+    source,
+    source === 'beatleader' ? '' : await scoreSaberPulse(playerIds),
   ]);
-  const cached = modelCache.get(tournamentId);
+  // Per scope, not per tournament: the stats pages can look at the same
+  // tournament over ranked or all maps, and must not evict the pool-only model
+  // that every board and match page is rendered from.
+  const cacheKey = `${tournamentId}|${source}|${JSON.stringify(scope)}`;
+  const cached = modelCache.get(cacheKey);
   if (cached?.version === version) return withViewerEstimates(cached, tournamentId);
+
+  const underWay = building.get(cacheKey);
+  if (underWay?.version === version) return withViewerEstimates(await underWay.model, tournamentId);
+
+  const fit = (async (): Promise<TournamentModel> => {
   const fitStarted = performance.now();
 
-  const scores = playerIds.length
-    ? await prisma.score.findMany({
-        where: {
-          playerId: { in: playerIds },
-          ...(scope.source === 'POOL_ONLY'
-            ? { leaderboardId: { in: [...poolLeaderboardIds] } }
-            : {}),
-        },
-        select: {
-          playerId: true,
-          leaderboardId: true,
-          baseScore: true,
-          accuracy: true,
-          missedNotes: true,
-          badCuts: true,
-          fullCombo: true,
-          pauses: true,
-          accLeft: true,
-          accRight: true,
-          timeset: true,
-          leaderboard: {
-            select: { maxScore: true, ranked: true, accRating: true, passRating: true, techRating: true },
-          },
-        },
-      })
-    : [];
+  const scores = await loadScores(playerIds, {
+    source,
+    leaderboardIds: scope.source === 'POOL_ONLY' ? [...poolLeaderboardIds] : undefined,
+  });
 
   const maxScores: Record<string, number> = {};
   for (const s of scores) maxScores[s.leaderboardId] = s.leaderboard.maxScore;
@@ -189,23 +201,23 @@ export async function buildTournamentModel(
   // cross-validation picks on a pool-sized board anyway. If the thread comes
   // back with something different, the next render refits with it.
   const dataKey = JSON.stringify(observations.map((o) => [o.playerId, o.leaderboardId, o.acc]));
-  const settled = fitChoice.get(tournamentId);
+  const settled = fitChoice.get(cacheKey);
   const chosen: FitOptions = settled?.chosen ?? { latentFactors: 0, biasRegularization: 0.5 };
   const model = fitSkillModel(observations, chosen);
 
-  if (settled?.dataKey !== dataKey && fitChoosing.get(tournamentId) !== dataKey) {
-    fitChoosing.set(tournamentId, dataKey);
+  if (settled?.dataKey !== dataKey && fitChoosing.get(cacheKey) !== dataKey) {
+    fitChoosing.set(cacheKey, dataKey);
     void runChooseModel([...observations])
       .then(async (better) => {
-        if (fitChoosing.get(tournamentId) !== dataKey) return;
-        fitChoosing.delete(tournamentId);
-        fitChoice.set(tournamentId, { dataKey, chosen: better });
+        if (fitChoosing.get(cacheKey) !== dataKey) return;
+        fitChoosing.delete(cacheKey);
+        fitChoice.set(cacheKey, { dataKey, chosen: better });
         if (JSON.stringify(better) === JSON.stringify(chosen)) return;
 
         // A different model means different predictions: drop the cached one
         // and bring open match pages up to date. Pool pages pick it up on
         // their next refresh.
-        modelCache.delete(tournamentId);
+        modelCache.delete(cacheKey);
         const live = await prisma.match.findMany({
           where: { tournamentId, state: { not: 'COMPLETE' } },
           select: { id: true },
@@ -213,7 +225,7 @@ export async function buildTournamentModel(
         await Promise.all(live.map((m) => announceMatchChange(m.id)));
       })
       .catch((err) => {
-        if (fitChoosing.get(tournamentId) === dataKey) fitChoosing.delete(tournamentId);
+        if (fitChoosing.get(cacheKey) === dataKey) fitChoosing.delete(cacheKey);
         console.error('[model] choosing fit options failed:', err);
       });
   }
@@ -235,24 +247,23 @@ export async function buildTournamentModel(
       timeset: s.timeset,
     }));
 
-  const categories = Object.fromEntries(
-    (
-      await prisma.poolMap.findMany({
-        where: { pool: { tournamentId } },
-        select: { leaderboardId: true, category: true },
-      })
-    ).map((pm) => [pm.leaderboardId, pm.category]),
+  // One spelling per kind: an organiser's "Tech" and the ratings guess "tech"
+  // are the same kind of map, and have to rank as one.
+  const categories: Record<string, string | null> = Object.fromEntries(
+    poolMaps.map((pm) => [pm.leaderboardId, canonicalKind(pm.category)]),
   );
 
   // Where no organiser has tagged a map - which is every map outside the
   // pools - a ranked one still has BeatLeader's ratings to guess from. That is what makes a wider scope worth
   // having for play styles: hundreds of scores per kind of map instead of one.
   for (const s of scores) {
-    categories[s.leaderboardId] ??= categorizeMap({
-      acc: s.leaderboard.accRating,
-      pass: s.leaderboard.passRating,
-      tech: s.leaderboard.techRating,
-    });
+    categories[s.leaderboardId] ??= canonicalKind(
+      categorizeMap({
+        acc: s.leaderboard.accRating,
+        pass: s.leaderboard.passRating,
+        tech: s.leaderboard.techRating,
+      }),
+    );
   }
 
   const profiles = buildPlayerProfiles({ scores: detailed, model, categories });
@@ -271,15 +282,26 @@ export async function buildTournamentModel(
     maxScores,
     chosenLatentFactors: chosen.latentFactors ?? 0,
     estimates: new Map(),
+    scores: detailed,
+    categories,
     version,
   };
-  modelCache.set(tournamentId, built);
+  modelCache.set(cacheKey, built);
   // This runs on the request thread, so how long it takes is how long the site
   // stalls when scores change. Worth being able to see.
   console.info(
     `[model] fitted ${observations.length} scores for ${playerCount} players in ${Math.round(performance.now() - fitStarted)}ms`,
   );
-  return withViewerEstimates(built, tournamentId);
+  return built;
+  })();
+
+  building.set(cacheKey, { version, model: fit });
+  try {
+    return withViewerEstimates(await fit, tournamentId);
+  } finally {
+    // Whether it worked or not, it is no longer under way. A failure must not be handed to the next caller.
+    if (building.get(cacheKey)?.model === fit) building.delete(cacheKey);
+  }
 }
 
 export const ESTIMATES_COOKIE = 'bscs-estimates';

@@ -12,6 +12,7 @@ import { cookies } from 'next/headers';
 import { failBack } from './form-errors';
 import { ESTIMATES_COOKIE, failKey, parseEstimateCookie } from './stats';
 import { SCOPE_PRESETS } from '@bscs/core/stats';
+import { looksLikeSteamId, parseScoreSaberId, ScoreSaberClient } from '@bscs/core/scoresaber';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
 
@@ -224,8 +225,69 @@ export async function setStatsScope(formData: FormData): Promise<void> {
           maxAgeDays: Number.isFinite(months) && months > 0 ? Math.round(months * 30.5) : null,
         };
 
-  await prisma.tournament.update({ where: { id: tournamentId }, data: { statsScope: scope } });
+  // Whether history is kept for the stats pages is a separate decision, and
+  // choosing what predictions learn from must not quietly undo it.
+  const current = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { statsScope: true },
+  });
+  const keepHistory = (current?.statsScope as { keepHistory?: unknown } | null)?.keepHistory === true;
+
+  await prisma.tournament.update({
+    where: { id: tournamentId },
+    data: { statsScope: { ...scope, keepHistory } },
+  });
   await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * Keep every player's wider BeatLeader history downloaded, so the player stats
+ * pages can be looked at over ranked or all maps. Predictions, boards and match
+ * advice keep learning from whatever the tournament's scope says.
+ */
+export async function setKeepHistory(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  const current = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { statsScope: true },
+  });
+  const stored = typeof current?.statsScope === 'object' && current.statsScope ? current.statsScope : {};
+
+  await prisma.tournament.update({
+    where: { id: tournamentId },
+    data: { statsScope: { ...(stored as object), keepHistory: formData.get('keep') === 'on' } },
+  });
+  // The worker fetches histories on its next pass; this asks for one now.
+  await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * What kind of map this is - the organiser's word, which always wins over the
+ * guess made from BeatLeader's ratings. Blank hands it back to the guess.
+ */
+export async function setPoolMapKind(formData: FormData): Promise<void> {
+  const poolMapId = String(formData.get('poolMapId'));
+  const poolMap = await prisma.poolMap.findUnique({
+    where: { id: poolMapId },
+    select: { pool: { select: { tournamentId: true } } },
+  });
+  if (!poolMap) throw new Error('No such map.');
+
+  const actor = await getActor(poolMap.pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+
+  // "Something else" in the list means the text box beside it is the answer.
+  const picked = String(formData.get('kind') ?? '');
+  const kind = (picked === '__custom' ? String(formData.get('custom') ?? '') : picked).trim().slice(0, 24);
+
+  await prisma.poolMap.update({ where: { id: poolMapId }, data: { category: kind || null } });
   revalidatePath('/t', 'layout');
 }
 
@@ -398,6 +460,8 @@ export interface PlayerCandidate {
   /** True when the app account, not the BeatLeader name, is what matched. */
   linked: boolean;
   onTeam: boolean;
+  /** Which site this result came from. `beatLeaderId` holds that site's id for them. */
+  platform?: 'beatleader' | 'scoresaber';
 }
 
 /**
@@ -882,4 +946,255 @@ export async function triggerRefresh(formData: FormData): Promise<void> {
 
   await requestRefresh(poolId, actor.userId);
   revalidatePath('/t', 'layout');
+}
+
+/**
+ * Link (or unlink) a player's ScoreSaber profile.
+ *
+ * ScoreSaber has no sign-in to prove a profile is yours, so this cannot be
+ * verified the way a BeatLeader login is. It is open to the player themselves,
+ * to the people running a tournament they are rostered in, and to site admins
+ * - and the profile is checked to exist. What is at stake is which public
+ * scores count toward someone's stats, and it shows on their page for anyone
+ * to correct.
+ */
+export async function linkScoreSaber(formData: FormData): Promise<void> {
+  const playerId = String(formData.get('playerId'));
+  const slug = String(formData.get('slug'));
+  const back = `/t/${slug}/stats/${playerId}`;
+
+  const [player, tournament] = await Promise.all([
+    prisma.player.findUnique({ where: { id: playerId }, select: { id: true, userId: true } }),
+    prisma.tournament.findUnique({ where: { slug }, select: { id: true } }),
+  ]);
+  if (!player || !tournament) throw new Error('No such player.');
+
+  const actor = await getActor(tournament.id);
+  if (!actor) throw new Error('Sign in first.');
+  const rostered = await prisma.teamMember.findFirst({
+    where: { playerId, team: { division: { tournamentId: tournament.id } } },
+    select: { id: true },
+  });
+  const allowed = player.userId === actor.userId || (rostered != null && can(actor, 'MANAGE_TEAMS'));
+  if (!allowed) throw new ForbiddenError('MANAGE_TEAMS');
+
+  if (formData.get('unlink') === 'on') {
+    await prisma.$transaction([
+      prisma.scoreSaberScore.deleteMany({ where: { playerId } }),
+      prisma.player.update({
+        where: { id: playerId },
+        data: {
+          scoreSaberId: null,
+          ssPp: 0,
+          ssRank: 0,
+          ssCountryRank: 0,
+          ssRankedPlayCount: 0,
+          ssAvgRankedAcc: 0,
+          ssSyncedAt: null,
+          ssBackfilledAt: null,
+          // Or the automatic lookup would find the same profile again within the week.
+          ssOptOut: true,
+        },
+      }),
+    ]);
+    revalidatePath('/t', 'layout');
+    return;
+  }
+
+  const scoreSaberId = parseScoreSaberId(String(formData.get('profile') ?? ''));
+  if (!scoreSaberId) failBack(back, 'Paste a ScoreSaber profile link (scoresaber.com/u/...) or the id from one.');
+
+  const taken = await prisma.player.findFirst({
+    where: { scoreSaberId, id: { not: playerId } },
+    select: { name: true },
+  });
+  if (taken) failBack(back, `That ScoreSaber profile is already linked to ${taken.name}.`);
+
+  let profile;
+  try {
+    profile = await new ScoreSaberClient().getPlayer(scoreSaberId);
+  } catch {
+    failBack(back, 'ScoreSaber could not be reached. Try again in a moment.');
+  }
+  if (!profile) failBack(back, 'ScoreSaber has no such player.');
+
+  await prisma.player.update({
+    where: { id: playerId },
+    data: {
+      scoreSaberId,
+      ssPp: profile.pp ?? 0,
+      ssRank: profile.rank ?? 0,
+      ssCountryRank: profile.countryRank ?? 0,
+      ssRankedPlayCount: profile.scoreStats?.rankedPlayCount ?? 0,
+      ssAvgRankedAcc: (profile.scoreStats?.averageRankedAccuracy ?? 0) / 100,
+      ssOptOut: false,
+      // The scores are the worker's job; this makes it a full walk on its next pass.
+      ssSyncedAt: null,
+      ssBackfilledAt: null,
+    },
+  });
+  await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * The add-player search, on ScoreSaber. For someone who is only there - or
+ * whose name there is the one the organiser knows.
+ */
+export async function searchScoreSaberCandidates(
+  teamId: string,
+  rawQuery: string,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
+  await requireTeamManager(teamId);
+  const query = rawQuery.trim();
+  if (!query) return { candidates: [], error: 'Enter a ScoreSaber profile link, id, or name.' };
+
+  const client = new ScoreSaberClient();
+  const id = parseScoreSaberId(query);
+  let found: Array<{ id: string; name: string; profilePicture?: string; country?: string; pp?: number; rank?: number }> = [];
+  try {
+    if (id) {
+      const exact = await client.getPlayer(id);
+      found = exact ? [{ ...exact, profilePicture: (exact as { profilePicture?: string }).profilePicture }] : [];
+    } else if (query.length < 4) {
+      return { candidates: [], error: 'ScoreSaber needs at least four letters to search by name.' };
+    } else {
+      found = await client.searchPlayers(query);
+    }
+  } catch {
+    return { candidates: [], error: 'ScoreSaber could not be reached. Try again in a moment.' };
+  }
+
+  const ids = found.map((p) => p.id);
+  const [onTeam, known] = await Promise.all([
+    prisma.teamMember.findMany({
+      where: { teamId, player: { OR: [{ scoreSaberId: { in: ids } }, { beatLeaderId: { in: ids } }] } },
+      select: { player: { select: { scoreSaberId: true, beatLeaderId: true } } },
+    }),
+    prisma.player.findMany({ where: { scoreSaberId: { in: ids }, userId: { not: null } }, select: { scoreSaberId: true } }),
+  ]);
+  const onTeamIds = new Set(onTeam.flatMap((m) => [m.player.scoreSaberId, m.player.beatLeaderId]));
+  const linkedIds = new Set(known.map((p) => p.scoreSaberId));
+
+  const candidates = found.slice(0, 20).map((p) => ({
+    beatLeaderId: p.id,
+    name: p.name,
+    avatar: p.profilePicture ?? null,
+    country: p.country ?? null,
+    pp: p.pp ?? 0,
+    rank: p.rank ?? 0,
+    accountName: null,
+    linked: linkedIds.has(p.id),
+    onTeam: onTeamIds.has(p.id),
+    platform: 'scoresaber' as const,
+  }));
+  return { candidates, error: candidates.length === 0 ? `No ScoreSaber player matching "${query}".` : undefined };
+}
+
+/**
+ * Add someone picked from a ScoreSaber search.
+ *
+ * A player here is keyed by their BeatLeader id. For a Steam player that is the
+ * same id as ScoreSaber's, so the BeatLeader profile is looked up and both are
+ * linked at once. Where BeatLeader has never heard of them the id is kept in
+ * that field anyway - it is still theirs, and it starts working the day they
+ * install BeatLeader - and ScoreSaber carries their stats until then.
+ */
+export async function addPlayerFromScoreSaber(teamId: string, scoreSaberId: string): Promise<{ error?: string }> {
+  const actor = await requireTeamManager(teamId);
+
+  let player = await prisma.player.findFirst({
+    where: { OR: [{ scoreSaberId }, { beatLeaderId: scoreSaberId }] },
+  });
+  if (!player) {
+    let ss;
+    let bl = null;
+    try {
+      ss = await new ScoreSaberClient().getPlayer(scoreSaberId);
+      bl = looksLikeSteamId(scoreSaberId) ? await beatLeader.getPlayer(scoreSaberId).catch(() => null) : null;
+    } catch {
+      return { error: 'ScoreSaber could not be reached. Try again in a moment.' };
+    }
+    if (!ss) return { error: 'ScoreSaber has no such player.' };
+    player = await prisma.player.create({
+      data: {
+        beatLeaderId: bl?.id ?? scoreSaberId,
+        scoreSaberId,
+        name: bl?.name ?? ss.name,
+        avatar: bl?.avatar ?? (ss as { profilePicture?: string }).profilePicture ?? null,
+        country: bl?.country ?? ss.country ?? null,
+        pp: bl?.pp ?? 0,
+        rank: bl?.rank ?? 0,
+        ssPp: ss.pp ?? 0,
+        ssRank: ss.rank ?? 0,
+      },
+    });
+  } else if (!player.scoreSaberId) {
+    await prisma.player.update({ where: { id: player.id }, data: { scoreSaberId, ssOptOut: false, ssBackfilledAt: null, ssSyncedAt: null } });
+  }
+
+  const last = await prisma.teamMember.aggregate({ where: { teamId }, _max: { order: true } });
+  await prisma.teamMember.upsert({
+    where: { teamId_playerId: { teamId, playerId: player.id } },
+    create: { teamId, playerId: player.id, order: (last._max.order ?? -1) + 1 },
+    update: {},
+  });
+  await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+  return {};
+}
+
+/** Link a rostered player's ScoreSaber from the teams page, to the profile picked from a search. */
+export async function linkScoreSaberToMember(memberId: string, scoreSaberId: string): Promise<{ error?: string }> {
+  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { teamId: true, playerId: true } });
+  if (!member) return { error: 'No such player.' };
+  const actor = await requireTeamManager(member.teamId);
+
+  const taken = await prisma.player.findFirst({
+    where: { scoreSaberId, id: { not: member.playerId } },
+    select: { name: true },
+  });
+  if (taken) return { error: `That ScoreSaber profile is already linked to ${taken.name}.` };
+
+  let profile;
+  try {
+    profile = await new ScoreSaberClient().getPlayer(scoreSaberId);
+  } catch {
+    return { error: 'ScoreSaber could not be reached. Try again in a moment.' };
+  }
+  if (!profile) return { error: 'ScoreSaber has no such player.' };
+
+  await prisma.player.update({
+    where: { id: member.playerId },
+    data: {
+      scoreSaberId,
+      ssPp: profile.pp ?? 0,
+      ssRank: profile.rank ?? 0,
+      ssCountryRank: profile.countryRank ?? 0,
+      ssOptOut: false,
+      ssSyncedAt: null,
+      ssBackfilledAt: null,
+    },
+  });
+  await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+  return {};
+}
+
+/** The ScoreSaber search, for linking someone who is already on a roster. */
+export async function searchScoreSaberForMember(
+  memberId: string,
+  rawQuery: string,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
+  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { teamId: true } });
+  if (!member) return { candidates: [], error: 'No such player.' };
+  const result = await searchScoreSaberCandidates(member.teamId, rawQuery);
+  // "On team" means something else here: a profile that is already somebody's cannot be linked again.
+  const ids = result.candidates.map((c) => c.beatLeaderId);
+  const inUse = new Set(
+    (await prisma.player.findMany({ where: { scoreSaberId: { in: ids } }, select: { scoreSaberId: true } })).map(
+      (p) => p.scoreSaberId,
+    ),
+  );
+  return { ...result, candidates: result.candidates.map((c) => ({ ...c, onTeam: inUse.has(c.beatLeaderId) })) };
 }

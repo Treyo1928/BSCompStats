@@ -1,0 +1,5 @@
+-- BeatLeader's skill triangle per player, and how many ranked plays it rests on.
+ALTER TABLE "Player" ADD COLUMN "accPp" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Player" ADD COLUMN "techPp" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Player" ADD COLUMN "passPp" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Player" ADD COLUMN "rankedPlayCount" INTEGER NOT NULL DEFAULT 0;

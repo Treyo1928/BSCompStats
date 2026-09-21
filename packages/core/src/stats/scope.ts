@@ -60,6 +60,14 @@ export const statsScopeSchema = z.object({
 
   /** Only count maps at least this many of the tracked players have played. */
   minPlayersPerMap: z.number().int().positive().default(2),
+
+  /**
+   * Keep players' wider BeatLeader history downloaded even while `source` is
+   * the pool. Changes nothing about what the model sees; it is what lets the
+   * player stats pages be looked at over ranked or all maps without moving
+   * the whole tournament's predictions onto them.
+   */
+  keepHistory: z.boolean().default(false),
 });
 
 export type StatsScope = z.infer<typeof statsScopeSchema>;

@@ -1,6 +1,8 @@
 import { cache } from 'react';
 import { prisma } from '@bscs/db';
+import { nextDraftSlot, parseDraftSettings } from '@bscs/core/match';
 import { tallyMaps } from './match-summary';
+import { buildTournamentStats, OVERALL } from './player-stats';
 
 /**
  * What a page says about itself in a link preview.
@@ -215,5 +217,154 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
       cover: x.poolMap.leaderboard.map.coverImage,
       isTiebreaker: x.isTiebreaker,
     })),
+  };
+});
+
+const points = (gap: number) => `${gap >= 0 ? '+' : '−'}${Math.abs(gap * 100).toFixed(1)}`;
+
+/** The stats page: each team in ranked order, as the page itself shows it. */
+export const getStatsSummary = cache(async (slug: string) => {
+  const t = await prisma.tournament.findUnique({
+    where: { slug },
+    select: { id: true, name: true, isPublic: true },
+  });
+  if (!t || !t.isPublic) return null;
+
+  const stats = await buildTournamentStats(t.id);
+  // The card is about the tournament's own teams; a side made up for one match is a footnote to it.
+  const teams = stats.teams
+    .filter((team) => !team.adHoc)
+    .map((team) => ({
+      name: team.name,
+      color: team.color,
+      players: [...team.players]
+        .sort((a, b) => (a.standings[OVERALL]?.teamRank ?? Infinity) - (b.standings[OVERALL]?.teamRank ?? Infinity))
+        .map((p) => ({
+          name: p.name,
+          rank: p.standings[OVERALL]?.teamRank ?? null,
+          gap: p.standings[OVERALL]?.vsTeam.gap ?? null,
+          style: p.profile && p.specialty.status === 'RANGE' ? p.specialty.label : null,
+        })),
+    }));
+
+  return {
+    tournamentName: t.name,
+    teams,
+    fieldSize: stats.fieldSize,
+    mapCount: stats.mapCount,
+    description:
+      teams.length === 0
+        ? 'No teams yet.'
+        : `Ranked within each team, on the maps both players have actually played. ${teams
+            .map((team) => `${team.name}: ${team.players.map((p) => p.name).join(', ') || 'no players yet'}`)
+            .join(' | ')}`,
+  };
+});
+
+/** One player: who they play for, where they rank, and how they play. */
+export const getPlayerStatsSummary = cache(async (slug: string, playerId: string) => {
+  const t = await prisma.tournament.findUnique({
+    where: { slug },
+    select: { id: true, name: true, isPublic: true },
+  });
+  if (!t || !t.isPublic) return null;
+
+  const stats = await buildTournamentStats(t.id);
+  const spot = stats.teams
+    .flatMap((team) => team.players.filter((p) => p.playerId === playerId).map((player) => ({ team, player })))
+    // Entered teams are listed first, so that is the side the headline figures are against.
+    .at(0);
+  if (!spot) return null;
+
+  const { team, player } = spot;
+  const overall = player.standings[OVERALL]!;
+  // The kinds they can actually be ranked on, best first - what is worth a line in a preview.
+  const ranks = player.kinds
+    .filter((k) => k.teamRank != null)
+    .sort((a, b) => a.teamRank! - b.teamRank!)
+    .map((k) => ({ label: k.kind, rank: k.teamRank, of: k.teamRanked }));
+
+  const facts = [
+    overall.teamRank ? `#${overall.teamRank} of ${overall.teamRanked} on ${team.name}` : null,
+    overall.fieldRank ? `#${overall.fieldRank} of ${overall.fieldRanked} in the field` : null,
+    player.profile && player.profile.meanAcc > 0
+      ? `${pct(player.profile.meanAcc, 2)} average on ${player.played} of ${stats.mapCount} pool maps`
+      : null,
+  ].filter(Boolean);
+
+  return {
+    tournamentName: t.name,
+    name: player.name,
+    avatar: player.avatar,
+    team: { name: team.name, color: team.color },
+    style: player.profile ? { label: player.specialty.label, summary: player.specialty.summary } : null,
+    meanAcc: player.profile && player.profile.meanAcc > 0 ? player.profile.meanAcc : null,
+    played: player.played,
+    mapCount: stats.mapCount,
+    overall,
+    ranks,
+    description: [
+      player.profile ? `${player.specialty.label}.` : null,
+      facts.join(' · '),
+      overall.vsTeam.gap != null ? `${points(overall.vsTeam.gap)} points vs teammates on the maps both have played.` : null,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  };
+});
+
+/** A captains' draft: the two sides as they stand, and whose pick it is. */
+export const getDraftSummary = cache(async (slug: string, draftId: string) => {
+  const team = {
+    name: true,
+    color: true,
+    members: { orderBy: { order: 'asc' }, select: { role: true, player: { select: { name: true } } } },
+  } as const;
+  const d = await prisma.draft.findUnique({
+    where: { id: draftId },
+    select: {
+      name: true,
+      order: true,
+      firstPick: true,
+      shareOdd: true,
+      matchId: true,
+      tournament: { select: { slug: true, name: true, isPublic: true } },
+      teamA: { select: team },
+      teamB: { select: team },
+      players: { select: { pickNumber: true, player: { select: { name: true } } } },
+    },
+  });
+  if (!d || d.tournament.slug !== slug || !d.tournament.isPublic) return null;
+
+  const made = d.players.filter((p) => p.pickNumber != null).length;
+  const slot = d.matchId ? null : nextDraftSlot(parseDraftSettings(d), d.players.length, made);
+  const onTheClock = slot === 'A' ? d.teamA : slot === 'B' ? d.teamB : null;
+  const captain = (side: typeof d.teamA) => side.members.find((m) => m.role === 'CAPTAIN')?.player.name ?? side.name;
+  const available = d.players.filter((p) => p.pickNumber == null).map((p) => p.player.name);
+
+  const status = d.matchId
+    ? 'Draft complete - the match is under way'
+    : onTheClock
+      ? `Pick ${made + 1} of ${d.players.length}: ${captain(onTheClock)} to choose`
+      : 'Draft complete';
+
+  const side = (s: typeof d.teamA) => ({ name: s.name, color: s.color, players: s.members.map((m) => m.player.name) });
+  return {
+    name: d.name,
+    tournamentName: d.tournament.name,
+    status,
+    complete: !onTheClock,
+    onTheClockColor: onTheClock?.color ?? null,
+    teamA: side(d.teamA),
+    teamB: side(d.teamB),
+    available,
+    description: [
+      status,
+      `${d.teamA.name}: ${d.teamA.members.map((m) => m.player.name).join(', ')}`,
+      `${d.teamB.name}: ${d.teamB.members.map((m) => m.player.name).join(', ')}`,
+      available.length ? `Still available: ${available.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join('. '),
   };
 });

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Avatar, DifficultyChip, MapCover, heat, pct, num, teamInk, teamWash } from './ui';
 import type { PoolBoard, BoardCell, BoardMap } from '@/server/board';
+import { PlayerLink } from './player-card';
 
 /**
  * The pool board.
@@ -137,11 +138,10 @@ export function PoolBoardTable({
                     // Narrow on a phone, with a hairline so scores sliding under it read as "more that way".
                     className="sticky left-0 z-10 max-w-28 border-r border-edge/70 bg-panel px-2 py-1 text-left font-medium group-hover:bg-raised sm:max-w-none sm:border-r-0 sm:px-4"
                   >
-                    <a
-                      href={`https://beatleader.com/u/${row.beatLeaderId}`}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="flex items-center gap-1.5 hover:underline sm:gap-2.5"
+                    <PlayerLink
+                      playerId={row.playerId}
+                      name={row.playerName}
+                      className="flex w-full items-center gap-1.5 hover:underline sm:gap-2.5"
                     >
                       <span className="hidden sm:inline-flex">
                         <Avatar src={row.avatar} name={row.playerName} size={26} ring={team.color} />
@@ -152,7 +152,7 @@ export function PoolBoardTable({
                       >
                         {row.playerName}
                       </span>
-                    </a>
+                    </PlayerLink>
                   </th>
 
                   {row.cells.map((cell) => (
@@ -296,6 +296,11 @@ function Cell({
           ★
         </span>
       )}
+      {cell.platform === 'SS' && (
+        <span className="absolute bottom-0.5 right-1 text-[8px] font-bold tracking-wide opacity-70" aria-label="Set on ScoreSaber">
+          SS
+        </span>
+      )}
       {cell.fullCombo && (
         <span className="absolute left-1 top-0.5 text-[8px] font-bold tracking-wide opacity-70">
           FC
@@ -310,6 +315,7 @@ function Cell({
       title={
         [
           cell.rank ? `#${cell.rank} in this pool` : null,
+          cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
           cell.isDnf
             ? 'Abandoned or anomalous run - far below this player’s normal and everyone else on this map. Not counted.'

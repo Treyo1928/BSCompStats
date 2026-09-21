@@ -81,6 +81,12 @@ export interface BLPlayer {
   countryRank?: number;
   banned?: boolean;
   inactive?: boolean;
+  /** The skill triangle, in pp. */
+  accPp?: number;
+  techPp?: number;
+  passPp?: number;
+  /** Present when asked for with `?stats=true`. */
+  scoreStats?: { rankedPlayCount?: number; totalPlayCount?: number } | null;
 }
 
 export interface BLScore {

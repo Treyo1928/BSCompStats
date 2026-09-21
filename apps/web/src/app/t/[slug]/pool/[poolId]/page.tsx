@@ -28,6 +28,8 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { buildPoolOutlook } from '@/server/outlook';
 import { getPoolSummary } from '@/server/summaries';
+import { PlayerAvatarStack } from '@/components/player-card';
+import { MapKindForm } from '@/components/map-kind-form';
 import { getActorOrAnonymous } from '@/server/session';
 import { setPredictionEstimate, setStatsScope, triggerRefresh } from '@/server/actions';
 
@@ -442,7 +444,7 @@ export default async function PoolPage({
         <Panel title="Maps" subtitle="How each one played out for this field">
           <ul className="grid gap-2 sm:grid-cols-2">
             {board.maps.map((map) => (
-              <li key={map.leaderboardId}>
+              <li key={map.leaderboardId} className="flex flex-col">
                 <a
                   href={`https://beatleader.com/leaderboard/global/${map.leaderboardId}`}
                   target="_blank"
@@ -487,9 +489,19 @@ export default async function PoolPage({
                     </div>
                   )}
                 </a>
+                {can(actor, 'IMPORT_POOL') && (
+                  <MapKindForm poolMapId={map.poolMapId} kind={map.category} guess={map.autoCategory} />
+                )}
               </li>
             ))}
           </ul>
+          {can(actor, 'IMPORT_POOL') && (
+            <p className="mt-3 text-xs text-faint">
+              The kind under each map is yours to set. Until you do, it is a guess from BeatLeader&apos;s
+              ratings, which often calls a slow, awkward map &quot;speed&quot; because it is hard to pass. Player
+              styles and the Acc / Tech / Speed rankings all follow these labels.
+            </p>
+          )}
         </Panel>
 
         <Panel title="Model" subtitle="What the predictions are based on">
@@ -601,6 +613,7 @@ function Legend() {
         <span className="rounded border border-dashed border-edge px-1 italic text-faint">~95%</span>
         predicted, not played
       </span>
+      <span className="text-ink/80">Tap a player&apos;s name for their overview and stats</span>
       <span
         className="flex items-center gap-1.5"
         title="Far below that player's normal and far below everyone else on the map. Left out of averages and predictions. A low score on a map that is simply beyond a player is a real score and counts as one."
@@ -665,7 +678,7 @@ function LineupCell({
 }) {
   return (
     <span className="flex items-center gap-2">
-      <AvatarStack people={people} size={24} ring={ring} />
+      <PlayerAvatarStack people={people} size={24} ring={ring} />
       <span className="min-w-0 truncate text-xs text-muted">{people.map((p) => p.name).join(', ')}</span>
     </span>
   );

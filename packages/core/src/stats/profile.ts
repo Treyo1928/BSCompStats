@@ -38,6 +38,20 @@ export interface PlayerProfile {
   skill: number;
   /** Residual spread on unflagged runs, logit units, on a map of typical scatter. */
   sigma: number;
+  /**
+   * What players are ranked by: skill less two standard errors, logit units.
+   *
+   * Skill alone is kind to a thin record. Someone who has posted three scores,
+   * all on the easy maps, is shrunk toward the field average and never pays
+   * for the hard maps they have not played - while the teammate who did play
+   * them carries those scores. On the MSU board that put Alex (3 scores) above
+   * Kadence (7, one of them a 50% on Spin Eternally). The rating is where we
+   * can be fairly sure a player is at least this good, so a record has to be
+   * both good and long to rank high.
+   */
+  rating: number;
+  /** Scores that are not anomalies - what the rating's certainty rests on. */
+  cleanCount: number;
 
   meanAcc: number;
   medianAcc: number;
@@ -73,6 +87,9 @@ export interface BuildProfilesInput {
   /** leaderboardId -> organiser's category tag ("Tech", "Speed", ...). */
   categories?: Readonly<Record<string, string | null | undefined>>;
 }
+
+/** Standard errors taken off skill to get the rating. Two is roughly "97% sure they are at least this good". */
+export const RATING_CAUTION = 2;
 
 export function buildPlayerProfiles(
   input: BuildProfilesInput,
@@ -126,6 +143,10 @@ export function buildPlayerProfiles(
       scoreCount: scores.length,
       skill: input.model.playerBias[playerId] ?? 0,
       sigma: input.model.playerSigma[playerId] ?? input.model.globalSigma,
+      rating:
+        (input.model.playerBias[playerId] ?? 0) -
+        RATING_CAUTION * (input.model.globalSigma / Math.sqrt(Math.max(1, clean.length))),
+      cleanCount: clean.length,
 
       meanAcc: mean(accs),
       medianAcc: median(accs),

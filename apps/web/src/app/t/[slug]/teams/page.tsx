@@ -19,8 +19,9 @@ import {
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
-import { AddPlayerForm, ConfirmSubmit, MemberControls } from '@/components/roster-controls';
+import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
+import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
 
 export const dynamic = 'force-dynamic';
@@ -90,6 +91,7 @@ export default async function TeamsPage({
                       pp: true,
                       avatar: true,
                       userId: true,
+                      scoreSaberId: true,
                     },
                   },
                 },
@@ -114,7 +116,7 @@ export default async function TeamsPage({
       <PageHeader
         crumbs={[{ label: tournament.name, href: `/t/${slug}` }]}
         title="Teams and rosters"
-        meta={`${entered.length} teams · ${new Set(entered.flatMap((t) => t.members.map((m) => m.player.id))).size} players`}
+        meta={`${entered.length} teams · ${new Set(entered.flatMap((t) => t.members.map((m) => m.player.id))).size} players · tap a player for their overview and stats`}
       />
 
       <FormError message={error} />
@@ -140,8 +142,16 @@ export default async function TeamsPage({
                   </Badge>
                 )}
               </h2>
-              <span className="shrink-0 text-xs text-muted">
-                {team.members.filter((m) => m.available).length} of {team.members.length} available
+              <span className="flex shrink-0 items-center gap-3 text-xs text-muted">
+                <span className="hidden sm:inline">
+                  {team.members.filter((m) => m.available).length} of {team.members.length} available
+                </span>
+                <Link
+                  href={`/t/${slug}/stats?team=${team.id}`}
+                  className="inline-flex h-8 items-center rounded-lg border border-edge-strong bg-panel/60 px-2.5 font-medium text-ink transition hover:border-faint"
+                >
+                  Team stats →
+                </Link>
               </span>
             </div>
 
@@ -153,10 +163,9 @@ export default async function TeamsPage({
                 {team.members.map((member) => (
                   // On a phone the controls drop to their own line rather than squeezing the name out.
                   <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
-                    <a
-                      href={`https://beatleader.com/u/${member.player.beatLeaderId}`}
-                      target="_blank"
-                      rel="noreferrer noopener"
+                    <PlayerLink
+                      playerId={member.player.id}
+                      name={member.player.name}
                       className="-ml-2 flex min-w-0 flex-1 basis-full items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised sm:basis-0"
                     >
                       <Avatar
@@ -194,7 +203,12 @@ export default async function TeamsPage({
                       <span className="w-14 shrink-0 text-right text-xs tabular text-muted sm:w-16">
                         {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
                       </span>
-                    </a>
+                    </PlayerLink>
+                    {member.player.scoreSaberId ? (
+                      <Badge title="ScoreSaber is linked, so their scores and pp there count too">SS</Badge>
+                    ) : (
+                      canManage && <LinkScoreSaber memberId={member.id} playerName={member.player.name} />
+                    )}
                     {(canManage || isCaptainOf(actor, team.id)) && (
                       <MemberControls
                         memberId={member.id}

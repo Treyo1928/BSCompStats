@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react';
 import {
+  addPlayerFromScoreSaber,
   addPlayerToTeam,
+  linkScoreSaberToMember,
+  searchScoreSaberCandidates,
+  searchScoreSaberForMember,
   removePlayerFromTeam,
   searchPlayerCandidates,
   setMemberStatus,
@@ -13,20 +17,49 @@ import { Avatar, Badge, Button, Field, FieldAction, inputClass } from './ui';
 
 const UNREACHABLE = 'The server could not be reached. Check your connection and try again.';
 
+type Platform = 'beatleader' | 'scoresaber';
+const PLATFORM_LABEL: Record<Platform, string> = { beatleader: 'BeatLeader', scoresaber: 'ScoreSaber' };
+
 /**
  * Adding a player is a two-step affair: search, then pick.
  *
- * Names on BeatLeader are not unique and the top hit is often not the person
- * meant, so nothing is added until the organiser has chosen from the list.
+ * Names are not unique on either site and the top hit is often not the person
+ * meant, so nothing is added until the organiser has chosen from the list. The
+ * search runs on whichever platform is picked: plenty of players are known by
+ * their ScoreSaber name, or are on ScoreSaber and nowhere else.
  */
 export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: string }) {
   return (
     <PlayerPicker
       title={`Add to ${teamName}`}
       label="Add player"
-      search={(query) => searchPlayerCandidates(teamId, query)}
-      add={(candidate) => addPlayerToTeam(teamId, candidate.beatLeaderId)}
+      platforms={['beatleader', 'scoresaber']}
+      search={(query, platform) =>
+        platform === 'scoresaber' ? searchScoreSaberCandidates(teamId, query) : searchPlayerCandidates(teamId, query)
+      }
+      add={(candidate, platform) =>
+        platform === 'scoresaber'
+          ? addPlayerFromScoreSaber(teamId, candidate.beatLeaderId)
+          : addPlayerToTeam(teamId, candidate.beatLeaderId)
+      }
       className="mt-3 border-t border-[var(--color-edge)] pt-3"
+    />
+  );
+}
+
+/** Links a rostered player's ScoreSaber: search there, pick the right profile. */
+export function LinkScoreSaber({ memberId, playerName }: { memberId: string; playerName: string }) {
+  return (
+    <PlayerPicker
+      title={`${playerName} on ScoreSaber`}
+      label="Link ScoreSaber"
+      platforms={['scoresaber']}
+      compact
+      initialQuery={playerName}
+      takenLabel="In use"
+      // Any team of this tournament will do for the permission check; the member's own is the obvious one.
+      search={(query) => searchScoreSaberForMember(memberId, query)}
+      add={(candidate) => linkScoreSaberToMember(memberId, candidate.beatLeaderId)}
     />
   );
 }
@@ -37,18 +70,27 @@ export function PlayerPicker({
   label,
   search: runSearch,
   add: runAdd,
+  platforms = ['beatleader'],
+  compact = false,
+  initialQuery = '',
   takenLabel = 'On team',
   className = '',
 }: {
   title: string;
   label: string;
-  search: (query: string) => Promise<{ candidates: PlayerCandidate[]; error?: string }>;
-  add: (candidate: PlayerCandidate) => Promise<{ error?: string }>;
+  search: (query: string, platform: Platform) => Promise<{ candidates: PlayerCandidate[]; error?: string }>;
+  add: (candidate: PlayerCandidate, platform: Platform) => Promise<{ error?: string }>;
+  /** Which sites can be searched. More than one puts tabs in the dialog. */
+  platforms?: Platform[];
+  /** A small button that opens the dialog, in place of the search box - for a roster row. */
+  compact?: boolean;
+  initialQuery?: string;
   /** Shown against a candidate with `onTeam` set, who cannot be added again. */
   takenLabel?: string;
   className?: string;
 }) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
+  const [platform, setPlatform] = useState<Platform>(platforms[0]!);
   const [candidates, setCandidates] = useState<PlayerCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<string | null>(null);
@@ -61,14 +103,17 @@ export function PlayerPicker({
     if (!open && dialog.current?.open) dialog.current.close();
   }, [open]);
 
-  function search(event: React.FormEvent) {
-    event.preventDefault();
-    if (!query.trim()) return;
+  function search(on: Platform = platform, event?: React.FormEvent) {
+    event?.preventDefault();
+    if (!query.trim()) {
+      setCandidates((current) => current ?? []);
+      return;
+    }
     startSearch(async () => {
       // A rejected action inside a transition takes the whole page down with
       // it, and "the request did not get through" is not worth that.
       try {
-        const result = await runSearch(query);
+        const result = await runSearch(query, on);
         setError(result.error ?? null);
         setCandidates(result.candidates);
       } catch {
@@ -82,7 +127,7 @@ export function PlayerPicker({
     setAdding(candidate.beatLeaderId);
     let result: { error?: string };
     try {
-      result = await runAdd(candidate);
+      result = await runAdd(candidate, platform);
     } catch {
       result = { error: UNREACHABLE };
     }
@@ -91,7 +136,7 @@ export function PlayerPicker({
       setError(result.error);
       return;
     }
-    setQuery('');
+    setQuery(initialQuery);
     close();
   }
 
@@ -100,25 +145,37 @@ export function PlayerPicker({
     setError(null);
   }
 
+  const hint =
+    platform === 'scoresaber'
+      ? 'ScoreSaber id, profile link, or name (four letters or more)'
+      : 'BeatLeader ID, profile link, or name to search';
+
   return (
     <>
-      <form onSubmit={search} className={`flex items-start gap-2 ${className}`}>
-        <div className="min-w-0 flex-1">
-          <Field label={label} hint="BeatLeader ID, profile link, or name to search">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className={inputClass}
-              required
-            />
-          </Field>
-        </div>
-        <FieldAction>
-          <Button type="submit" disabled={searching}>
-            {searching ? 'Searching…' : 'Add'}
-          </Button>
-        </FieldAction>
-      </form>
+      {compact ? (
+        <button
+          type="button"
+          onClick={() => search()}
+          disabled={searching}
+          title={`Find ${initialQuery || 'them'} on ScoreSaber and link the profile, so their ScoreSaber scores and pp count too`}
+          className="inline-flex h-7 items-center rounded-lg px-2 text-[11px] font-medium leading-none text-faint transition hover:bg-raised hover:text-ink disabled:opacity-50"
+        >
+          {searching ? '…' : label}
+        </button>
+      ) : (
+        <form onSubmit={(e) => search(platform, e)} className={`flex items-start gap-2 ${className}`}>
+          <div className="min-w-0 flex-1">
+            <Field label={label} hint={hint}>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} className={inputClass} required />
+            </Field>
+          </div>
+          <FieldAction>
+            <Button type="submit" disabled={searching}>
+              {searching ? 'Searching…' : 'Add'}
+            </Button>
+          </FieldAction>
+        </form>
+      )}
 
       <dialog
         ref={dialog}
@@ -128,14 +185,16 @@ export function PlayerPicker({
         className="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-xl border border-edge bg-panel p-0 text-ink shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-sm"
       >
         {open && (
-          <div className="flex max-h-[min(36rem,80vh)] flex-col">
+          <div className="flex max-h-[min(38rem,85vh)] flex-col">
             <div className="flex items-start justify-between gap-3 border-b border-edge px-4 py-3">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold tracking-tight">{title}</h3>
                 <p className="truncate text-xs text-muted">
-                  {candidates.length === 0
-                    ? `Nothing found for “${query}”`
-                    : `Who did you mean by “${query}”?`}
+                  {searching
+                    ? `Searching ${PLATFORM_LABEL[platform]}…`
+                    : candidates.length === 0
+                      ? `Nothing found on ${PLATFORM_LABEL[platform]} for “${query}”`
+                      : `Who did you mean by “${query}”?`}
                 </p>
               </div>
               <button
@@ -147,6 +206,42 @@ export function PlayerPicker({
                 ✕
               </button>
             </div>
+
+            {platforms.length > 1 && (
+              <div role="tablist" aria-label="Search on" className="flex gap-1 border-b border-edge bg-surface/40 p-1.5 text-xs">
+                {platforms.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    role="tab"
+                    aria-selected={platform === option}
+                    onClick={() => {
+                      setPlatform(option);
+                      search(option);
+                    }}
+                    className={`flex-1 rounded-md px-2 font-medium transition ${
+                      platform === option ? 'bg-accent/20 text-ink ring-1 ring-inset ring-accent/40' : 'text-muted hover:bg-raised'
+                    }`}
+                  >
+                    {PLATFORM_LABEL[option]}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Searching again without leaving the dialog: a different spelling, or the other site. */}
+            <form onSubmit={(e) => search(platform, e)} className="flex items-center gap-2 border-b border-edge px-3 py-2">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label={hint}
+                placeholder={hint}
+                className={`${inputClass} min-w-0 flex-1`}
+              />
+              <Button type="submit" variant="ghost" disabled={searching}>
+                Search
+              </Button>
+            </form>
 
             {error && (
               <p className="border-b border-edge bg-raised/60 px-4 py-2 text-xs text-warn">{error}</p>

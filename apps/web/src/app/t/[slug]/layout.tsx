@@ -2,6 +2,7 @@ import { prisma } from '@bscs/db';
 import { can } from '@/server/match-helpers';
 import { getActorOrAnonymous } from '@/server/session';
 import { TournamentNav, type TournamentNavItem } from '@/components/tournament-nav';
+import { PlayerCardProvider } from '@/components/player-card';
 
 /** Every page of a tournament gets the same strip of sections above it. */
 export default async function TournamentLayout({
@@ -27,18 +28,21 @@ export default async function TournamentLayout({
   const actor = await getActorOrAnonymous(tournament.id);
   if (!can(actor, 'VIEW', { isPublic: tournament.isPublic })) return children;
 
-  const items: TournamentNavItem[] = [
-    { href: `/t/${slug}`, label: 'Overview' },
-    ...tournament.pools.map((pool) => ({ href: `/t/${slug}/pool/${pool.id}`, label: pool.name })),
+  const pools: TournamentNavItem[] = tournament.pools.map((pool) => ({
+    href: `/t/${slug}/pool/${pool.id}`,
+    label: pool.name,
+  }));
+  const after: TournamentNavItem[] = [
     { href: `/t/${slug}/teams`, label: 'Teams' },
     { href: `/t/${slug}/stats`, label: 'Player stats', deep: true },
     ...(can(actor, 'CREATE_MATCH') ? [{ href: `/t/${slug}/custom`, label: 'Custom match' }] : []),
   ];
 
   return (
-    <>
-      <TournamentNav items={items} />
+    // The player card lives here, once, so any player named on any page beneath can open it.
+    <PlayerCardProvider slug={slug}>
+      <TournamentNav before={[{ href: `/t/${slug}`, label: 'Overview' }]} pools={pools} after={after} />
       {children}
-    </>
+    </PlayerCardProvider>
   );
 }

@@ -13,13 +13,18 @@ import { log } from './log.js';
  * they are good at. A scope that reaches past the pool needs the scores to
  * exist first, and this is what fetches them.
  *
- * Scores are read newest first and paging stops at the scope's age limit, or
- * as soon as a whole page is already stored - so the first run for a player is
- * a few dozen requests and later ones are usually one.
+ * Scores are read newest first. The first run for a player walks all the way
+ * back to the scope's age limit and records that it got there; only after that
+ * do later runs stop at the first page with nothing new, which makes them one
+ * request. The record matters: "a page with nothing new means the rest is
+ * stored" is only true once a backfill has finished. Before this was tracked,
+ * a backfill cut short by a restart left page one fully stored, so every later
+ * run stopped there and the player kept a fraction of their history for good.
  */
 
 const PAGE_SIZE = 100;
-const MAX_PAGES = 30;
+/** 6,000 scores. Reaching it counts as done: re-walking sixty pages every poll would never get further. */
+const MAX_PAGES = 60;
 
 export async function syncHistories(): Promise<{ players: number; written: number }> {
   const tournaments = await prisma.tournament.findMany({
@@ -28,21 +33,32 @@ export async function syncHistories(): Promise<{ players: number; written: numbe
       divisions: {
         select: {
           teams: {
-            select: { members: { select: { player: { select: { id: true, beatLeaderId: true, name: true } } } } },
+            select: {
+              members: {
+                select: { player: { select: { id: true, beatLeaderId: true, name: true, historyBackfilledTo: true } } },
+              },
+            },
           },
         },
       },
     },
   });
 
-  // Player -> the oldest score any of their tournaments wants (unix seconds; 0 = everything).
-  const wanted = new Map<string, { beatLeaderId: string; name: string; since: number }>();
+  // Player -> how far back to fetch (unix seconds; 0 = everything, which is what every tournament asks for now).
+  const wanted = new Map<string, { beatLeaderId: string; name: string; since: number; backfilledTo: number | null }>();
   const now = Math.floor(Date.now() / 1000);
 
   for (const tournament of tournaments) {
     const parsed = statsScopeSchema.safeParse(tournament.statsScope ?? {});
-    if (!parsed.success || parsed.data.source === 'POOL_ONLY') continue;
-    const since = parsed.data.maxAgeDays ? now - parsed.data.maxAgeDays * 86_400 : 0;
+    if (!parsed.success) continue;
+    if (parsed.data.source === 'POOL_ONLY' && !parsed.data.keepHistory) continue;
+    // Everything, however old. What the *model* learns from has an age limit,
+    // and applies it itself when it reads the scores. The download must not:
+    // the stats pages compare players on maps they have both played, a
+    // leaderboard score is a personal best that does not go stale, and a year's
+    // cutoff left three coaches with 729, 358 and 278 ranked scores sharing
+    // 8, 2 and 0 ranked maps between them instead of 79, 62 and 34.
+    const since = 0;
 
     for (const division of tournament.divisions) {
       for (const team of division.teams) {
@@ -52,6 +68,7 @@ export async function syncHistories(): Promise<{ players: number; written: numbe
             beatLeaderId: player.beatLeaderId,
             name: player.name,
             since: existing ? Math.min(existing.since, since) : since,
+            backfilledTo: player.historyBackfilledTo,
           });
         }
       }
@@ -61,7 +78,19 @@ export async function syncHistories(): Promise<{ players: number; written: numbe
   let written = 0;
   for (const [playerId, player] of wanted) {
     try {
-      written += await syncPlayerHistory(playerId, player.beatLeaderId, player.since);
+      // Complete only if an earlier walk reached at least as far back as is wanted now.
+      const complete = player.backfilledTo != null && player.backfilledTo <= player.since;
+      const result = await syncPlayerHistory(playerId, player.beatLeaderId, player.since, complete);
+      written += result.written;
+      if (!complete) {
+        log.info(
+          `history: backfilled ${player.name} - ${result.written} new scores over ${result.pages} pages` +
+            (result.hitPageLimit ? ` (stopped at the ${MAX_PAGES}-page limit; anything older is left out)` : ''),
+        );
+        if (result.finished) {
+          await prisma.player.update({ where: { id: playerId }, data: { historyBackfilledTo: player.since } });
+        }
+      }
     } catch (err) {
       log.warn(`history sync failed for ${player.name}`, err);
     }
@@ -69,17 +98,29 @@ export async function syncHistories(): Promise<{ players: number; written: numbe
   return { players: wanted.size, written };
 }
 
-async function syncPlayerHistory(playerId: string, beatLeaderId: string, since: number): Promise<number> {
+async function syncPlayerHistory(
+  playerId: string,
+  beatLeaderId: string,
+  since: number,
+  /** The history is already complete back to `since`, so only what is new needs fetching. */
+  complete: boolean,
+): Promise<{ written: number; pages: number; finished: boolean; hitPageLimit: boolean }> {
   let written = 0;
+  let pages = 0;
+  let finished = false;
 
   for (let page = 1; page <= MAX_PAGES; page++) {
+    pages = page;
     const { data } = await client.getPlayerScores(beatLeaderId, {
       page,
       count: PAGE_SIZE,
       sortBy: 'date',
       order: 'desc',
     });
-    if (data.length === 0) break;
+    if (data.length === 0) {
+      finished = true;
+      break;
+    }
 
     let pageWrites = 0;
     let reachedCutoff = false;
@@ -115,9 +156,19 @@ async function syncPlayerHistory(playerId: string, beatLeaderId: string, since: 
     }
 
     written += pageWrites;
-    // A page with nothing new means everything older is already stored.
-    if (reachedCutoff || pageWrites === 0 || data.length < PAGE_SIZE) break;
+    if (reachedCutoff || data.length < PAGE_SIZE) {
+      finished = true;
+      break;
+    }
+    // A page with nothing new means everything older is already stored - but
+    // only once a backfill has been all the way back. Until then, keep walking.
+    if (complete && pageWrites === 0) {
+      finished = true;
+      break;
+    }
   }
 
-  return written;
+  // Ran out of pages rather than history: as far as this is ever going to get.
+  const hitPageLimit = !finished;
+  return { written, pages, finished: true, hitPageLimit };
 }

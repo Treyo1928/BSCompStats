@@ -54,11 +54,22 @@ the last player left can play for both teams. The sides are real teams for the
 length of the match, so lineups, advice and captain permissions all work, and
 they are tidied away when the match is deleted.
 
-**Player stats, team first.** Every player against their teammates: rank on the
-team, maps where they are the team's best, how often they make the strongest
-duo, consistency, and a play style read off the model - specialist, anchor,
-steady, streaky, all-rounder. A lean toward a kind of map has to rest on two
-maps before it names a style; on one it is listed and marked as thin.
+**Player stats.** On the pool, players are ranked on like-for-like comparisons:
+the average gap to teammates over the maps both have actually played, overall
+and per kind of map, and the rank is always a rank of the number shown beside
+it. Across whole histories that only says who is more accurate, so the Ranked
+and All views rank by pp instead - overall and earned on each kind of map - and
+a player's specialty is read from where their pp comes from. Tap any player,
+anywhere, for a card with their overview and links on.
+
+**BeatLeader and ScoreSaber, equally.** Steam players are linked to ScoreSaber
+by themselves; anyone else pastes a profile, or an organiser finds them from
+the roster. Scores from both feed the same stats - a player's score on a map is
+their best on either site - and a Platform switch shows one site alone. pp from
+the two is never added: it is shown side by side and combined by standing.
+
+**Map kinds you can correct.** A map's kind (Acc, Tech, Speed...) is guessed
+from BeatLeader's ratings until an organiser sets it on the pool page.
 
 **Built for a phone.** Match night happens standing next to a headset.
 

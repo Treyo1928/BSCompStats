@@ -1,7 +1,9 @@
 import { categorizeMap } from '@bscs/core/beatleader';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
+import type { StatsScope } from '@bscs/core/stats';
 import { buildTournamentModel, failKey, type TournamentModel } from './stats';
+import { loadScores, type ScoreSource } from './score-sources';
 
 /**
  * The pool board: every tracked player against every map in a pool.
@@ -22,6 +24,8 @@ export interface BoardCell {
   misses: number;
   /** BeatLeader's web replay viewer for this score. Null when the score has no id. */
   replayUrl: string | null;
+  /** Where the score shown was set. Null when there is none. */
+  platform: 'BL' | 'SS' | null;
   /** Model estimate, shown when there is no real score. */
   predictedAcc: number;
   predictionConfidence: number;
@@ -121,7 +125,26 @@ export function loadBoardMembers(tournamentId: string) {
       isSub: true,
       role: true,
       player: {
-        select: { id: true, name: true, avatar: true, beatLeaderId: true, pp: true, rank: true },
+        select: {
+          id: true,
+          name: true,
+          avatar: true,
+          beatLeaderId: true,
+          pp: true,
+          rank: true,
+          accPp: true,
+          techPp: true,
+          passPp: true,
+          rankedPlayCount: true,
+          userId: true,
+          scoreSaberId: true,
+          ssPp: true,
+          ssRank: true,
+          ssCountryRank: true,
+          ssRankedPlayCount: true,
+          ssAvgRankedAcc: true,
+          ssSyncedAt: true,
+        },
       },
       team: {
         select: { id: true, name: true, color: true, colorSecondary: true, adHoc: true },
@@ -132,6 +155,10 @@ export function loadBoardMembers(tournamentId: string) {
 
 export async function buildPoolBoard(
   poolId: string,
+  /** Look at it over a different set of scores than the tournament is set to. */
+  overrideScope?: Partial<StatsScope>,
+  /** Which platform's scores to show and learn from. */
+  source: ScoreSource = 'both',
 ): Promise<PoolBoard | null> {
   const pool = await prisma.mapPool.findUnique({
     where: { id: poolId },
@@ -174,25 +201,11 @@ export async function buildPoolBoard(
   const leaderboardIds = pool.maps.map((m) => m.leaderboardId);
   const playerIds = [...new Set(members.map((m) => m.player.id))];
 
-  const scores = playerIds.length
-    ? await prisma.score.findMany({
-        where: { playerId: { in: playerIds }, leaderboardId: { in: leaderboardIds } },
-        select: {
-          playerId: true,
-          leaderboardId: true,
-          baseScore: true,
-          accuracy: true,
-          fullCombo: true,
-          missedNotes: true,
-          badCuts: true,
-          beatLeaderScoreId: true,
-        },
-      })
-    : [];
+  const scores = await loadScores(playerIds, { source, leaderboardIds });
 
   const scoreBy = new Map(scores.map((s) => [`${s.playerId}::${s.leaderboardId}`, s]));
 
-  const model = await buildTournamentModel(pool.tournamentId);
+  const model = await buildTournamentModel(pool.tournamentId, overrideScope, source);
 
   // Column ranks and field means, computed once per map.
   //
@@ -271,6 +284,7 @@ export async function buildPoolBoard(
         isDnf: model.failKeys.has(failKey(member.player.id, leaderboardId)),
         fullCombo: score?.fullCombo ?? false,
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
+        platform: score?.platform ?? null,
         // The stored replayUrl is the raw .bsor file, which a browser downloads.
         // The viewer takes the score id and plays it.
         replayUrl: score?.beatLeaderScoreId

@@ -102,7 +102,41 @@ model Player {
   pp        Float    @default(0)
   rank      Int      @default(0)
   countryRank Int    @default(0)
+  /// BeatLeader's skill triangle: pp earned for accuracy, for tech and for
+  /// passing (speed and stamina), over a player's whole ranked history. It is
+  /// the one picture of how someone plays that does not depend on which maps
+  /// they happen to share with the rest of a tournament.
+  accPp  Float @default(0)
+  techPp Float @default(0)
+  passPp Float @default(0)
+  /// How many ranked plays that triangle rests on. A handful is not a shape.
+  rankedPlayCount Int @default(0)
   lastSyncedAt DateTime?
+  /// How far back (unix seconds) this player's BeatLeader history is known to
+  /// be complete. Null until a backfill has walked all the way there. Without
+  /// it a backfill cut short by a restart could never be told from a finished
+  /// one, and was never resumed.
+  historyBackfilledTo Int?
+
+  // ScoreSaber: a second ranked system with its own pp, its own ranked maps and
+  // its own scores - for many players, years of them from before BeatLeader.
+  // `scoreSaberId` above is the link. For Steam players it is the same id as
+  // BeatLeader's and is found by itself; anyone else pastes their profile.
+  ssPp              Float     @default(0)
+  ssRank            Int       @default(0)
+  ssCountryRank     Int       @default(0)
+  ssRankedPlayCount Int       @default(0)
+  /// 0..1
+  ssAvgRankedAcc    Float     @default(0)
+  ssSyncedAt        DateTime?
+  /// When the automatic lookup was last tried, so a player who is not on
+  /// ScoreSaber is asked about once a week and not every five minutes.
+  ssCheckedAt       DateTime?
+  /// Set once every page of their scores has been walked. Until then a sync
+  /// keeps going rather than stopping at the first page with nothing new.
+  ssBackfilledAt    DateTime?
+  /// Someone chose to unlink. Stops the automatic lookup putting it straight back.
+  ssOptOut          Boolean   @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -113,6 +147,7 @@ model Player {
   lineupSlots  LineupSlot[]
   attempts     MatchMapAttempt[]
   draftSpots   DraftPlayer[]
+  scoreSaberScores ScoreSaberScore[]
   profile      PlayerProfile?
 
   @@index([userId])
@@ -278,6 +313,46 @@ model Score {
   @@unique([playerId, leaderboardId])
   @@index([leaderboardId])
   @@index([playerId])
+}
+
+/// A player's best on one ScoreSaber leaderboard. Kept apart from Score, which
+/// is keyed by BeatLeader's leaderboards: the two sites rank different maps and
+/// number them differently. `songHash` + `difficultyValue` + `mode` is what the
+/// two have in common, and is how a score here is matched to a map known there.
+model ScoreSaberScore {
+  id String @id @default(cuid())
+
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  ssLeaderboardId Int
+  /// Lowercase, as BeatMap.hash is.
+  songHash        String
+  /// 1 Easy .. 9 ExpertPlus, as Leaderboard.difficultyValue is.
+  difficultyValue Int
+  /// "SoloStandard", "SoloOneSaber", ...
+  gameMode        String
+  songName        String
+  stars           Float   @default(0)
+  ranked          Boolean @default(false)
+  maxScore        Int     @default(0)
+
+  baseScore   Int
+  /// 0..1. Zero where ScoreSaber has no max score to divide by.
+  accuracy    Float   @default(0)
+  pp          Float   @default(0)
+  modifiers   String  @default("")
+  fullCombo   Boolean @default(false)
+  missedNotes Int     @default(0)
+  badCuts     Int     @default(0)
+  /// Unix seconds.
+  timeset     Int     @default(0)
+
+  fetchedAt DateTime @default(now())
+
+  @@unique([playerId, ssLeaderboardId])
+  @@index([playerId])
+  @@index([songHash, difficultyValue])
 }
 
 /// Append-only log of every score seen on the live websocket feed. The REST API

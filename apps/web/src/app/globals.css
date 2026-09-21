@@ -95,7 +95,8 @@ body {
 
 /* Fingers, not cursors: nothing tappable is shorter than 44px. */
 @media (pointer: coarse) {
-  button,
+  /* [data-inline]: a button that sits inside a row or a stack which is already a fair target. */
+  button:not([data-inline]),
   select,
   summary,
   input:not([type="checkbox"], [type="radio"], [type="color"], [type="file"], [type="hidden"]) {

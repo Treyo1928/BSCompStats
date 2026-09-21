@@ -4,3 +4,6 @@ export * from './model.js';
 export * from './cv.js';
 export * from './profile.js';
 export * from './style.js';
+export * from './standings.js';
+export * from './specialty.js';
+export * from './pp-profile.js';

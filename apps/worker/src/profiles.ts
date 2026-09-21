@@ -3,7 +3,7 @@ import { client } from './sync.js';
 import { log } from './log.js';
 
 /**
- * Keep players' BeatLeader name, avatar and rank current.
+ * Keep players' BeatLeader name, avatar, rank and skill triangle current.
  *
  * A Player created by signing in knows only an id and a name - BeatLeader's
  * identity endpoint gives nothing else - so without this they have no picture
@@ -16,7 +16,15 @@ import { log } from './log.js';
 export async function syncProfiles(): Promise<number> {
   const stale = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const players = await prisma.player.findMany({
-    where: { OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: stale } }, { avatar: null }] },
+    where: {
+      OR: [
+        { lastSyncedAt: null },
+        { lastSyncedAt: { lt: stale } },
+        { avatar: null },
+        // Ranked, but synced before the skill triangle was kept: fetch it now rather than tomorrow.
+        { pp: { gt: 0 }, accPp: 0, techPp: 0, passPp: 0 },
+      ],
+    },
     select: { id: true, beatLeaderId: true },
     take: 200,
   });
@@ -35,6 +43,10 @@ export async function syncProfiles(): Promise<number> {
           pp: profile.pp ?? undefined,
           rank: profile.rank ?? undefined,
           countryRank: profile.countryRank ?? undefined,
+          accPp: profile.accPp ?? undefined,
+          techPp: profile.techPp ?? undefined,
+          passPp: profile.passPp ?? undefined,
+          rankedPlayCount: profile.scoreStats?.rankedPlayCount ?? undefined,
           lastSyncedAt: new Date(),
         },
       });

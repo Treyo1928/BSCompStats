@@ -134,7 +134,8 @@ export class BeatLeaderClient {
   }
 
   async getPlayer(playerId: string): Promise<BLPlayer | null> {
-    return this.get<BLPlayer>(`/player/${encodeURIComponent(playerId)}`);
+    // stats=true adds the play counts, which say how much the skill triangle rests on.
+    return this.get<BLPlayer>(`/player/${encodeURIComponent(playerId)}?stats=true`);
   }
 
   async searchPlayers(query: string): Promise<BLPlayer[]> {

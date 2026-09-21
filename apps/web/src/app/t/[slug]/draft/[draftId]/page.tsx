@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { draftSequence, parseDraftSettings } from '@bscs/core/match';
+import { compareOnSharedMaps, indexScores } from '@bscs/core/stats';
 import { can } from '@/server/match-helpers';
 import {
   Avatar,
@@ -18,13 +19,27 @@ import {
 } from '@/components/ui';
 import { ConfirmButton } from '@/components/confirm-button';
 import { MatchLive } from '@/components/match-live';
+import { PlayerLink } from '@/components/player-card';
 import { MatchOptions } from '@/components/custom-match-builder';
 import { getActorOrAnonymous } from '@/server/session';
 import { buildTournamentModel } from '@/server/stats';
+import { getDraftSummary } from '@/server/summaries';
 import { deleteDraft, draftPick, startDraftMatch, undoDraftPick } from '@/server/draft-actions';
 
 export const dynamic = 'force-dynamic';
-export const metadata: Metadata = { title: "Captains' draft" };
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string; draftId: string }>;
+}): Promise<Metadata> {
+  const { slug, draftId } = await params;
+  const draft = await getDraftSummary(slug, draftId);
+  if (!draft) return { title: "Captains' draft" };
+
+  const title = `Draft: ${draft.name} - ${draft.tournamentName}`;
+  return { title, description: draft.description, openGraph: { title, description: draft.description } };
+}
 
 const teamSelect = {
   id: true,
@@ -87,7 +102,16 @@ export default async function DraftPage({
   const complete = picked.length >= draft.players.length;
 
   // Strongest first: it is what a captain is scanning for.
-  const skillOf = (playerId: string) => model.profiles[playerId]?.skill ?? -Infinity;
+  // On like-for-like comparisons with everyone else in the draft, as the stats
+  // pages rank people - so the order here is one a captain can check there.
+  const index = indexScores(model.scores);
+  const everyone = [
+    ...draft.players.map((p) => p.player.id),
+    ...draft.teamA.members.map((m) => m.player.id),
+    ...draft.teamB.members.map((m) => m.player.id),
+  ];
+  const standing = new Map(everyone.map((id) => [id, compareOnSharedMaps(index, id, everyone).gap]));
+  const skillOf = (playerId: string) => standing.get(playerId) ?? -Infinity;
   const available = draft.players
     .filter((p) => p.pickNumber == null)
     .sort((a, b) => skillOf(b.player.id) - skillOf(a.player.id) || b.player.pp - a.player.pp);
@@ -238,8 +262,14 @@ export default async function DraftPage({
                 );
                 return (
                   <li key={member.player.id} className="flex items-center gap-2 px-3 py-2 sm:px-4">
-                    <Avatar src={member.player.avatar} name={member.player.name} size={26} ring={team.color} />
-                    <span className="min-w-0 flex-1 truncate font-medium">{member.player.name}</span>
+                    <PlayerLink
+                      playerId={member.player.id}
+                      name={member.player.name}
+                      className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
+                    >
+                      <Avatar src={member.player.avatar} name={member.player.name} size={26} ring={team.color} />
+                      <span className="min-w-0 flex-1 truncate font-medium">{member.player.name}</span>
+                    </PlayerLink>
                     <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-faint">
                       {member.role === 'CAPTAIN'
                         ? 'Capt'
@@ -260,7 +290,7 @@ export default async function DraftPage({
       {!complete && (
         <Panel
           title="Still available"
-          subtitle="Strongest first, by this tournament's model"
+          subtitle="Strongest first, on the maps they have in common with the rest of this draft"
           flush
         >
           {available.length === 0 ? (
@@ -271,22 +301,22 @@ export default async function DraftPage({
             <ul className="divide-y divide-edge/60">
               {available.map(({ player }) => {
                 const profile = model.profiles[player.id];
-                const style = model.styles[player.id];
                 return (
                   <li key={player.id} className="flex items-center gap-3 px-4 py-2">
+                    <PlayerLink playerId={player.id} name={player.name} className="flex min-w-0 flex-1 items-center gap-3">
                     <Avatar src={player.avatar} name={player.name} size={34} />
-                    <Link href={`/t/${slug}/stats/${player.id}`} className="min-w-0 flex-1">
+                    <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium hover:underline">{player.name}</span>
                       <span className="block truncate text-xs text-faint">
                         {[
                           profile?.meanAcc ? `${pct(profile.meanAcc)} avg` : 'no scores yet',
-                          style && !style.thin ? style.label : null,
                           player.pp > 0 ? `${Math.round(player.pp).toLocaleString('en-US')}pp` : null,
                         ]
                           .filter(Boolean)
                           .join(' · ')}
                       </span>
-                    </Link>
+                    </span>
+                    </PlayerLink>
                     {canPick && onTheClock && (
                       <form action={draftPick}>
                         <input type="hidden" name="draftId" value={draft.id} />

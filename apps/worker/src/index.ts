@@ -6,6 +6,7 @@ import { syncAll } from './sync.js';
 import { ScoreSocket } from './socket.js';
 import { syncHistories } from './history.js';
 import { syncProfiles } from './profiles.js';
+import { syncScoreSaber } from './scoresaber.js';
 
 /**
  * The ingestion worker.
@@ -40,6 +41,13 @@ async function poll(poolId?: string, reason = 'scheduled'): Promise<void> {
     if (profiles) log.info(`profiles: refreshed ${profiles} players`);
 
     // After the pool, so match-night scores are never waiting behind a backfill.
+    const scoreSaber = await syncScoreSaber();
+    if (scoreSaber.linked || scoreSaber.written) {
+      log.info(
+        `scoresaber: ${scoreSaber.linked} newly linked, ${scoreSaber.written} new scores across ${scoreSaber.synced} players`,
+      );
+    }
+
     const history = await syncHistories();
     if (history.written) {
       log.info(`history: ${history.written} new scores across ${history.players} players`);

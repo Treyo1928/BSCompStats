@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { PlayerProfile, ScoreDetail } from './profile.js';
+import { qualsObservations } from './__fixtures__/quals.js';
+import { fitSkillModel } from './model.js';
+import { classifyFails } from './normalize.js';
+import { buildPlayerProfiles, type PlayerProfile, type ScoreDetail } from './profile.js';
 import { buildPlayStyles } from './style.js';
 
 const profile = (playerId: string, over: Partial<PlayerProfile> = {}): PlayerProfile => ({
   playerId,
   scoreCount: 6,
   skill: 0,
+  rating: over.skill ?? 0,
+  cleanCount: 6,
   sigma: 0.3,
   meanAcc: 0.95,
   medianAcc: 0.95,
@@ -27,6 +32,7 @@ const profile = (playerId: string, over: Partial<PlayerProfile> = {}): PlayerPro
 const categories = { t1: 'Tech', t2: 'Tech', s1: 'Speed', a1: 'Acc' };
 const scoresFor = (playerId: string, ids: string[]): ScoreDetail[] =>
   ids.map((leaderboardId) => ({ playerId, leaderboardId, acc: 0.95, isDnf: false }));
+const level = { Tech: 0, Speed: 0, Acc: 0 };
 
 const build = (profiles: PlayerProfile[], scores: ScoreDetail[] = []) =>
   buildPlayStyles({
@@ -36,51 +42,40 @@ const build = (profiles: PlayerProfile[], scores: ScoreDetail[] = []) =>
   });
 
 describe('buildPlayStyles', () => {
-  it('names a specialist when the lean is real and rests on more than one map', () => {
+  it('passes no verdict on what anyone is good or bad at', () => {
+    // A heavy lean against their own level is kept as a figure, and nothing more:
+    // whether it matters depends on their teammates, which this cannot see.
     const styles = build(
-      [profile('p', { categoryAffinity: { Tech: 0.4, Speed: -0.3, Acc: 0 } }), profile('q'), profile('r')],
-      scoresFor('p', ['t1', 't2', 's1', 'a1']),
+      [profile('p', { categoryAffinity: { Speed: -0.9, Tech: 0.4, Acc: 0 } }), profile('q', { categoryAffinity: level })],
+      scoresFor('p', ['s1', 't1', 't2', 'a1']),
     );
-    expect(styles.p!.label).toBe('Tech specialist');
     expect(styles.p!.categories.map((c) => c.category)).toEqual(['Tech', 'Acc', 'Speed']);
-    expect(styles.p!.categories[0]!.maps).toBe(2);
-    expect(styles.p!.traits.map((t) => t.key)).toEqual(expect.arrayContaining(['strength', 'weakness']));
+    expect(styles.p!.categories[0]).toMatchObject({ maps: 2, fieldRank: 1, fieldSize: 2 });
+    expect(styles.p!.traits.map((t) => t.key)).not.toEqual(expect.arrayContaining(['strength']));
+    expect(styles.p!.traits.map((t) => t.key)).not.toEqual(expect.arrayContaining(['weakness']));
+    expect(styles.p).not.toHaveProperty('label');
   });
 
-  it('does not crown a specialist on one map, but still lists the lean', () => {
-    const styles = build(
-      [profile('p', { categoryAffinity: { Speed: 0.5, Tech: -0.2 } }), profile('q'), profile('r')],
-      scoresFor('p', ['s1', 't1', 't2']),
-    );
-    expect(styles.p!.archetype).toBe('ALL_ROUNDER');
-    expect(styles.p!.summary).toContain('The exception so far is Speed');
-    expect(styles.p!.traits.find((t) => t.key === 'strength')?.detail).toContain('thin evidence');
-  });
-
-  it('calls the strong, predictable player the anchor', () => {
+  it('calls a tight spread consistent, given enough scores to know', () => {
     const styles = build([
-      profile('top', { skill: 1, sigma: 0.1 }),
-      profile('mid', { skill: 0, sigma: 0.3 }),
-      profile('low', { skill: -1, sigma: 0.3 }),
+      profile('steady', { sigma: 0.1, categoryAffinity: level }),
+      profile('few', { sigma: 0.1, scoreCount: 3, cleanCount: 3, categoryAffinity: level }),
+      profile('a', { categoryAffinity: level }),
+      profile('b', { categoryAffinity: level }),
     ]);
-    expect(styles.top!.archetype).toBe('ANCHOR');
-    expect(styles.top!.percentiles.skill).toBe(1);
-    expect(styles.low!.percentiles.skill).toBe(0);
-    expect(styles.mid!.archetype).toBe('ALL_ROUNDER');
+    expect(styles.steady!.traits.map((t) => t.key)).toContain('consistent');
+    expect(styles.few!.traits.map((t) => t.key)).not.toContain('consistent');
+    expect(styles.steady!.percentiles.consistency).toBe(1);
   });
 
   it('calls a wide spread streaky', () => {
     const styles = build([profile('wild', { sigma: 0.9 }), profile('a'), profile('b')]);
-    expect(styles.wild!.archetype).toBe('STREAKY');
+    expect(styles.wild!.traits.map((t) => t.key)).toContain('streaky');
   });
 
   it('says nothing about a player with too few scores', () => {
-    const styles = build([
-      profile('new', { scoreCount: 2, categoryAffinity: { Tech: 2 }, handBalance: 5 }),
-      profile('a'),
-    ]);
+    const styles = build([profile('new', { scoreCount: 2, handBalance: 5 }), profile('a')]);
     expect(styles.new!.thin).toBe(true);
-    expect(styles.new!.archetype).toBe('UNKNOWN');
     expect(styles.new!.traits).toEqual([]);
   });
 
@@ -90,5 +85,25 @@ describe('buildPlayStyles', () => {
     expect(keys).toContain('hand');
     expect(keys).toContain('abandons');
     expect(styles.p!.traits.find((t) => t.key === 'hand')!.label).toBe('Right hand leads');
+  });
+});
+
+describe('rating, on the real MSU board', () => {
+  const raw = qualsObservations();
+  const flags = classifyFails(raw);
+  const scores = raw.map((o, i) => ({ ...o, isDnf: flags[i]! }));
+  const model = fitSkillModel(scores, { latentFactors: 0, biasRegularization: 0.5 });
+  const profiles = buildPlayerProfiles({ scores, model });
+
+  it('does not let three easy-map scores outrank seven that include the hard maps', () => {
+    // Alex has played the three easiest maps and nothing else. Kadence has
+    // played all seven, and carries a 50% on Spin Eternally for it.
+    expect(profiles.alex!.skill).toBeGreaterThan(profiles.kadence!.skill);
+    expect(profiles.alex!.rating).toBeLessThan(profiles.kadence!.rating);
+  });
+
+  it('still ranks a short record above a long one when it is clearly better', () => {
+    expect(profiles.will!.cleanCount).toBe(3);
+    expect(profiles.will!.rating).toBeGreaterThan(profiles.cat!.rating);
   });
 });

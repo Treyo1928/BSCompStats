@@ -1,4 +1,4 @@
-import type { PlayStyle } from '@bscs/core/stats';
+import type { Specialty } from '@bscs/core/stats';
 import { Badge } from './ui';
 
 /** A difference between two accuracies, in points: "+1.24". */
@@ -7,20 +7,20 @@ export function signedPoints(diff: number, digits = 2): string {
   return `${points >= 0 ? '+' : '−'}${Math.abs(points).toFixed(digits)}`;
 }
 
-export function StyleBadge({ style }: { style: PlayStyle | null }) {
+// Amber, not red, for the worst kind: everyone has one, and it is a place to look, not a verdict.
+const BADGE_TONE = { good: 'win', warn: 'warn', neutral: 'accent' } as const;
+
+/** "Tech specialist" and "Worst on Acc" - one of each for everyone, and about the player rather than their team. */
+export function StyleBadges({ style }: { style: Pick<Specialty, 'badges' | 'summary'> | null }) {
   if (!style) return <Badge>No scores</Badge>;
-  const tone =
-    style.archetype === 'UNKNOWN'
-      ? 'neutral'
-      : style.archetype === 'STREAKY'
-        ? 'warn'
-        : style.archetype === 'ANCHOR' || style.archetype === 'STEADY'
-          ? 'win'
-          : 'accent';
   return (
-    <Badge tone={tone} title={style.summary}>
-      {style.label}
-    </Badge>
+    <>
+      {style.badges.map((badge) => (
+        <Badge key={badge.label} tone={BADGE_TONE[badge.tone]} title={style.summary}>
+          {badge.label}
+        </Badge>
+      ))}
+    </>
   );
 }
 

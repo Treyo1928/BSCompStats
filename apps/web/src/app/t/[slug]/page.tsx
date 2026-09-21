@@ -21,6 +21,7 @@ import {
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
 import { NewMatchForm } from '@/components/new-match-form';
+import { PlayerAvatarStack } from '@/components/player-card';
 import { tallyMaps } from '@/server/match-summary';
 import { getTournamentSummary } from '@/server/summaries';
 import {
@@ -225,7 +226,21 @@ export default async function TournamentPage({
       <FormError message={error} />
 
       {/* Matches first: on match night this is what everyone came for. */}
-      <Panel title="Matches" subtitle={currentMatches.length > 0 ? 'Under way or still to play' : undefined}>
+      <Panel
+        title="Matches"
+        subtitle={currentMatches.length > 0 ? 'Under way or still to play' : undefined}
+        actions={
+          can(actor, 'CREATE_MATCH') ? (
+            <Link
+              href={`/t/${tournament.slug}/custom`}
+              title="A match between sides that are not tournament teams: chosen by hand, or drafted by two captains"
+              className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border border-edge bg-raised/60 px-3 text-sm font-medium text-ink transition hover:border-faint hover:bg-raised"
+            >
+              <span className="text-accent">+</span> Custom match
+            </Link>
+          ) : null
+        }
+      >
         {currentMatches.length === 0 ? (
           <Empty>
             {finishedMatches.length === 0
@@ -370,12 +385,20 @@ export default async function TournamentPage({
           title="Teams"
           actions={
             teams.length > 0 ? (
-              <Link
-                href={`/t/${tournament.slug}/teams`}
-                className="text-xs text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
-              >
-                Manage rosters
-              </Link>
+              <>
+                <Link
+                  href={`/t/${tournament.slug}/stats`}
+                  className="inline-flex h-8 items-center rounded-lg border border-edge-strong bg-raised/60 px-2.5 text-xs font-medium text-ink transition hover:border-faint"
+                >
+                  Player stats →
+                </Link>
+                <Link
+                  href={`/t/${tournament.slug}/teams`}
+                  className="text-xs text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+                >
+                  Manage rosters
+                </Link>
+              </>
             ) : null
           }
         >
@@ -384,32 +407,28 @@ export default async function TournamentPage({
           ) : (
             <ul className="space-y-2">
               {teams.map((team) => (
-                <li key={team.id}>
-                  <Link
-                    href={`/t/${tournament.slug}/teams`}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-edge px-3 py-2.5 transition hover:border-faint"
-                    style={{
-                      background: `linear-gradient(90deg, ${teamWash(team.color, 0.7)}, transparent 60%)`,
-                      borderLeft: `3px solid ${team.color}`,
-                    }}
-                  >
-                    <div className="min-w-0">
-                      <p
-                        className="truncate font-semibold"
-                        style={{ color: teamInk(team.color, team.colorSecondary) }}
-                      >
-                        {team.name}
-                      </p>
-                      <p className="truncate text-xs text-muted">
-                        {team.members.map((m) => m.player.name).join(', ') || 'No players yet'}
-                      </p>
-                    </div>
-                    <AvatarStack
-                      people={team.members.map((m) => m.player)}
-                      size={28}
-                      ring={team.color}
-                    />
+                <li
+                  key={team.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-edge px-3 py-2.5 transition hover:border-faint"
+                  style={{
+                    background: `linear-gradient(90deg, ${teamWash(team.color, 0.7)}, transparent 60%)`,
+                    borderLeft: `3px solid ${team.color}`,
+                  }}
+                >
+                  <Link href={`/t/${tournament.slug}/stats?team=${team.id}`} className="group min-w-0 flex-1">
+                    <p
+                      className="truncate font-semibold group-hover:underline"
+                      style={{ color: teamInk(team.color, team.colorSecondary) }}
+                    >
+                      {team.name}
+                    </p>
+                    <p className="truncate text-xs text-muted">
+                      {team.members.length > 0
+                        ? `${team.members.length} players · team stats →`
+                        : 'No players yet'}
+                    </p>
                   </Link>
+                  <PlayerAvatarStack people={team.members.map((m) => m.player)} size={28} ring={team.color} />
                 </li>
               ))}
             </ul>
