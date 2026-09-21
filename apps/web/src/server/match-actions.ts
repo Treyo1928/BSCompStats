@@ -276,8 +276,10 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
         : (mm.lineups[0]?.slots ?? []).map((s) => s.playerId),
   }));
 
+  // Only players who can actually be fielded: not an absent one, not a sub who
+  // has not been switched in.
   const roster = await prisma.teamMember.findMany({
-    where: { teamId },
+    where: { teamId, available: true },
     select: { playerId: true, player: { select: { name: true } } },
   });
   const names = new Map(roster.map((r) => [r.playerId, r.player.name]));

@@ -5,6 +5,7 @@ import {
   addPlayerToTeam,
   removePlayerFromTeam,
   searchPlayerCandidates,
+  setMemberStatus,
   setTeamCaptain,
   type PlayerCandidate,
 } from '@/server/actions';
@@ -173,17 +174,29 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
   );
 }
 
-/** The per-row controls a roster manager gets: captain toggle and remove. */
+/**
+ * The per-row controls on a roster.
+ *
+ * Availability (sub in/out, absent) is open to the team's own captain as well
+ * as organisers; captaincy and removal are for organisers only.
+ */
 export function MemberControls({
   memberId,
   playerName,
   teamName,
   isCaptain,
+  isSub,
+  available,
+  canManage,
 }: {
   memberId: string;
   playerName: string;
   teamName: string;
   isCaptain: boolean;
+  isSub: boolean;
+  available: boolean;
+  /** Organiser-level control. False for a captain, who only sets availability. */
+  canManage: boolean;
 }) {
   const [pending, start] = useTransition();
   const [failed, setFailed] = useState(false);
@@ -199,40 +212,90 @@ export function MemberControls({
     });
   }
 
-  const captainLabel = isCaptain
-    ? `Remove ${playerName} as captain`
-    : `Make ${playerName} captain of ${teamName}`;
+  const pill =
+    'inline-flex h-7 items-center rounded-lg px-2 text-[11px] font-medium leading-none transition hover:bg-raised disabled:opacity-50';
+  const glyph =
+    'inline-flex h-7 w-7 items-center justify-center rounded-lg text-[13px] leading-none transition disabled:opacity-50';
+
+  const availabilityLabel = isSub
+    ? available
+      ? `Switch ${playerName} out`
+      : `Switch ${playerName} in`
+    : available
+      ? `Mark ${playerName} absent`
+      : `Mark ${playerName} present`;
 
   return (
     <span className="-mr-2 flex shrink-0 items-center" title={failed ? UNREACHABLE : undefined}>
       <button
         type="button"
         disabled={pending}
-        aria-pressed={isCaptain}
-        title={captainLabel}
-        aria-label={captainLabel}
-        onClick={() => run(() => setTeamCaptain(memberId, !isCaptain))}
-        className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-raised disabled:opacity-50 ${
-          isCaptain ? 'text-accent' : 'text-faint hover:text-ink'
-        }`}
+        aria-pressed={!available}
+        title={`${availabilityLabel}. Players who are out are left out of lineups and predictions.`}
+        onClick={() => run(() => setMemberStatus(memberId, { available: !available }))}
+        className={`${pill} ${available ? 'text-faint hover:text-ink' : 'text-warn'}`}
       >
-        {isCaptain ? '★' : '☆'}
+        {isSub ? (available ? 'In' : 'Out') : available ? 'Here' : 'Absent'}
       </button>
       <button
         type="button"
         disabled={pending}
-        title={`Remove ${playerName} from ${teamName}`}
-        aria-label={`Remove ${playerName} from ${teamName}`}
-        onClick={() => {
-          if (!window.confirm(`Remove ${playerName} from ${teamName}?`)) return;
-          run(() => removePlayerFromTeam(memberId));
-        }}
-        className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-red-600/20 hover:text-lose disabled:opacity-50 ${
-          failed ? 'text-warn' : 'text-faint'
-        }`}
+        aria-pressed={isSub}
+        title={isSub ? `Make ${playerName} a regular player` : `Make ${playerName} a substitute`}
+        onClick={() => run(() => setMemberStatus(memberId, { isSub: !isSub }))}
+        className={`${pill} ${isSub ? 'text-accent' : 'text-faint hover:text-ink'}`}
       >
-        ✕
+        Sub
       </button>
+      {canManage && (
+        <>
+          <button
+            type="button"
+            disabled={pending}
+            aria-pressed={isCaptain}
+            title={isCaptain ? `Remove ${playerName} as captain` : `Make ${playerName} captain of ${teamName}`}
+            aria-label={isCaptain ? `Remove ${playerName} as captain` : `Make ${playerName} captain of ${teamName}`}
+            onClick={() => run(() => setTeamCaptain(memberId, !isCaptain))}
+            className={`${glyph} hover:bg-raised ${isCaptain ? 'text-accent' : 'text-faint hover:text-ink'}`}
+          >
+            {isCaptain ? '★' : '☆'}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            title={`Remove ${playerName} from ${teamName}`}
+            aria-label={`Remove ${playerName} from ${teamName}`}
+            onClick={() => {
+              if (!window.confirm(`Remove ${playerName} from ${teamName}?`)) return;
+              run(() => removePlayerFromTeam(memberId));
+            }}
+            className={`${glyph} hover:bg-red-600/20 hover:text-lose ${failed ? 'text-warn' : 'text-faint'}`}
+          >
+            ✕
+          </button>
+        </>
+      )}
     </span>
+  );
+}
+
+/** A submit button that asks first. For the few actions that cannot be undone. */
+export function ConfirmSubmit({
+  question,
+  children,
+}: {
+  question: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      type="submit"
+      variant="danger"
+      onClick={(event) => {
+        if (!window.confirm(question)) event.preventDefault();
+      }}
+    >
+      {children}
+    </Button>
   );
 }

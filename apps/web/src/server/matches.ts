@@ -237,8 +237,8 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     state: match.state,
     tournament: match.tournament,
     format,
-    teamA: toTeamView(match.teamA),
-    teamB: toTeamView(match.teamB),
+    teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),
+    teamB: toTeamView(match.teamB, match.state === 'COMPLETE'),
     coinFlipWinnerId: match.coinFlipWinnerId,
     pool: { id: match.pool.id, name: match.pool.name, maps: poolMaps },
     actions: match.actions.map((action) => ({
@@ -263,14 +263,22 @@ function toTeamView(team: {
   name: string;
   color: string;
   colorSecondary: string | null;
-  members: Array<{ player: { id: string; name: string; avatar: string | null } }>;
-}): TeamView {
+  members: Array<{
+    available: boolean;
+    player: { id: string; name: string; avatar: string | null };
+  }>;
+}, everyone: boolean): TeamView {
   return {
     id: team.id,
     name: team.name,
     color: team.color,
     colorSecondary: team.colorSecondary,
-    players: team.members.map((m) => ({
+    // Subs who are not switched in, and anyone absent, cannot be fielded - so
+    // they are not offered in lineups or counted by the advice. A finished
+    // match keeps everyone, since its lineups name whoever actually played.
+    players: team.members
+      .filter((m) => everyone || m.available)
+      .map((m) => ({
       id: m.player.id,
       name: m.player.name,
       avatar: m.player.avatar,

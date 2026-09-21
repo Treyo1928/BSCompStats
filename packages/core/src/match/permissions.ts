@@ -54,6 +54,8 @@ export interface ActionContext {
   teamId?: string | null;
   /** True when the tournament is public. */
   isPublic?: boolean;
+  /** Tournament setting: captains may enter their own team's scores. */
+  captainsEnterScores?: boolean;
 }
 
 /** Roles that administer a tournament rather than compete in it. */
@@ -97,8 +99,12 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
       return staff;
 
     case 'ENTER_SCORE':
-      // Scores normally arrive from BeatLeader; typing one in is a staff action.
-      return staff;
+      // BeatLeader only knows a player's best ever run, not the one they just
+      // played, so match scores are typed in. Staff always may; captains only
+      // for their own team, and only where the tournament allows it.
+      return (
+        staff || (context.captainsEnterScores === true && isCaptainOf(actor, context.teamId))
+      );
 
     case 'MAKE_PICK_BAN':
     case 'SET_LINEUP':

@@ -48,6 +48,11 @@ export const matchRulesSchema = z.object({
   maxAppearances: z.number().int().positive().nullable().default(null),
   /** A player may not appear twice on the same map. */
   noDuplicateWithinMap: z.boolean().default(true),
+  /**
+   * How many times a team may call for a map to be replayed in one match.
+   * Both teams play the map again and each player's best run counts.
+   */
+  replaysPerTeam: z.number().int().nonnegative().default(1),
 });
 export type MatchRules = z.infer<typeof matchRulesSchema>;
 

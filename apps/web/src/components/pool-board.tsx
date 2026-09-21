@@ -98,7 +98,12 @@ export function PoolBoardTable({
                       className="flex items-center gap-2.5 hover:underline"
                     >
                       <Avatar src={row.avatar} name={row.playerName} size={26} ring={team.color} />
-                      <span className="truncate">{row.playerName}</span>
+                      <span
+                        className={`truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
+                        title={row.available ? undefined : 'Not available - left out of lineups and predictions'}
+                      >
+                        {row.playerName}
+                      </span>
                     </a>
                   </th>
 

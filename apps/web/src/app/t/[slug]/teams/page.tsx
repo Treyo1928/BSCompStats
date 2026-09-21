@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can } from '@/server/match-helpers';
+import { can, isCaptainOf } from '@/server/match-helpers';
 import {
   Panel,
   PageHeader,
@@ -17,8 +17,8 @@ import {
   teamWash,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { createTeam } from '@/server/actions';
-import { AddPlayerForm, MemberControls } from '@/components/roster-controls';
+import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
+import { AddPlayerForm, ConfirmSubmit, MemberControls } from '@/components/roster-controls';
 import { createMatch } from '@/server/match-actions';
 
 export const dynamic = 'force-dynamic';
@@ -58,6 +58,8 @@ export default async function TeamsPage({
                 select: {
                   id: true,
                   role: true,
+                  isSub: true,
+                  available: true,
                   player: {
                     select: {
                       id: true,
@@ -110,7 +112,9 @@ export default async function TeamsPage({
               >
                 {team.name}
               </h2>
-              <span className="shrink-0 text-xs text-muted">{team.members.length} players</span>
+              <span className="shrink-0 text-xs text-muted">
+                {team.members.filter((m) => m.available).length} of {team.members.length} available
+              </span>
             </div>
 
             <div className="p-4">
@@ -132,9 +136,21 @@ export default async function TeamsPage({
                         size={32}
                         ring={team.color}
                       />
-                      <span className="min-w-0 flex-1 truncate font-medium">
+                      <span
+                        className={`min-w-0 flex-1 truncate font-medium ${member.available ? '' : 'text-muted line-through decoration-faint'}`}
+                      >
                         {member.player.name}
                       </span>
+                      {member.isSub && (
+                        <Badge title="Substitute - only counted when switched in">
+                          {member.available ? 'Sub · in' : 'Sub'}
+                        </Badge>
+                      )}
+                      {!member.isSub && !member.available && (
+                        <Badge tone="warn" title="Left out of lineups and predictions">
+                          Absent
+                        </Badge>
+                      )}
                       {member.role === 'CAPTAIN' &&
                         (member.player.userId ? (
                           <Badge tone="accent">Captain</Badge>
@@ -150,12 +166,15 @@ export default async function TeamsPage({
                         {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
                       </span>
                     </a>
-                    {canManage && (
+                    {(canManage || isCaptainOf(actor, team.id)) && (
                       <MemberControls
                         memberId={member.id}
                         playerName={member.player.name}
                         teamName={team.name}
                         isCaptain={member.role === 'CAPTAIN'}
+                        isSub={member.isSub}
+                        available={member.available}
+                        canManage={canManage}
                       />
                     )}
                   </li>
@@ -164,6 +183,49 @@ export default async function TeamsPage({
             )}
 
             {canManage && <AddPlayerForm teamId={team.id} teamName={team.name} />}
+
+            {canManage && (
+              <details className="mt-3 border-t border-edge pt-3 text-sm">
+                <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">
+                  Edit team
+                </summary>
+                <form action={updateTeam} className="mt-3 flex flex-wrap items-start gap-3">
+                  <input type="hidden" name="teamId" value={team.id} />
+                  <div className="min-w-[10rem] flex-1">
+                    <Field label="Name">
+                      <input name="name" defaultValue={team.name} className={inputClass} required />
+                    </Field>
+                  </div>
+                  <Field label="Colour">
+                    <input
+                      type="color"
+                      name="color"
+                      defaultValue={team.color}
+                      className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
+                    />
+                  </Field>
+                  <Field label="Second colour">
+                    <input
+                      type="color"
+                      name="colorSecondary"
+                      defaultValue={team.colorSecondary}
+                      className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
+                    />
+                  </Field>
+                  <FieldAction>
+                    <Button type="submit">Save</Button>
+                  </FieldAction>
+                </form>
+                <form action={deleteTeam} className="mt-3">
+                  <input type="hidden" name="teamId" value={team.id} />
+                  <ConfirmSubmit
+                    question={`Delete ${team.name} and its roster? This cannot be undone.`}
+                  >
+                    Delete team
+                  </ConfirmSubmit>
+                </form>
+              </details>
+            )}
             </div>
           </Panel>
         ))}

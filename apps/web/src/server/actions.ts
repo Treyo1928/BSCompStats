@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { assertCan } from '@bscs/core/match';
+import { assertCan, can, isCaptainOf, ForbiddenError } from '@bscs/core/match';
 import { getActor } from './session';
 import { importPool } from './pools';
 import { requestRefresh } from '@/lib/redis';
@@ -371,6 +371,124 @@ export async function removePlayerFromTeam(memberId: string): Promise<void> {
       },
     }),
     prisma.teamMember.delete({ where: { id: memberId } }),
+  ]);
+  revalidatePath('/t', 'layout');
+}
+
+export async function updateTeam(formData: FormData): Promise<void> {
+  const teamId = String(formData.get('teamId'));
+  await requireTeamManager(teamId);
+
+  const team = await prisma.team.findUnique({
+    where: { id: teamId },
+    select: { divisionId: true, division: { select: { tournament: { select: { id: true, slug: true } } } } },
+  });
+  if (!team) return;
+  const back = `/t/${team.division.tournament.slug}/teams`;
+
+  const name = String(formData.get('name') ?? '').trim();
+  if (!name) failBack(back, 'A team needs a name.');
+
+  const taken = await prisma.team.findFirst({
+    where: {
+      id: { not: teamId },
+      name: { equals: name, mode: 'insensitive' },
+      division: { tournamentId: team.division.tournament.id },
+    },
+    select: { id: true },
+  });
+  if (taken) failBack(back, `There is already a team called "${name}" in this tournament.`);
+
+  const hex = (value: FormDataEntryValue | null) =>
+    typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+
+  await prisma.team.update({
+    where: { id: teamId },
+    data: { name, color: hex(formData.get('color')), colorSecondary: hex(formData.get('colorSecondary')) },
+  });
+  revalidatePath('/t', 'layout');
+}
+
+export async function deleteTeam(formData: FormData): Promise<void> {
+  const teamId = String(formData.get('teamId'));
+  await requireTeamManager(teamId);
+
+  const team = await prisma.team.findUnique({
+    where: { id: teamId },
+    select: {
+      name: true,
+      division: { select: { tournament: { select: { slug: true } } } },
+      _count: { select: { matchesAsA: true, matchesAsB: true } },
+    },
+  });
+  if (!team) return;
+
+  // A team is half of every match it played; deleting it would take those
+  // matches' records with it.
+  const matches = team._count.matchesAsA + team._count.matchesAsB;
+  if (matches > 0) {
+    failBack(
+      `/t/${team.division.tournament.slug}/teams`,
+      `${team.name} has ${matches} match${matches === 1 ? '' : 'es'} on record, so it cannot be deleted. Rename it instead.`,
+    );
+  }
+
+  await prisma.team.delete({ where: { id: teamId } });
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * Substitutes and absences.
+ *
+ * `available` is the one thing the rest of the app asks: can this player be
+ * fielded right now? A sub starts unavailable and is switched in; a regular
+ * starts available and can be marked absent. A captain can do this for their
+ * own team - who turned up is theirs to know - as can anyone running the event.
+ */
+export async function setMemberStatus(
+  memberId: string,
+  change: { isSub?: boolean; available?: boolean },
+): Promise<void> {
+  const member = await prisma.teamMember.findUnique({
+    where: { id: memberId },
+    select: {
+      teamId: true,
+      playerId: true,
+      isSub: true,
+      available: true,
+      team: { select: { division: { select: { tournamentId: true } } } },
+    },
+  });
+  if (!member) return;
+
+  const actor = await getActor(member.team.division.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  if (!can(actor, 'MANAGE_TEAMS') && !isCaptainOf(actor, member.teamId)) {
+    throw new ForbiddenError('MANAGE_TEAMS');
+  }
+
+  const isSub = change.isSub ?? member.isSub;
+  // Becoming a sub benches them; stopping being one brings them back.
+  const available =
+    change.available ?? (change.isSub === undefined ? member.available : !change.isSub);
+
+  await prisma.$transaction([
+    prisma.teamMember.update({ where: { id: memberId }, data: { isSub, available } }),
+    // Someone who cannot play cannot stay in an unfinished lineup - it would
+    // fail roster validation on every later save, with no way to deselect them.
+    ...(available
+      ? []
+      : [
+          prisma.lineupSlot.deleteMany({
+            where: {
+              playerId: member.playerId,
+              lineup: {
+                teamId: member.teamId,
+                matchMap: { match: { state: { not: 'COMPLETE' } } },
+              },
+            },
+          }),
+        ]),
   ]);
   revalidatePath('/t', 'layout');
 }

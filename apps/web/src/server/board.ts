@@ -36,6 +36,8 @@ export interface BoardRow {
   teamName: string | null;
   teamColor: string | null;
   teamColorSecondary: string | null;
+  /** False for an absent player or a sub who is not switched in. */
+  available: boolean;
   cells: BoardCell[];
   /** Mean accuracy over the maps they have played in this pool. */
   meanAcc: number | null;
@@ -121,6 +123,7 @@ export async function buildPoolBoard(
     where: { team: { division: { tournamentId: pool.tournamentId } } },
     orderBy: [{ team: { name: 'asc' } }, { order: 'asc' }],
     select: {
+      available: true,
       player: { select: { id: true, name: true, avatar: true, beatLeaderId: true } },
       team: {
         select: { id: true, name: true, color: true, colorSecondary: true },
@@ -233,6 +236,7 @@ export async function buildPoolBoard(
       teamName: member.team.name,
       teamColor: member.team.color,
       teamColorSecondary: member.team.colorSecondary,
+      available: member.available,
       cells,
       // Abandoned runs are left out, as the legend under the board promises.
       meanAcc: counted.length

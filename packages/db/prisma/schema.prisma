@@ -330,6 +330,11 @@ model Tournament {
   /// Default MatchFormat for matches in this tournament. See packages/core/match.
   defaultFormat Json?
 
+  /// What the prediction model learns from. See packages/core/stats/scope.
+  statsScope Json?
+  /// Captains may enter their own team's scores. Otherwise staff only.
+  captainsEnterScores Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -418,6 +423,13 @@ model TeamMember {
   role     TeamRole @default(PLAYER)
   order    Int      @default(0)
 
+  /// A substitute: rostered, but only fielded when switched in.
+  isSub     Boolean @default(false)
+  /// Whether they can be fielded right now. False for a sub who is not switched
+  /// in, or anyone marked absent. Unavailable players are left out of lineups,
+  /// advice and the appearance rules.
+  available Boolean @default(true)
+
   createdAt DateTime @default(now())
 
   @@unique([teamId, playerId])
@@ -505,6 +517,9 @@ model Match {
   /// Overrides Tournament.defaultFormat when present.
   format Json?
 
+  /// Each team's lineups stay hidden from the other until both have set every map.
+  blindLineups Boolean @default(false)
+
   scheduledAt DateTime?
   startedAt   DateTime?
   completedAt DateTime?
@@ -569,6 +584,10 @@ model MatchMap {
 
   pickedById String?
   pickedBy   Team?   @relation("PickedBy", fields: [pickedById], references: [id], onDelete: SetNull)
+
+  /// Teams that have spent a replay on this map. Each entry is one more run of
+  /// the map by both sides; a player's best run is the one that counts.
+  replayCalledByTeamIds String[] @default([])
 
   createdAt DateTime @default(now())
 

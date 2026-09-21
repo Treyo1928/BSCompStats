@@ -75,7 +75,8 @@ export async function buildPoolOutlook(
   const meanAcc = (ids: readonly string[], leaderboardId: string) =>
     ids.length ? ids.reduce((sum, id) => sum + predict(id, leaderboardId).acc, 0) / ids.length : null;
 
-  const roster = team.rows.map((r) => r.playerId);
+  // Whoever can actually be fielded: not the absent, not subs who are out.
+  const roster = team.rows.filter((r) => r.available).map((r) => r.playerId);
   if (roster.length < k) {
     return {
       playersPerMap: k,
@@ -92,7 +93,7 @@ export async function buildPoolOutlook(
     isTiebreaker: m.isTiebreaker,
   }));
 
-  const opponentRoster = opponent?.rows.map((r) => r.playerId) ?? [];
+  const opponentRoster = opponent?.rows.filter((r) => r.available).map((r) => r.playerId) ?? [];
   const values =
     opponent && opponentRoster.length >= k
       ? new Map(
