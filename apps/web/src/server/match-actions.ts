@@ -42,14 +42,23 @@ export async function createMatch(formData: FormData): Promise<void> {
   const [pool, tournament] = await Promise.all([
     prisma.mapPool.findUnique({
       where: { id: poolId },
-      select: { id: true, maps: { select: { id: true, isTiebreaker: true } } },
+      select: {
+        id: true,
+        tournamentId: true,
+        maps: { select: { id: true, isTiebreaker: true } },
+      },
     }),
     prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { slug: true, defaultFormat: true },
     }),
   ]);
-  if (!pool || !tournament) throw new Error('Pool or tournament not found.');
+  // Permission was checked against tournamentId, so everything else named in
+  // the form has to belong to it - otherwise a match in your own tournament
+  // becomes a window onto someone else's private pool and rosters.
+  if (!pool || !tournament || pool.tournamentId !== tournamentId) {
+    throw new Error('Pool or tournament not found.');
+  }
 
   const format = parseFormat(tournament.defaultFormat);
 
@@ -65,12 +74,16 @@ export async function createMatch(formData: FormData): Promise<void> {
     actions: [],
   });
 
-  const [teamA, teamB] = await Promise.all([
-    prisma.team.findUnique({ where: { id: teamAId }, select: { name: true } }),
-    prisma.team.findUnique({ where: { id: teamBId }, select: { name: true } }),
-  ]);
+  const teams = await prisma.team.findMany({
+    where: { id: { in: [teamAId, teamBId] }, division: { tournamentId } },
+    select: { id: true, name: true },
+  });
+  const teamA = teams.find((t) => t.id === teamAId);
+  const teamB = teams.find((t) => t.id === teamBId);
+  if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
 
-  const coinFlipWinnerId = String(formData.get('coinFlipWinnerId') || teamAId);
+  const requestedCoinWinner = String(formData.get('coinFlipWinnerId') ?? '');
+  const coinFlipWinnerId = requestedCoinWinner === teamBId ? teamBId : teamAId;
 
   const match = await prisma.match.create({
     data: {
@@ -197,6 +210,16 @@ export async function saveLineup(formData: FormData): Promise<void> {
     },
   });
 
+  // Both ids arrive from the form. Unless they are tied to this match, the
+  // submitted players never reach validation and get written to whatever
+  // match map was named.
+  if (!existing.some((mm) => mm.id === matchMapId)) {
+    throw new Error('That map is not part of this match.');
+  }
+  if (teamId !== match.teamAId && teamId !== match.teamBId) {
+    throw new Error('That team is not in this match.');
+  }
+
   const lineups: LineupInput[] = existing.map((mm) => ({
     matchMapId: mm.id,
     mapLabel: `Map ${mm.order} - ${mm.poolMap.leaderboard.map.name}`,
@@ -219,6 +242,11 @@ export async function saveLineup(formData: FormData): Promise<void> {
     roster: roster.map((r) => r.playerId),
     playerName: (id) => names.get(id) ?? id,
   });
+
+  // Fielding someone who is not on the team is never a rules question an
+  // organiser can wave through - the override exists for the duo rule.
+  const strangers = playerIds.filter((id) => !names.has(id));
+  if (strangers.length) throw new Error('Every player in a lineup must be on the team.');
 
   const blocking = result.violations.filter((v) => v.severity === 'ERROR');
   const override = formData.get('override') === 'on';

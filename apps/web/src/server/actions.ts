@@ -165,7 +165,13 @@ export async function searchPlayerCandidates(
   teamId: string,
   rawQuery: string,
 ): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
-  await requireTeamManager(teamId);
+  const actor = await requireTeamManager(teamId);
+  // Anyone can create a tournament and so become a team manager somewhere.
+  // Which BeatLeader profile belongs to which account is the site's business,
+  // not theirs: only a site admin may browse by account name or see it. Others
+  // can still find someone by their exact account name, which they must
+  // already know.
+  const seesAccounts = actor.globalRole === 'ADMIN';
 
   const query = rawQuery.trim();
   if (!query) return { candidates: [], error: 'Enter a BeatLeader ID, profile link, or name.' };
@@ -178,7 +184,13 @@ export async function searchPlayerCandidates(
       OR: [
         { beatLeaderId: term },
         { name: { contains: term, mode: 'insensitive' } },
-        { user: { name: { contains: term, mode: 'insensitive' } } },
+        {
+          user: {
+            name: seesAccounts
+              ? { contains: term, mode: 'insensitive' }
+              : { equals: term, mode: 'insensitive' },
+          },
+        },
       ],
     },
     orderBy: { pp: 'desc' },
@@ -214,7 +226,10 @@ export async function searchPlayerCandidates(
       country: p.country,
       pp: p.pp,
       rank: p.rank,
-      accountName: p.user?.name ?? null,
+      accountName:
+        seesAccounts || p.user?.name?.toLowerCase() === term.toLowerCase()
+          ? (p.user?.name ?? null)
+          : null,
       linked: Boolean(p.user),
       onTeam: false,
     });
@@ -247,7 +262,7 @@ export async function searchPlayerCandidates(
     for (const owner of owners) {
       const c = candidates.get(owner.beatLeaderId)!;
       c.linked = true;
-      c.accountName = owner.user?.name ?? null;
+      c.accountName = seesAccounts ? (owner.user?.name ?? null) : null;
     }
   }
 
@@ -377,11 +392,34 @@ export async function createTeam(formData: FormData): Promise<void> {
   revalidatePath('/t', 'layout');
 }
 
+/** Last refresh per user, so the button cannot be held down against BeatLeader. */
+const lastRefreshAt = new Map<string, number>();
+const REFRESH_COOLDOWN_MS = 10_000;
+
 export async function triggerRefresh(formData: FormData): Promise<void> {
   const poolId = String(formData.get('poolId') ?? '') || undefined;
-  const tournamentId = String(formData.get('tournamentId') ?? '') || undefined;
+
+  // The pool's own tournament is the one that counts - not whichever id the
+  // form happened to carry alongside it.
+  const pool = poolId
+    ? await prisma.mapPool.findUnique({ where: { id: poolId }, select: { tournamentId: true } })
+    : null;
+  const tournamentId = pool?.tournamentId ?? (String(formData.get('tournamentId') ?? '') || undefined);
+  if (!tournamentId || (poolId && !pool)) return;
+
+  const tournament = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { isPublic: true },
+  });
+  if (!tournament) return;
+
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'VIEW', { isPublic: tournament.isPublic });
+
+  const now = Date.now();
+  if (now - (lastRefreshAt.get(actor.userId) ?? 0) < REFRESH_COOLDOWN_MS) return;
+  lastRefreshAt.set(actor.userId, now);
 
   await requestRefresh(poolId, actor.userId);
   revalidatePath('/t', 'layout');

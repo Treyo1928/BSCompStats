@@ -73,7 +73,6 @@ export default async function PoolPage({
   const mapById = new Map(board.maps.map((m) => [m.poolMapId, m]));
 
   const playerCount = board.teams.reduce((acc, t) => acc + t.rows.length, 0);
-  const leaderboardIds = board.maps.map((m) => m.leaderboardId);
 
   return (
     <div className="space-y-6">
@@ -90,7 +89,7 @@ export default async function PoolPage({
         }
         actions={
           <>
-            <LiveBadge leaderboardIds={leaderboardIds} />
+            <LiveBadge poolId={poolId} />
             {actor.userId && (
               <form action={triggerRefresh}>
                 <input type="hidden" name="poolId" value={poolId} />

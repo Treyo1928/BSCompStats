@@ -110,13 +110,7 @@ export const authConfig: NextAuthConfig = {
     async signIn({ user, account, profile }) {
       if (!user.id) return;
 
-      const identifiers = [
-        user.email?.toLowerCase(),
-        account?.providerAccountId?.toLowerCase(),
-        (profile as { id?: string } | undefined)?.id?.toLowerCase(),
-      ].filter(Boolean) as string[];
-
-      if (identifiers.some((id) => bootstrapAdmins.includes(id))) {
+      if (account && isBootstrapAdmin(account.provider, account.providerAccountId, profile)) {
         await prisma.user.update({ where: { id: user.id }, data: { role: 'ADMIN' } });
       }
 
@@ -131,6 +125,33 @@ export const authConfig: NextAuthConfig = {
     },
   },
 };
+
+/**
+ * Does this sign-in match an entry in BOOTSTRAP_ADMINS?
+ *
+ * Entries are `discord:<id>`, `beatleader:<id>` or `email:<address>`. A bare
+ * entry keeps its documented meaning - a Discord id, or an email address -
+ * and nothing else: an id is only ever compared within its own provider, so a
+ * number meant for Discord cannot promote a BeatLeader account that happens
+ * to share it. An email counts only when the provider vouches for it;
+ * otherwise anyone could register the admin's address somewhere and walk in.
+ */
+function isBootstrapAdmin(provider: string, providerAccountId: string, profile: unknown): boolean {
+  const claims = (profile ?? {}) as { email?: unknown; verified?: unknown };
+  const verifiedEmail =
+    provider === 'discord' && claims.verified === true && typeof claims.email === 'string'
+      ? claims.email.toLowerCase()
+      : null;
+
+  return bootstrapAdmins.some((entry) => {
+    const [prefix, ...rest] = entry.split(':');
+    const value = rest.join(':');
+    if (rest.length > 0 && prefix === 'email') return verifiedEmail === value;
+    if (rest.length > 0) return prefix === provider && value === providerAccountId.toLowerCase();
+    if (entry.includes('@')) return verifiedEmail === entry;
+    return provider === 'discord' && entry === providerAccountId.toLowerCase();
+  });
+}
 
 async function linkBeatLeaderPlayer(
   userId: string,

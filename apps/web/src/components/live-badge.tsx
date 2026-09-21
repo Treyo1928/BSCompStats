@@ -22,14 +22,14 @@ const EXPLANATIONS: Record<LiveStatus, string> = {
  * update path - no duplicated formatting or ranking logic on the client.
  */
 export function LiveBadge({
-  leaderboardIds,
+  poolId,
   onUpdate,
 }: {
-  leaderboardIds: string[];
+  poolId: string;
   onUpdate?: () => void;
 }) {
   const router = useRouter();
-  const { status, updates, lastAt } = useLiveScores(leaderboardIds);
+  const { status, updates, lastAt } = useLiveScores(poolId);
   const lastHandled = useRef<number | null>(null);
 
   useEffect(() => {

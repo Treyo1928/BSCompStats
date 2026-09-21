@@ -7,6 +7,7 @@ import {
   type ResolvedMap,
 } from '@bscs/core/beatleader';
 import { env } from '@/lib/env';
+import { fetchPublicJson } from './safe-fetch';
 
 export const beatLeader = new BeatLeaderClient({
   baseUrl: env.BEATLEADER_API_URL,
@@ -61,11 +62,13 @@ export async function importPool(options: {
       }
       sourceType = 'url';
       sourceRef = url;
-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-      if (!response.ok) {
-        throw new Error(`Could not fetch that playlist (HTTP ${response.status}).`);
+      try {
+        playlistJson = await fetchPublicJson(url, 25 * 1024 * 1024);
+      } catch {
+        // Deliberately vague: the status of an arbitrary URL, fetched from
+        // inside the server's network, is not something to report back.
+        throw new Error('Could not fetch a playlist from that link.');
       }
-      playlistJson = await response.json();
     }
   }
 

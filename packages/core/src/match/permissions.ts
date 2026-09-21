@@ -81,7 +81,9 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
 
   switch (action) {
     case 'VIEW':
-      return context.isPublic !== false || actor.tournamentRole != null;
+      // Fails closed: a caller that forgets to say whether the tournament is
+      // public gets the private answer, not an open door.
+      return context.isPublic === true || actor.tournamentRole != null;
 
     case 'MANAGE_TOURNAMENT':
     case 'MANAGE_TEAMS':

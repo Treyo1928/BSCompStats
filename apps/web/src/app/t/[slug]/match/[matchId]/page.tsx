@@ -100,7 +100,7 @@ export default async function MatchPage({
             )}
           </>
         }
-        actions={<LiveBadge leaderboardIds={match.pool.maps.map((m) => m.leaderboardId)} />}
+        actions={<LiveBadge poolId={match.pool.id} />}
       />
 
       {/* Scoreboard */}

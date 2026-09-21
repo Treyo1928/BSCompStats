@@ -8,9 +8,9 @@ export async function GET() {
     await prisma.$queryRaw`SELECT 1`;
     return Response.json({ ok: true, database: 'up' });
   } catch (err) {
-    return Response.json(
-      { ok: false, database: 'down', error: (err as Error).message },
-      { status: 503 },
-    );
+    // The message stays in the log: Prisma's connection errors name the host,
+    // port and database, and this endpoint is open to anyone.
+    console.error('[health] database check failed:', (err as Error).message);
+    return Response.json({ ok: false, database: 'down' }, { status: 503 });
   }
 }

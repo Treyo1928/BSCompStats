@@ -1,27 +1,53 @@
-import { createSubscriber, CHANNELS } from '@/lib/redis';
+import { prisma } from '@bscs/db';
+import { can } from '@bscs/core/match';
+import { onScoreUpdate } from '@/lib/redis';
+import { getActorOrAnonymous } from '@/server/session';
 
 export const dynamic = 'force-dynamic';
 // Node runtime: the edge runtime has no TCP sockets, so no Redis.
 export const runtime = 'nodejs';
 
+/** How long a stream trusts its idea of who is rostered before re-reading it. */
+const SCOPE_TTL_MS = 30_000;
+
 /**
- * Server-sent events carrying live score updates.
+ * Server-sent events carrying live score updates for one map pool.
  *
  * SSE rather than WebSockets because the traffic is strictly one-way, it
  * survives proxies and reconnects on its own, and there is no handshake to get
- * wrong. A leaderboard filter can be passed so a pool board only wakes for maps
- * it is actually showing.
+ * wrong.
+ *
+ * The worker publishes every tracked score on one channel, private tournaments
+ * included, so this route is the gate: a stream is tied to a pool the caller is
+ * allowed to view, and carries only that pool's maps played by that
+ * tournament's rostered players. What to send is decided here, never by the
+ * query string.
  */
 export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const filter = url.searchParams.get('leaderboards');
-  const wanted = filter ? new Set(filter.split(',').filter(Boolean)) : null;
+  const poolId = new URL(request.url).searchParams.get('pool');
+  if (!poolId) return new Response('Missing pool.', { status: 400 });
 
-  const subscriber = createSubscriber();
+  const pool = await prisma.mapPool.findUnique({
+    where: { id: poolId },
+    select: { tournamentId: true, tournament: { select: { isPublic: true } } },
+  });
+  // Same answer for "no such pool" and "not yours to see".
+  if (!pool) return new Response('Not found.', { status: 404 });
+
+  const actor = await getActorOrAnonymous(pool.tournamentId);
+  if (!can(actor, 'VIEW', { isPublic: pool.tournament.isPublic })) {
+    return new Response('Not found.', { status: 404 });
+  }
+
+  let scope = await loadScope(poolId, pool.tournamentId);
+  let scopeLoadedAt = Date.now();
+  let refreshing = false;
+
   const encoder = new TextEncoder();
+  let cleanup = () => {};
 
   const stream = new ReadableStream({
-    async start(controller) {
+    start(controller) {
       const send = (event: string, data: unknown) => {
         try {
           controller.enqueue(
@@ -44,28 +70,30 @@ export async function GET(request: Request) {
         }
       }, 20_000);
 
-      await subscriber.subscribe(CHANNELS.scoreUpdate, CHANNELS.importProgress);
-
-      subscriber.on('message', (channel, raw) => {
-        try {
-          const payload = JSON.parse(raw) as { leaderboardId?: string };
-          if (
-            channel === CHANNELS.scoreUpdate &&
-            wanted &&
-            payload.leaderboardId &&
-            !wanted.has(payload.leaderboardId)
-          ) {
-            return;
-          }
-          send(channel === CHANNELS.scoreUpdate ? 'score' : 'import', payload);
-        } catch {
-          // Malformed payload - nothing useful to forward.
+      const unsubscribe = onScoreUpdate((update) => {
+        // Rosters and pools change while a stream is open. Re-read lazily, off
+        // the back of traffic, rather than on a timer per connection.
+        if (!refreshing && Date.now() - scopeLoadedAt > SCOPE_TTL_MS) {
+          refreshing = true;
+          void loadScope(poolId, pool.tournamentId)
+            .then((fresh) => {
+              scope = fresh;
+              scopeLoadedAt = Date.now();
+            })
+            .catch(() => {})
+            .finally(() => {
+              refreshing = false;
+            });
         }
+
+        if (!scope.leaderboardIds.has(update.leaderboardId)) return;
+        if (!scope.playerIds.has(update.playerId)) return;
+        send('score', update);
       });
 
-      const close = () => {
+      cleanup = () => {
         clearInterval(heartbeat);
-        void subscriber.quit();
+        unsubscribe();
         try {
           controller.close();
         } catch {
@@ -73,10 +101,10 @@ export async function GET(request: Request) {
         }
       };
 
-      request.signal.addEventListener('abort', close);
+      request.signal.addEventListener('abort', cleanup);
     },
     cancel() {
-      void subscriber.quit();
+      cleanup();
     },
   });
 
@@ -89,4 +117,18 @@ export async function GET(request: Request) {
       'x-accel-buffering': 'no',
     },
   });
+}
+
+async function loadScope(poolId: string, tournamentId: string) {
+  const [maps, members] = await Promise.all([
+    prisma.poolMap.findMany({ where: { poolId }, select: { leaderboardId: true } }),
+    prisma.teamMember.findMany({
+      where: { team: { division: { tournamentId } } },
+      select: { playerId: true },
+    }),
+  ]);
+  return {
+    leaderboardIds: new Set(maps.map((m) => m.leaderboardId)),
+    playerIds: new Set(members.map((m) => m.playerId)),
+  };
 }

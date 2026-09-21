@@ -39,11 +39,42 @@ export function getPublisher(): Redis {
   return globalForRedis.redisPublisher;
 }
 
-/** Each SSE connection needs its own client - a subscribed one cannot publish. */
-export function createSubscriber(): Redis {
-  const client = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
-  client.on('error', () => {});
-  return client;
+type ScoreListener = (update: ScoreUpdate) => void;
+
+const globalForFanout = globalThis as unknown as {
+  scoreSubscriber?: Redis;
+  scoreListeners?: Set<ScoreListener>;
+};
+
+/**
+ * One Redis subscription for the whole process, fanned out in memory.
+ *
+ * A subscribed client cannot publish, so this is separate from the publisher -
+ * but it is shared between viewers. A client per SSE connection would let
+ * anyone who can open a stream exhaust Redis's connection limit.
+ */
+export function onScoreUpdate(listener: ScoreListener): () => void {
+  const listeners = (globalForFanout.scoreListeners ??= new Set());
+
+  if (!globalForFanout.scoreSubscriber) {
+    const client = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
+    client.on('error', () => {});
+    client.on('message', (_channel, raw) => {
+      let update: ScoreUpdate;
+      try {
+        update = JSON.parse(raw) as ScoreUpdate;
+      } catch {
+        return; // Malformed payload - nothing useful to forward.
+      }
+      for (const each of listeners) each(update);
+    });
+    // ioredis resubscribes by itself after a reconnect.
+    void client.subscribe(CHANNELS.scoreUpdate).catch(() => {});
+    globalForFanout.scoreSubscriber = client;
+  }
+
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 export async function requestRefresh(poolId?: string, requestedBy?: string): Promise<void> {

@@ -26,18 +26,16 @@ export type LiveStatus = 'connecting' | 'live' | 'offline';
  * status so the page can say whether it is actually live rather than quietly
  * showing stale numbers.
  */
-export function useLiveScores(leaderboardIds: readonly string[]) {
+export function useLiveScores(poolId: string) {
   const [status, setStatus] = useState<LiveStatus>('connecting');
   const [updates, setUpdates] = useState<LiveScore[]>([]);
   const [lastAt, setLastAt] = useState<number | null>(null);
-  const key = leaderboardIds.join(',');
   const seen = useRef(new Set<string>());
 
   useEffect(() => {
-    const url = key
-      ? `/api/events/scores?leaderboards=${encodeURIComponent(key)}`
-      : '/api/events/scores';
-    const source = new EventSource(url);
+    // The server decides what this pool's stream carries; the pool id is only
+    // a request to be allowed to listen.
+    const source = new EventSource(`/api/events/scores?pool=${encodeURIComponent(poolId)}`);
 
     source.addEventListener('ready', () => setStatus('live'));
     source.addEventListener('score', (event) => {
@@ -57,7 +55,7 @@ export function useLiveScores(leaderboardIds: readonly string[]) {
     source.onopen = () => setStatus('live');
 
     return () => source.close();
-  }, [key]);
+  }, [poolId]);
 
   return { status, updates, lastAt };
 }
