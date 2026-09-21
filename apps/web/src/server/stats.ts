@@ -42,7 +42,18 @@ export interface TournamentModel {
   /** leaderboardId -> maxScore, so callers can turn accuracy back into points. */
   maxScores: Record<string, number>;
   chosenLatentFactors: number;
+  /** Changes whenever anything the model was fitted on changes. */
+  version: string;
 }
+
+/**
+ * One fitted model per tournament, reused until its inputs change.
+ *
+ * Fitting is the expensive part of every board and match page, and those pages
+ * re-render on each live score for each viewer. Node runs it on the one thread
+ * that also serves every other request, so an uncached fit is felt by everyone.
+ */
+const modelCache = new Map<string, TournamentModel>();
 
 export async function buildTournamentModel(
   tournamentId: string,
@@ -73,6 +84,24 @@ export async function buildTournamentModel(
     select: { leaderboardId: true },
   });
   const poolLeaderboardIds = new Set(poolMaps.map((pm) => pm.leaderboardId));
+
+  // Cheap to ask, and it moves whenever a score is added or improved.
+  const pulse = await prisma.score.aggregate({
+    where: { playerId: { in: playerIds } },
+    _count: true,
+    _max: { timeset: true },
+    _sum: { baseScore: true },
+  });
+  const version = JSON.stringify([
+    scope,
+    [...playerIds].sort(),
+    [...poolLeaderboardIds].sort(),
+    pulse._count,
+    pulse._max.timeset,
+    pulse._sum.baseScore,
+  ]);
+  const cached = modelCache.get(tournamentId);
+  if (cached?.version === version) return cached;
 
   const scores = playerIds.length
     ? await prisma.score.findMany({
@@ -131,12 +160,9 @@ export async function buildTournamentModel(
 
   const { model, chosen } = fitBestModel(observations);
 
+  const observed = new Set(observations.map((o) => failKey(o.playerId, o.leaderboardId)));
   const detailed = scores
-    .filter((s) =>
-      observations.some(
-        (o) => o.playerId === s.playerId && o.leaderboardId === s.leaderboardId,
-      ),
-    )
+    .filter((s) => observed.has(failKey(s.playerId, s.leaderboardId)))
     .map((s) => ({
       playerId: s.playerId,
       leaderboardId: s.leaderboardId,
@@ -160,7 +186,7 @@ export async function buildTournamentModel(
     ).map((pm) => [pm.leaderboardId, pm.category]),
   );
 
-  return {
+  const built: TournamentModel = {
     model,
     failModel: buildFailModel({ scores: detailed, model }),
     profiles: buildPlayerProfiles({ scores: detailed, model, categories }),
@@ -172,7 +198,10 @@ export async function buildTournamentModel(
     mapCount,
     maxScores,
     chosenLatentFactors: chosen.latentFactors ?? 0,
+    version,
   };
+  modelCache.set(tournamentId, built);
+  return built;
 }
 
 export const failKey = (playerId: string, leaderboardId: string): string =>

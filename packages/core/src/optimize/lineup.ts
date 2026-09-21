@@ -423,13 +423,21 @@ export function recommendLineups(
     return { ...result, strategy: 'EXHAUSTIVE' };
   }
 
+  // Search on a coarse sample, then score the winner on the full one - the
+  // same two stages as the exhaustive path. Searching on the full sample cost
+  // five times as much to choose between lineups a coarse one already ranks.
+  const coarse = drawSamples({
+    ...setup,
+    iterations: input.coarseIterations ?? 2000,
+    seed: (setup.seed ?? 1337) + 1,
+  });
   const fine = drawSamples(setup);
   const found = searchLineups({
     maps: input.maps,
     format: input.format,
     roster: input.roster,
     opponentLineups: input.opponentLineups,
-    samples: fine,
+    samples: coarse,
     objective: input.objective,
     seed: input.seed ?? setup.seed,
   });

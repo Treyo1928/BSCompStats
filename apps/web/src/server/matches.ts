@@ -331,11 +331,42 @@ export interface MatchAdvice {
   model: TournamentModel;
 }
 
+/** Advice per match and side, kept until the match or the model moves on. */
+const adviceCache = new Map<string, { key: string; advice: MatchAdvice }>();
+
 export async function buildAdvice(
   match: MatchView,
   forTeamId: string,
 ): Promise<MatchAdvice> {
   const model = await buildTournamentModel(match.tournament.id);
+
+  // The simulation is seconds of CPU on the thread that serves everyone, and
+  // this page is rendered by every viewer on every live update. Its inputs
+  // change only when someone acts, a roster changes, or a score lands.
+  const slot = `${match.id}:${forTeamId}`;
+  const key = JSON.stringify([
+    model.version,
+    match.format,
+    match.actions.map((a) => [a.seq, a.type, a.teamId, a.poolMapId]),
+    match.plannedMaps.map((m) => m.poolMapId),
+    match.teamA.players.map((p) => p.id),
+    match.teamB.players.map((p) => p.id),
+  ]);
+  const hit = adviceCache.get(slot);
+  if (hit?.key === key) return hit.advice;
+
+  const advice = await computeAdvice(match, forTeamId, model);
+  adviceCache.set(slot, { key, advice });
+  // Matches finish; their advice need not be held forever.
+  if (adviceCache.size > 200) adviceCache.delete(adviceCache.keys().next().value!);
+  return advice;
+}
+
+async function computeAdvice(
+  match: MatchView,
+  forTeamId: string,
+  model: TournamentModel,
+): Promise<MatchAdvice> {
   const predict = predictorFor(model);
 
   const ourTeam = forTeamId === match.teamA.id ? match.teamA : match.teamB;

@@ -19,6 +19,7 @@ import {
 import { buildPickBanContext } from './matches';
 import { getActor, realUser } from './session';
 import { failBack } from './form-errors';
+import { announceMatchChange } from '@/lib/redis';
 
 /**
  * Match mutations.
@@ -29,6 +30,12 @@ import { failBack } from './form-errors';
  * succeed, and a stale tab must not be able to pick a map that was already
  * banned.
  */
+
+/** Every mutation ends here: refresh this viewer, and tell everyone else's page. */
+async function matchChanged(slug: string, matchId: string): Promise<void> {
+  revalidatePath(`/t/${slug}/match/${matchId}`);
+  await announceMatchChange(matchId);
+}
 
 export async function createMatch(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
@@ -137,7 +144,7 @@ export async function submitPickBan(formData: FormData): Promise<void> {
     action = prepareAction(ctx, { teamId, poolMapId });
   } catch (err) {
     if (!(err instanceof PickBanError)) throw err;
-    revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+    await matchChanged(match.tournament.slug, matchId);
     return;
   }
 
@@ -179,12 +186,12 @@ export async function submitPickBan(formData: FormData): Promise<void> {
     // The unique (matchId, seq) did its job: someone else took this step a
     // moment earlier. Same answer as a stale tab.
     if ((err as { code?: string }).code !== 'P2002') throw err;
-    revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+    await matchChanged(match.tournament.slug, matchId);
     return;
   }
 
   await materializeMaps(matchId);
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
 }
 
 export async function undoLastAction(formData: FormData): Promise<void> {
@@ -212,7 +219,7 @@ export async function undoLastAction(formData: FormData): Promise<void> {
   });
 
   await materializeMaps(matchId);
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
 }
 
 /**
@@ -315,7 +322,7 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
     });
   });
 
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
   return {};
 }
 
@@ -396,7 +403,7 @@ export async function pullScores(formData: FormData): Promise<void> {
     }
   }
 
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
 }
 
 /** Write the MatchMap rows implied by the current pick/ban state. */
@@ -519,7 +526,7 @@ export async function completeMatch(formData: FormData): Promise<void> {
     },
   });
 
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
 }
 
 /** Reopen a completed match so its scores can be corrected. */
@@ -535,5 +542,5 @@ export async function reopenMatch(formData: FormData): Promise<void> {
     data: { state: 'PLAYING', completedAt: null, winnerId: null },
   });
 
-  revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
+  await matchChanged(match.tournament.slug, matchId);
 }

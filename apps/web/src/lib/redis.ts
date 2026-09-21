@@ -10,6 +10,7 @@ export const CHANNELS = {
   scoreUpdate: 'bscs:score',
   refreshRequest: 'bscs:refresh',
   importProgress: 'bscs:import',
+  matchChange: 'bscs:match',
 } as const;
 
 export interface ScoreUpdate {
@@ -39,11 +40,17 @@ export function getPublisher(): Redis {
   return globalForRedis.redisPublisher;
 }
 
-type ScoreListener = (update: ScoreUpdate) => void;
+/** Something about a match changed: a pick, a ban, a lineup, a score. */
+export interface MatchChange {
+  matchId: string;
+  at: number;
+}
+
+type Listener = (payload: unknown) => void;
 
 const globalForFanout = globalThis as unknown as {
-  scoreSubscriber?: Redis;
-  scoreListeners?: Set<ScoreListener>;
+  fanoutSubscriber?: Redis;
+  fanoutListeners?: Map<string, Set<Listener>>;
 };
 
 /**
@@ -53,28 +60,46 @@ const globalForFanout = globalThis as unknown as {
  * but it is shared between viewers. A client per SSE connection would let
  * anyone who can open a stream exhaust Redis's connection limit.
  */
-export function onScoreUpdate(listener: ScoreListener): () => void {
-  const listeners = (globalForFanout.scoreListeners ??= new Set());
+function listen(channel: string, listener: Listener): () => void {
+  const byChannel = (globalForFanout.fanoutListeners ??= new Map());
 
-  if (!globalForFanout.scoreSubscriber) {
+  if (!globalForFanout.fanoutSubscriber) {
     const client = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
     client.on('error', () => {});
-    client.on('message', (_channel, raw) => {
-      let update: ScoreUpdate;
+    client.on('message', (from, raw) => {
+      let payload: unknown;
       try {
-        update = JSON.parse(raw) as ScoreUpdate;
+        payload = JSON.parse(raw);
       } catch {
         return; // Malformed payload - nothing useful to forward.
       }
-      for (const each of listeners) each(update);
+      for (const each of byChannel.get(from) ?? []) each(payload);
     });
     // ioredis resubscribes by itself after a reconnect.
-    void client.subscribe(CHANNELS.scoreUpdate).catch(() => {});
-    globalForFanout.scoreSubscriber = client;
+    void client.subscribe(CHANNELS.scoreUpdate, CHANNELS.matchChange).catch(() => {});
+    globalForFanout.fanoutSubscriber = client;
   }
 
+  let listeners = byChannel.get(channel);
+  if (!listeners) byChannel.set(channel, (listeners = new Set()));
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+export const onScoreUpdate = (listener: (update: ScoreUpdate) => void) =>
+  listen(CHANNELS.scoreUpdate, listener as Listener);
+
+export const onMatchChange = (listener: (change: MatchChange) => void) =>
+  listen(CHANNELS.matchChange, listener as Listener);
+
+/** Tell every open copy of a match page that it is out of date. */
+export async function announceMatchChange(matchId: string): Promise<void> {
+  try {
+    const change: MatchChange = { matchId, at: Date.now() };
+    await getPublisher().publish(CHANNELS.matchChange, JSON.stringify(change));
+  } catch {
+    // Live updates degrade to "refresh the page"; the action itself succeeded.
+  }
 }
 
 export async function requestRefresh(poolId?: string, requestedBy?: string): Promise<void> {

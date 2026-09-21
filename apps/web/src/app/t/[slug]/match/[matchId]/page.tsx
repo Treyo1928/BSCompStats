@@ -18,6 +18,7 @@ import {
   num,
 } from '@/components/ui';
 import { LiveBadge } from '@/components/live-badge';
+import { MatchLive } from '@/components/match-live';
 import { loadMatch, buildAdvice } from '@/server/matches';
 import { getActorOrAnonymous } from '@/server/session';
 import {
@@ -94,6 +95,7 @@ export default async function MatchPage({
 
   return (
     <div className="space-y-6">
+      <MatchLive matchId={match.id} />
       <PageHeader
         crumbs={[{ label: match.tournament.name, href: `/t/${slug}` }]}
         title={match.name}
