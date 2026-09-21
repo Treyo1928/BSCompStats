@@ -38,13 +38,28 @@ export async function createTournament(formData: FormData): Promise<void> {
       name,
       slug,
       ownerId: actor.userId,
-      isPublic: formData.get('isPublic') !== 'off',
+      // An unchecked checkbox is simply absent from the form data, so only an
+      // explicit 'on' may count as public - anything else must fail private.
+      isPublic: formData.get('isPublic') === 'on',
       members: { create: { userId: actor.userId, role: 'OWNER' } },
       divisions: { create: { name: 'Teams', order: 0 } },
     },
   });
 
   redirect(`/t/${tournament.slug}`);
+}
+
+export async function setTournamentVisibility(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  await prisma.tournament.update({
+    where: { id: tournamentId },
+    data: { isPublic: formData.get('isPublic') === 'on' },
+  });
+  revalidatePath('/', 'layout');
 }
 
 export async function importPoolAction(formData: FormData): Promise<void> {

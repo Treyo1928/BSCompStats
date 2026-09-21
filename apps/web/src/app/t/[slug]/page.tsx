@@ -16,7 +16,12 @@ import {
   teamWash,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { importPoolAction, createTeam, triggerRefresh } from '@/server/actions';
+import {
+  importPoolAction,
+  createTeam,
+  triggerRefresh,
+  setTournamentVisibility,
+} from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -103,6 +108,16 @@ export default async function TournamentPage({
         actions={
           <>
             {!tournament.isPublic && <Badge>Private</Badge>}
+            {can(actor, 'MANAGE_TOURNAMENT') && (
+              <form action={setTournamentVisibility}>
+                <input type="hidden" name="tournamentId" value={tournament.id} />
+                {/* Absent means private, matching how a checkbox submits. */}
+                {!tournament.isPublic && <input type="hidden" name="isPublic" value="on" />}
+                <Button variant="ghost" type="submit">
+                  {tournament.isPublic ? 'Make private' : 'Make public'}
+                </Button>
+              </form>
+            )}
             {actor.userId && (
               <form action={triggerRefresh}>
                 <input type="hidden" name="tournamentId" value={tournament.id} />

@@ -19,7 +19,7 @@ export async function getActor(tournamentId?: string): Promise<Actor | null> {
   };
 
   if (tournamentId) {
-    const [membership, captaincies] = await Promise.all([
+    const [membership, rosterSpots] = await Promise.all([
       prisma.tournamentMember.findUnique({
         where: { tournamentId_userId: { tournamentId, userId: session.user.id } },
         select: { role: true, teamId: true },
@@ -29,20 +29,23 @@ export async function getActor(tournamentId?: string): Promise<Actor | null> {
       // inherits the authority - including someone who only signs in later.
       prisma.teamMember.findMany({
         where: {
-          role: 'CAPTAIN',
           player: { userId: session.user.id },
           team: { division: { tournamentId } },
         },
-        select: { teamId: true },
+        select: { teamId: true, role: true },
       }),
     ]);
 
-    const teamIds = new Set(captaincies.map((c) => c.teamId));
+    const teamIds = new Set(
+      rosterSpots.filter((spot) => spot.role === 'CAPTAIN').map((spot) => spot.teamId),
+    );
     if (membership?.role === 'CAPTAIN' && membership.teamId) teamIds.add(membership.teamId);
 
     actor.captainOfTeamIds = [...teamIds];
     actor.tournamentRole =
-      (membership?.role as TournamentRole | undefined) ?? (teamIds.size > 0 ? 'CAPTAIN' : null);
+      (membership?.role as TournamentRole | undefined) ??
+      // Being on a roster is membership enough to see a private tournament.
+      (teamIds.size > 0 ? 'CAPTAIN' : rosterSpots.length > 0 ? 'PLAYER' : null);
   }
 
   return actor;

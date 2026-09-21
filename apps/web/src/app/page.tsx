@@ -19,7 +19,24 @@ export default async function HomePage() {
   const user = await currentUser();
 
   const tournaments = await prisma.tournament.findMany({
-    where: user ? { OR: [{ isPublic: true }, { members: { some: { userId: user.id } } }] } : { isPublic: true },
+    // Private tournaments are listed only for the people who can open them:
+    // site admins, members, and anyone whose linked player is on a roster.
+    where:
+      user?.role === 'ADMIN'
+        ? {}
+        : user
+          ? {
+              OR: [
+                { isPublic: true },
+                { members: { some: { userId: user.id } } },
+                {
+                  divisions: {
+                    some: { teams: { some: { members: { some: { player: { userId: user.id } } } } } },
+                  },
+                },
+              ],
+            }
+          : { isPublic: true },
     orderBy: { createdAt: 'desc' },
     select: {
       id: true,
