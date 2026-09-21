@@ -401,12 +401,13 @@ export function recommendLineups(
   setup: SimSetup,
   input: RecommendInput,
 ): Recommendation {
-  const probe = enumerateLineups(
-    input.roster,
-    input.maps,
-    input.format,
-    input.maxCandidates ?? 50_000,
-  );
+  // Exhaustive only while it is cheap. Scoring every candidate costs
+  // maps x iterations each, so tens of thousands of them is tens of seconds on
+  // a server with one thread for everybody: a five-player roster has about
+  // forty thousand legal cards and took over twenty seconds. The real four-
+  // player format has 432, far under this; anything bigger goes to the search.
+  const exhaustiveLimit = input.maxCandidates ?? 4_000;
+  const probe = enumerateLineups(input.roster, input.maps, input.format, exhaustiveLimit);
 
   if (!probe.truncated) {
     if (!probe.lineups.length) {
