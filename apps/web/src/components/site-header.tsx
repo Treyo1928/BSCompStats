@@ -89,14 +89,16 @@ export async function SiteHeader() {
   );
 }
 
-/** Two crossed sabers. */
+/** The app logo - the same file the favicon uses, so there is one to change. */
 function Logo() {
   return (
-    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-raised ring-1 ring-white/10">
-      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
-        <path d="M5 19 19 5" stroke="var(--color-saber-left)" />
-        <path d="M5 5l14 14" stroke="var(--color-saber-right)" />
-      </svg>
-    </span>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/logo.svg"
+      alt=""
+      width={28}
+      height={28}
+      className="h-7 w-7 shrink-0 rounded-lg ring-1 ring-white/10"
+    />
   );
 }
