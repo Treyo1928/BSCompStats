@@ -506,7 +506,8 @@ export default async function MatchPage({
                                   : 'Not set yet. Hidden until both teams have set every map.'
                             }
                             canEdit={canSeeLineup(team.id) && can(actor, 'SET_LINEUP', { teamId: team.id })}
-                            canOverride={can(actor, 'OVERRIDE_RULES')}
+                            canOverride={can(actor, 'OVERRIDE_RULES', { teamId: team.id })}
+                            ruleBreaks={canSeeLineup(team.id) ? planned.ruleBreaks[team.id] : undefined}
                             recommended={
                               team.id === myTeamId
                                 ? (advice.lineups.winProbability?.lineups[planned.poolMapId] as

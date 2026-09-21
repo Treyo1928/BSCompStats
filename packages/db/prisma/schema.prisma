@@ -607,6 +607,10 @@ model Lineup {
   team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
   /// Set once the captain locks it in; blocks further edits without an override.
+  /// The rule violations this lineup was saved in spite of, when someone chose
+  /// to override them. Null for a lineup that follows the rules.
+  ruleBreaks String?
+
   lockedAt DateTime?
 
   createdAt DateTime @default(now())

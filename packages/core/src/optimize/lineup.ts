@@ -273,7 +273,9 @@ export function enumerateLineups(
   let truncated = false;
 
   const appearances = new Map<string, number>();
-  const usedDuos = new Set<string>();
+  // Count rather than set: a small roster is allowed the repeats it cannot avoid.
+  const usedDuos = new Map<string, number>();
+  let repeatsLeft = rules.duoRepeatsAllowed;
   const chosen: Array<readonly string[]> = [];
 
   const regularMapCount = maps.filter((m) => !m.isTiebreaker).length;
@@ -302,7 +304,7 @@ export function enumerateLineups(
       const key = duoKey(combo);
 
       if (!exempt) {
-        if (rules.uniqueDuos && k > 1 && usedDuos.has(key)) continue;
+        if (rules.uniqueDuos && k > 1 && (usedDuos.get(key) ?? 0) > 0 && repeatsLeft === 0) continue;
         if (
           rules.maxAppearances != null &&
           combo.some((p) => (appearances.get(p) ?? 0) >= rules.maxAppearances!)
@@ -310,6 +312,7 @@ export function enumerateLineups(
           continue;
         }
       }
+      const isRepeat = !exempt && rules.uniqueDuos && k > 1 && (usedDuos.get(key) ?? 0) > 0;
 
       // Feasibility: if everyone must reach a minimum, check enough slots remain.
       if (!exempt && rules.minAppearances != null) {
@@ -324,7 +327,8 @@ export function enumerateLineups(
       }
 
       if (!exempt) {
-        if (rules.uniqueDuos && k > 1) usedDuos.add(key);
+        if (rules.uniqueDuos && k > 1) usedDuos.set(key, (usedDuos.get(key) ?? 0) + 1);
+        if (isRepeat) repeatsLeft--;
         for (const p of combo) appearances.set(p, (appearances.get(p) ?? 0) + 1);
       }
       chosen.push(combo);
@@ -333,7 +337,8 @@ export function enumerateLineups(
 
       chosen.pop();
       if (!exempt) {
-        if (rules.uniqueDuos && k > 1) usedDuos.delete(key);
+        if (rules.uniqueDuos && k > 1) usedDuos.set(key, (usedDuos.get(key) ?? 1) - 1);
+        if (isRepeat) repeatsLeft++;
         for (const p of combo) appearances.set(p, (appearances.get(p) ?? 1) - 1);
       }
       if (truncated) return;

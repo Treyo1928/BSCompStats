@@ -194,21 +194,25 @@ describe('enumeration respects the rules', () => {
     expect(asPlayed).toBe(true);
   });
 
-  it('returns nothing when the roster is too small to be legal', () => {
+  it('gives a three-player roster the one repeat it cannot avoid, and no more', () => {
     const maps: SimMap[] = [
       { id: 'm1', leaderboardId: 'a', maxScore: MAX, isTiebreaker: false },
       { id: 'm2', leaderboardId: 'b', maxScore: MAX, isTiebreaker: false },
       { id: 'm3', leaderboardId: 'c', maxScore: MAX, isTiebreaker: false },
       { id: 'm4', leaderboardId: 'd', maxScore: MAX, isTiebreaker: false },
     ];
-    // Three players give only three distinct duos - four maps cannot be legal.
-    // This is the exact bind team White was in during the real scrim.
+    // Three players give only three distinct duos, so four maps need one
+    // repeat. This is the exact bind team White was in during the real scrim.
     const { lineups } = enumerateLineups(
       ['kaiden', 'kadence', 'alex'],
       maps,
       MSU_DUOS_FORMAT,
     );
-    expect(lineups).toHaveLength(0);
+    expect(lineups.length).toBeGreaterThan(0);
+    for (const lineup of lineups) {
+      const duos = maps.map((m) => [...lineup[m.id]!].sort().join('|'));
+      expect(new Set(duos).size).toBe(3);
+    }
   });
 });
 
@@ -341,18 +345,22 @@ describe('when no legal lineup exists', () => {
     iterations: 1000, seed: 3,
   };
 
-  it('says why, instead of returning an empty panel', () => {
-    // Three players cannot legally fill four maps of two: the format caps each
-    // player at two appearances, so they cover six of the eight slots. This is
-    // the exact bind team White was in during the real scrim.
+  it('recommends a lineup for a three-player roster instead of calling it impossible', () => {
+    // The exact bind team White was in during the real scrim. The rules give
+    // way as far as the roster forces them, so there is advice to give.
     const result = recommendLineups(setup, {
       maps, format: MSU_DUOS_FORMAT, roster: ['a', 'b', 'c'], opponentLineups: opponent,
     });
+    expect(result.infeasible).toBeUndefined();
+    expect(result.best).not.toBeNull();
+  });
 
+  it('says why, when a roster really cannot field a lineup', () => {
+    const result = recommendLineups(setup, {
+      maps, format: MSU_DUOS_FORMAT, roster: ['a'], opponentLineups: opponent,
+    });
     expect(result.best).toBeNull();
-    expect(result.infeasible).toMatch(/only cover 6 of the 8 slots/i);
-    // The message has to be actionable, not just a diagnosis.
-    expect(result.infeasible).toMatch(/Add 1 more player\./);
+    expect(result.infeasible).toMatch(/2 players per map but the roster only has 1/);
   });
 
   it('fits the appearance minimum to an oversized roster rather than giving up', () => {

@@ -22,6 +22,7 @@ export function LineupEditor({
   canOverride,
   recommended,
   hidden,
+  ruleBreaks,
 }: {
   matchId: string;
   matchMapId: string | null;
@@ -38,6 +39,8 @@ export function LineupEditor({
   canEdit: boolean;
   canOverride: boolean;
   recommended?: string[];
+  /** The rules this saved lineup was pushed through in spite of, if any. */
+  ruleBreaks?: string;
   /** Set when this team's lineup is being kept from the viewer; says why. */
   hidden?: string;
 }) {
@@ -84,6 +87,14 @@ export function LineupEditor({
       </div>
 
       {hidden && <p className="px-1 py-2 text-xs text-muted">{hidden}</p>}
+      {ruleBreaks && !hidden && (
+        <p
+          className="mb-1 rounded-md bg-amber-500/12 px-2 py-1 text-[11px] text-amber-200"
+          title={ruleBreaks}
+        >
+          Saved with the rules overridden: {ruleBreaks}
+        </p>
+      )}
 
       <div className="space-y-1" hidden={Boolean(hidden)}>
         {team.players.map((player) => {
@@ -158,11 +169,11 @@ export function LineupEditor({
             <div className="flex items-center gap-2">
               {canOverride && error && (
                 <label
-                  className="flex items-center gap-1 text-[10px] text-amber-300"
-                  title="Force an illegal lineup through. Recorded in the match log."
+                  className="flex items-center gap-1.5 text-xs text-amber-300"
+                  title="Save this lineup even though it breaks the rules. What was overridden is kept on the lineup for the organisers to see."
                 >
                   <input type="checkbox" name="override" />
-                  override
+                  Save anyway
                 </label>
               )}
               <Button type="submit" disabled={saving} variant="ghost">

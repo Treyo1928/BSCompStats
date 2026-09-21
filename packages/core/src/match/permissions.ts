@@ -6,7 +6,9 @@
  * actually read and test.
  *
  * The override rule is worth spelling out. An illegal lineup blocks submission,
- * but an organiser can force it through, because the real scrim data contains a
+ * but it can be forced through - by an organiser for either team, or by a
+ * captain for their own, with what was overridden kept on the lineup for the
+ * organisers to see. Originally only an organiser could force it through, because the real scrim data contains a
  * match that needs it: team White fielded three players against a format that
  * requires four distinct duos, so no legal lineup existed and the match still
  * happened. Crucially, a captain who is *also* an organiser or admin can
@@ -93,7 +95,6 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
     case 'CREATE_MATCH':
     case 'ACT_FOR_OTHERS':
     case 'UNDO_ACTION':
-    case 'OVERRIDE_RULES':
       // Note there is no captain branch here: a captain who may override is one
       // who also holds a staff role, and that is caught by `staff` above.
       return staff;
@@ -108,6 +109,13 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
 
     case 'MAKE_PICK_BAN':
     case 'SET_LINEUP':
+      return staff || isCaptainOf(actor, context.teamId);
+
+    case 'OVERRIDE_RULES':
+      // A captain may knowingly field a lineup that breaks the rules for their
+      // own team. Whether that is acceptable is for the people running the
+      // tournament to judge afterwards - the override is recorded for them -
+      // not for the software to forbid on the night.
       return staff || isCaptainOf(actor, context.teamId);
 
     default:
@@ -135,6 +143,6 @@ export function assertCan(
  * Whether submitting a lineup that breaks the rules should be permitted, and
  * how it must be recorded.
  */
-export function canOverrideViolations(actor: Actor): boolean {
-  return can(actor, 'OVERRIDE_RULES');
+export function canOverrideViolations(actor: Actor, teamId?: string | null): boolean {
+  return can(actor, 'OVERRIDE_RULES', { teamId });
 }

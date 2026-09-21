@@ -73,6 +73,8 @@ export interface MatchView {
     map: PoolMapView;
     lineups: Record<string, string[]>;
     scores: Record<string, Array<{ playerId: string; playerName: string; score: number; accuracy: number }>>;
+    /** team -> the rules its lineup here was saved in spite of, if any. */
+    ruleBreaks: Record<string, string>;
     /** Every run as entered: team -> player -> attempt number -> score. */
     runs: Record<string, Record<string, Record<number, number>>>;
     /** Teams that have spent a replay here; each adds one more run of the map. */
@@ -193,8 +195,10 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     const scores: Record<string, Array<{ playerId: string; playerName: string; score: number; accuracy: number }>> = {};
     const totals: Record<string, number> = {};
     const runs: Record<string, Record<string, Record<number, number>>> = {};
+    const ruleBreaks: Record<string, string> = {};
 
     for (const lineup of matchMap?.lineups ?? []) {
+      if (lineup.ruleBreaks) ruleBreaks[lineup.teamId] = lineup.ruleBreaks;
       lineups[lineup.teamId] = lineup.slots.map((s) => s.playerId);
     }
 
@@ -231,6 +235,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
       pickedByTeamId: entry.pickedByTeamId,
       map: poolMapById.get(entry.poolMapId)!,
       lineups,
+      ruleBreaks,
       scores,
       runs,
       replayCalledByTeamIds: matchMap?.replayCalledByTeamIds ?? [],

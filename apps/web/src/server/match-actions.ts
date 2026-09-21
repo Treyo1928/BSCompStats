@@ -304,21 +304,20 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
   if (blocking.length && !override) {
     return { error: blocking.map((v) => v.message).join(' ') };
   }
-  if (blocking.length && override && !canOverrideViolations(actor)) {
-    // The real scrim needed this - a three-player team cannot field four legal
-    // duos - but it has to be a deliberate act by somebody running the event.
-    return {
-      error: 'That lineup breaks the rules, and only an organiser or admin can override it.',
-    };
+  if (blocking.length && override && !canOverrideViolations(actor, teamId)) {
+    return { error: 'That lineup breaks the rules, and you cannot override them for this team.' };
   }
+  // Kept on the lineup: whether an override was fair is the organisers' call,
+  // and they can only make it if they can see that it happened.
+  const ruleBreaks = blocking.length ? blocking.map((v) => v.message).join(' ') : null;
 
   // One transaction: two people saving the same map at once must not end up
   // with a mixture, and a failure must not leave the lineup empty.
   await prisma.$transaction(async (tx) => {
     const lineup = await tx.lineup.upsert({
       where: { matchMapId_teamId: { matchMapId, teamId } },
-      create: { matchMapId, teamId },
-      update: {},
+      create: { matchMapId, teamId, ruleBreaks },
+      update: { ruleBreaks },
     });
     await tx.lineupSlot.deleteMany({ where: { lineupId: lineup.id } });
     await tx.lineupSlot.createMany({

@@ -86,6 +86,7 @@ export function validateLineups(options: ValidateOptions): ValidationResult {
   const duoLabels = new Map<string, string[]>();
 
   let complete = true;
+  let forcedRepeatsLeft = rules.duoRepeatsAllowed;
 
   for (const lineup of lineups) {
     const ids = lineup.playerIds;
@@ -159,7 +160,13 @@ export function validateLineups(options: ValidateOptions): ValidationResult {
       const key = duoKey(ids);
       const previous = duos[key];
 
-      if (previous) {
+      // A roster too small to avoid a repeat is allowed exactly as many as it
+      // is forced into; only a repeat beyond that is the captain's doing.
+      if (previous && forcedRepeatsLeft > 0) {
+        forcedRepeatsLeft--;
+        previous.push(lineup.matchMapId);
+        duoLabels.get(key)?.push(lineup.mapLabel);
+      } else if (previous) {
         const names = [...ids].sort().map(name).join(' + ');
         violations.push({
           code: 'DUPLICATE_DUO',

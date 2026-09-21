@@ -43,8 +43,13 @@ describe('overriding an illegal lineup', () => {
     expect(can(playerCaptainWhoRunsTheEvent, 'SET_LINEUP', { teamId: 'white' })).toBe(true);
   });
 
-  it('is not allowed for a captain with no staff role', () => {
+  it('is allowed for a captain, but only for their own team', () => {
+    // Whether breaking a rule was acceptable is for the organisers to judge
+    // afterwards; the software records it rather than forbidding it.
+    expect(canOverrideViolations(captain, 'maroon')).toBe(true);
+    expect(canOverrideViolations(captain, 'white')).toBe(false);
     expect(canOverrideViolations(captain)).toBe(false);
+    expect(canOverrideViolations(player, 'maroon')).toBe(false);
   });
 });
 

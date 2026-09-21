@@ -107,7 +107,8 @@ function randomLegalLineup(
   const options = shuffle(combinations(roster, format.playersPerMap), random);
   const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
   const appearances = new Map<string, number>();
-  const usedDuos = new Set<string>();
+  const usedDuos = new Map<string, number>();
+  let repeatsLeft = rules.duoRepeatsAllowed;
   const chosen: Array<readonly string[]> = [];
 
   const walk = (index: number): boolean => {
@@ -120,15 +121,19 @@ function randomLegalLineup(
     const exempt = map.isTiebreaker && rules.tiebreakerExemptFromDuos;
 
     for (const combo of options) {
+      const key = duoKey(combo);
+      const tracked = !exempt && rules.uniqueDuos && format.playersPerMap > 1;
+      const isRepeat = tracked && (usedDuos.get(key) ?? 0) > 0;
       if (!exempt) {
-        if (rules.uniqueDuos && format.playersPerMap > 1 && usedDuos.has(duoKey(combo))) continue;
+        if (isRepeat && repeatsLeft === 0) continue;
         if (
           rules.maxAppearances != null &&
           combo.some((p) => (appearances.get(p) ?? 0) >= rules.maxAppearances!)
         ) {
           continue;
         }
-        if (rules.uniqueDuos && format.playersPerMap > 1) usedDuos.add(duoKey(combo));
+        if (tracked) usedDuos.set(key, (usedDuos.get(key) ?? 0) + 1);
+        if (isRepeat) repeatsLeft--;
         for (const p of combo) appearances.set(p, (appearances.get(p) ?? 0) + 1);
       }
       chosen.push(combo);
@@ -137,7 +142,8 @@ function randomLegalLineup(
 
       chosen.pop();
       if (!exempt) {
-        if (rules.uniqueDuos && format.playersPerMap > 1) usedDuos.delete(duoKey(combo));
+        if (tracked) usedDuos.set(key, (usedDuos.get(key) ?? 1) - 1);
+        if (isRepeat) repeatsLeft++;
         for (const p of combo) appearances.set(p, (appearances.get(p) ?? 1) - 1);
       }
     }
@@ -216,6 +222,7 @@ function isLegal(
   const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
   const appearances = new Map<string, number>();
   const duos = new Set<string>();
+  let repeatsLeft = rules.duoRepeatsAllowed;
 
   for (const map of maps) {
     const group = lineups[map.id] ?? [];
@@ -227,7 +234,10 @@ function isLegal(
 
     if (rules.uniqueDuos && format.playersPerMap > 1) {
       const key = duoKey(group);
-      if (duos.has(key)) return false;
+      if (duos.has(key)) {
+        if (repeatsLeft === 0) return false;
+        repeatsLeft--;
+      }
       duos.add(key);
     }
     for (const p of group) appearances.set(p, (appearances.get(p) ?? 0) + 1);

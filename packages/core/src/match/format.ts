@@ -49,6 +49,12 @@ export const matchRulesSchema = z.object({
   /** A player may not appear twice on the same map. */
   noDuplicateWithinMap: z.boolean().default(true),
   /**
+   * Repeated pairings a roster is allowed because it is too small to avoid
+   * them. Worked out by `rulesForRoster`, not something a format sets: three
+   * players make three duos, so four maps force one repeat.
+   */
+  duoRepeatsAllowed: z.number().int().nonnegative().default(0),
+  /**
    * How many times a team may call for a map to be replayed in one match.
    * Both teams play the map again and each player's best run counts.
    */
@@ -146,23 +152,43 @@ export function parseFormat(raw: unknown): MatchFormat {
 /**
  * The format's rules as they apply to one roster.
  *
- * "Everyone plays at least twice" is written for the roster the format expects
- * - four players across four duo maps. A team that brings six cannot satisfy
- * it: there are eight slots and twelve would be needed. Rather than declare
- * every lineup illegal, the minimum is lowered to what the slots allow, so it
- * keeps its meaning (nobody is benched while someone else plays everything)
- * without demanding the impossible.
+ * A format's rules are written for the roster it expects - four players across
+ * four duo maps, everyone playing exactly twice, no pairing repeated. A team
+ * that turns up with six cannot all play twice; one with three cannot avoid
+ * repeating a pairing or playing someone a third time; one with two fields the
+ * same duo on every map. None of that is a captain breaking a rule. So each
+ * limit is relaxed exactly as far as the roster forces it, and no further:
+ *
+ *   minimum appearances  down to what the slots allow everyone
+ *   maximum appearances  up to what is needed to fill the slots
+ *   unique pairings      repeats allowed only for the shortfall
+ *
+ * A lineup that breaks the rules beyond that is still flagged.
  */
 export function rulesForRoster(
   format: MatchFormat,
   rosterSize: number,
   scoringMapCount: number,
 ): MatchFormat {
-  const min = format.rules.minAppearances;
-  if (min == null || rosterSize <= 0) return format;
-  const achievable = Math.floor((scoringMapCount * format.playersPerMap) / rosterSize);
-  if (achievable >= min) return format;
-  return { ...format, rules: { ...format.rules, minAppearances: achievable } };
+  if (rosterSize <= 0) return format;
+  const k = format.playersPerMap;
+  const slots = scoringMapCount * k;
+  const rules = { ...format.rules };
+
+  if (rules.minAppearances != null) {
+    rules.minAppearances = Math.min(rules.minAppearances, Math.floor(slots / rosterSize));
+  }
+  if (rules.maxAppearances != null && rosterSize * rules.maxAppearances < slots) {
+    rules.maxAppearances = Math.ceil(slots / rosterSize);
+  }
+  if (rules.uniqueDuos && k > 1) {
+    // Distinct groups the roster can form: C(n, k).
+    let groups = 1;
+    for (let i = 0; i < k; i++) groups = (groups * (rosterSize - i)) / (i + 1);
+    rules.duoRepeatsAllowed = Math.max(0, scoringMapCount - Math.round(Math.max(groups, 0)));
+  }
+
+  return { ...format, rules };
 }
 
 /** How many maps a format will produce, tiebreaker included. */

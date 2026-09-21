@@ -51,7 +51,12 @@ describe('the duo rule, against the real scrim', () => {
     });
     expect(withTiebreaker.valid).toBe(true);
 
-    // The same pairing on a normal map is a straightforward violation.
+    // Exempt means it is not counted at all: two appearances each, not three.
+    expect(withTiebreaker.appearances).toEqual({ erin: 2, trey: 2, mia: 2, will: 2 });
+
+    // Counted as an ordinary map it would be their third. Five duo maps over
+    // four players force someone to play three, so that is allowed - but it
+    // is counted, which is the difference the exemption makes.
     const asNormalMap = validateLineups({
       format: MSU_DUOS_FORMAT,
       lineups: maroonLineups.map((l) =>
@@ -60,8 +65,7 @@ describe('the duo rule, against the real scrim', () => {
       roster: MAROON,
       playerName: nameOf,
     });
-    expect(asNormalMap.valid).toBe(false);
-    expect(asNormalMap.violations.map((v) => v.code)).toContain('TOO_MANY_APPEARANCES');
+    expect(asNormalMap.appearances).toEqual({ erin: 3, trey: 2, mia: 3, will: 2 });
   });
 
   it('catches a repeated duo and names both maps', () => {
@@ -85,7 +89,7 @@ describe('the duo rule, against the real scrim', () => {
     expect(result.valid).toBe(false);
   });
 
-  it("flags White's real lineups, which broke the rule with a short roster", () => {
+  it("accepts White's real lineups: a short roster cannot avoid what they did", () => {
     // White only fielded three players - their fourth is literally named "the
     // secret cooler fourth player" in the sheet and never appears - so they
     // could not cover four maps without repeating Kaiden+Kadence.
@@ -105,12 +109,12 @@ describe('the duo rule, against the real scrim', () => {
       playerName: nameOf,
     });
 
-    expect(result.valid).toBe(false);
-    const codes = result.violations.map((v) => v.code);
-    expect(codes).toContain('DUPLICATE_DUO');
-    expect(codes).toContain('TOO_MANY_APPEARANCES');
-    // The tiebreaker repeat is exempt, so only the Map 1 / Map 4 clash counts.
-    expect(result.violations.filter((v) => v.code === 'DUPLICATE_DUO')).toHaveLength(1);
+    // Three players make three duos and cover six of eight slots at two maps
+    // each. One repeated pairing and a third map for two of them is the least
+    // they could do, so none of it is a violation. (This used to be flagged,
+    // and needed an organiser to override it on the night.)
+    expect(result.violations).toEqual([]);
+    expect(result.valid).toBe(true);
     expect(result.appearances).toEqual({ kaiden: 3, kadence: 3, alex: 2 });
   });
 });
@@ -281,5 +285,51 @@ describe('a roster bigger than the format expects', () => {
     );
     const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups: greedy, roster: SIX, playerName: nameOf });
     expect(result.violations.map((v) => v.code)).toContain('TOO_MANY_APPEARANCES');
+  });
+});
+
+describe('a roster smaller than the format expects', () => {
+  const four = (pairs: string[][]): LineupInput[] =>
+    pairs.map((playerIds, i) => ({
+      matchMapId: `m${i + 1}`,
+      mapLabel: `Map ${i + 1}`,
+      isTiebreaker: false,
+      playerIds,
+    }));
+
+  it('lets three players repeat one pairing and play a third map, since they must', () => {
+    // Three players make three duos; four maps force one repeat, and eight
+    // slots over three players force someone to play three times.
+    const result = validateLineups({
+      format: MSU_DUOS_FORMAT,
+      roster: ['erin', 'trey', 'mia'],
+      playerName: nameOf,
+      lineups: four([['erin', 'trey'], ['erin', 'mia'], ['trey', 'mia'], ['erin', 'trey']]),
+    });
+    expect(result.violations).toEqual([]);
+  });
+
+  it('still objects to a second repeat that nothing forced', () => {
+    const result = validateLineups({
+      format: MSU_DUOS_FORMAT,
+      roster: ['erin', 'trey', 'mia'],
+      playerName: nameOf,
+      lineups: four([['erin', 'trey'], ['erin', 'trey'], ['erin', 'trey'], ['trey', 'mia']]),
+    });
+    expect(result.violations.map((v) => v.code)).toContain('DUPLICATE_DUO');
+  });
+
+  it('accepts the same duo on every map from a two-player team', () => {
+    const result = validateLineups({
+      format: MSU_DUOS_FORMAT,
+      roster: ['erin', 'trey'],
+      playerName: nameOf,
+      lineups: [
+        ...four([['erin', 'trey'], ['erin', 'trey'], ['erin', 'trey'], ['erin', 'trey']]),
+        { matchMapId: 'tb', mapLabel: 'Tiebreaker', isTiebreaker: true, playerIds: ['erin', 'trey'] },
+      ],
+    });
+    expect(result.violations).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 });
