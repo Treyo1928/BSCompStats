@@ -119,18 +119,26 @@ export async function submitPickBan(formData: FormData): Promise<void> {
       })
     : null;
 
-  await prisma.matchAction.create({
-    data: {
-      matchId,
-      seq: action.seq,
-      type: action.type,
-      teamId: action.teamId,
-      poolMapId: action.poolMapId,
-      actingUserId: actor.userId,
-      // Recorded so the timeline reads honestly when an organiser stands in.
-      onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
-    },
-  });
+  // (matchId, seq) is unique - that is what stops two captains both taking
+  // the same step. An undone action still holds its seq as a tombstone, so it
+  // has to make way before the step can be retaken, or the insert collides.
+  await prisma.$transaction([
+    prisma.matchAction.deleteMany({
+      where: { matchId, seq: action.seq, undoneAt: { not: null } },
+    }),
+    prisma.matchAction.create({
+      data: {
+        matchId,
+        seq: action.seq,
+        type: action.type,
+        teamId: action.teamId,
+        poolMapId: action.poolMapId,
+        actingUserId: actor.userId,
+        // Recorded so the timeline reads honestly when an organiser stands in.
+        onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
+      },
+    }),
+  ]);
 
   await materializeMaps(matchId);
   revalidatePath(`/t/${match.tournament.slug}/match/${matchId}`);
@@ -149,8 +157,8 @@ export async function undoLastAction(formData: FormData): Promise<void> {
   });
   if (!last) return;
 
-  // Tombstoned rather than deleted: who did what, and who took it back, is
-  // part of the match record.
+  // Tombstoned rather than deleted, so a step that was taken back stays on
+  // record until someone retakes it (see submitPickBan).
   await prisma.matchAction.update({
     where: { id: last.id },
     data: { undoneAt: new Date() },

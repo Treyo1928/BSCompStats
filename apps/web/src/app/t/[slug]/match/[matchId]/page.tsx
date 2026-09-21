@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { can, isCaptainOf } from '@/server/match-helpers';
+import { can, isCaptainOf, isStaff } from '@/server/match-helpers';
 import {
   Panel,
   PageHeader,
@@ -63,6 +63,19 @@ export default async function MatchPage({
   const pendingTeam =
     match.pending?.teamId === match.teamA.id ? match.teamA : match.teamB;
 
+  // Say in what capacity the viewer can touch this match. Staff can act for
+  // both sides, and without being told so that looks exactly like a bug.
+  const captainedTeams = [match.teamA, match.teamB].filter((t) => isCaptainOf(actor, t.id));
+  const capacity = isStaff(actor)
+    ? `You are ${actor.globalRole === 'ADMIN' ? 'a site admin' : 'an organiser'}${
+        captainedTeams.length > 0 ? ` and captain of ${captainedTeams.map((t) => t.name).join(' and ')}` : ''
+      }, so you can pick, ban and set lineups for both teams. Anything you do for a team you do not captain is recorded as made on its captain's behalf.`
+    : captainedTeams.length > 0
+      ? `You captain ${captainedTeams.map((t) => t.name).join(' and ')}. You can pick, ban and set lineups for your own team only, and only on its turn.`
+      : actor.userId
+        ? 'You are watching. Only team captains and organisers can pick, ban or set lineups.'
+        : null;
+
   const coverOf = new Map(match.pool.maps.map((m) => [m.poolMapId, m.coverImage]));
   const stateLabel: Record<string, string> = {
     SETUP: 'Setup',
@@ -113,6 +126,12 @@ export default async function MatchPage({
           />
         </div>
       </section>
+
+      {capacity && (
+        <p className="rounded-lg border border-edge bg-raised/50 px-4 py-2 text-xs text-muted">
+          {capacity}
+        </p>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_21rem]">
         <div className="space-y-6">
