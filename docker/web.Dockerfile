@@ -35,6 +35,12 @@ RUN npx prisma generate --schema packages/db/prisma/schema.prisma
 RUN npm run build --workspace @bscs/core
 RUN npx tsc -b packages/db/tsconfig.json
 
+# The runtime stage copies apps/web/public, and COPY fails outright on a path
+# that does not exist. Git does not track empty directories, so a fresh clone
+# of a repo whose public/ held nothing had no such folder and the build died at
+# the very last step. Guarantee it exists whatever the checkout looked like.
+RUN mkdir -p apps/web/public
+
 # Next validates env at import time; supply a throwaway value so the build does
 # not need real secrets baked into the image.
 ENV AUTH_SECRET=build-time-placeholder

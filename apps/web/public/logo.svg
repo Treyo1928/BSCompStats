@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0" stop-color="#232942"/>
+      <stop offset="1" stop-color="#0d1019"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+  </defs>
+  <!-- Full-bleed square: Discord applies its own rounding and circle crops. -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <g fill="none" stroke-linecap="round" stroke-width="84">
+    <g filter="url(#glow)" opacity="0.75">
+      <path d="M292 732 732 292" stroke="#ff4d5e"/>
+      <path d="M292 292 732 732" stroke="#3d9bff"/>
+    </g>
+    <!-- Each blade with its bright core, red underneath and blue on top. -->
+    <path d="M292 732 732 292" stroke="#ff4d5e"/>
+    <path d="M292 732 732 292" stroke="#ffffff" stroke-width="22" opacity="0.55"/>
+    <path d="M292 292 732 732" stroke="#3d9bff"/>
+    <path d="M292 292 732 732" stroke="#ffffff" stroke-width="22" opacity="0.55"/>
+  </g>
+</svg>
