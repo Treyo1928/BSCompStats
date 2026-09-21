@@ -123,16 +123,25 @@ export function fitBestModel(
   observations: readonly Observation[],
   cv: CvOptions = {},
 ): BestModelResult {
+  const { chosen, comparison } = chooseFitOptions(observations, cv);
+  return { model: fitSkillModel(observations, chosen), chosen, comparison };
+}
+
+/**
+ * The expensive half of `fitBestModel`: which model complexity wins on held-out
+ * error. It is a whole grid of fits over many folds, against one fit to build
+ * the model it picks - so it is split out to be run somewhere other than the
+ * thread that serves requests. Its result is plain data.
+ */
+export function chooseFitOptions(
+  observations: readonly Observation[],
+  cv: CvOptions = {},
+): { chosen: FitOptions; comparison: CvResult[] } {
   const grid = cv.grid ?? DEFAULT_GRID;
   const clean = observations.filter((o) => !o.isDnf);
 
   if (clean.length < 20) {
-    const chosen: FitOptions = { latentFactors: 0, biasRegularization: 1 };
-    return {
-      model: fitSkillModel(observations, chosen),
-      chosen,
-      comparison: [],
-    };
+    return { chosen: { latentFactors: 0, biasRegularization: 1 }, comparison: [] };
   }
 
   const comparison = grid
@@ -144,5 +153,5 @@ export function fitBestModel(
     ? best.options
     : { latentFactors: 0, biasRegularization: 1 };
 
-  return { model: fitSkillModel(observations, chosen), chosen, comparison };
+  return { chosen, comparison };
 }

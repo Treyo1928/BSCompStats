@@ -21,7 +21,6 @@ import {
 } from '@/components/ui';
 import { LiveBadge } from '@/components/live-badge';
 import { MatchLive } from '@/components/match-live';
-import { FormBusy } from '@/components/busy-overlay';
 import { ConfirmButton } from '@/components/confirm-button';
 import { loadMatch, buildAdvice } from '@/server/matches';
 import { getActorOrAnonymous } from '@/server/session';
@@ -309,7 +308,6 @@ export default async function MatchPage({
                           <input type="hidden" name="matchId" value={match.id} />
                           <input type="hidden" name="poolMapId" value={map.poolMapId} />
                           <input type="hidden" name="teamId" value={match.pending!.teamId} />
-                          <FormBusy />
                           <button
                             type="submit"
                             disabled={!canAct}
@@ -646,6 +644,12 @@ export default async function MatchPage({
 
         {/* Advice sidebar */}
         <aside className="space-y-6">
+          {advice.calculating && match.pending && advice.actionAdvice.length === 0 && (
+            <Panel title={match.pending.type === 'PICK' ? 'Suggested pick' : 'Suggested ban'}>
+              <Calculating>Working out the best {match.pending.type === 'PICK' ? 'pick' : 'ban'}…</Calculating>
+            </Panel>
+          )}
+
           {advice.actionAdvice.length > 0 && match.pending && (() => {
             const top = advice.actionAdvice[0]!;
             const map = match.pool.maps.find((m) => m.poolMapId === top.mapId);
@@ -688,7 +692,11 @@ export default async function MatchPage({
             }
           >
             {advice.mapValues.length === 0 ? (
-              <Empty>Both teams need a full roster before this can be estimated.</Empty>
+              advice.calculating ? (
+                <Calculating>Working out win chances…</Calculating>
+              ) : (
+                <Empty>Both teams need a full roster before this can be estimated.</Empty>
+              )
             ) : (
               <ul className="space-y-2.5 text-sm">
                 {[...advice.mapValues]
@@ -725,6 +733,16 @@ export default async function MatchPage({
               </ul>
             )}
           </Panel>
+
+          {advice.calculating && !match.pending && match.plannedMaps.length > 0 && (
+            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
+              <Calculating>Working out the best lineups…</Calculating>
+              <p className="mt-2 text-xs text-muted">
+                This takes a few seconds and appears by itself. You can set your players in the
+                meantime - suggestions will show up here and as stars beside their names.
+              </p>
+            </Panel>
+          )}
 
           {match.pending && match.plannedMaps.length > 0 && (
             <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
@@ -780,6 +798,19 @@ export default async function MatchPage({
         </aside>
       </div>
     </div>
+  );
+}
+
+/** Advice that is still being computed on the advice thread. */
+function Calculating({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-center gap-2 text-sm text-muted" role="status" aria-live="polite">
+      <span
+        aria-hidden
+        className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-edge-strong border-t-accent"
+      />
+      {children}
+    </p>
   );
 }
 

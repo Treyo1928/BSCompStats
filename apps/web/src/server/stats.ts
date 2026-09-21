@@ -1,11 +1,14 @@
 import { cookies } from 'next/headers';
+import { runChooseModel } from './advice-thread';
+import { announceMatchChange } from '@/lib/redis';
 import { prisma } from '@bscs/db';
 import {
   applyScope,
   buildFailModel,
   buildPlayerProfiles,
   classifyFails,
-  fitBestModel,
+  fitSkillModel,
+  type FitOptions,
   statsScopeSchema,
   DEFAULT_STATS_SCOPE,
   type FailModel,
@@ -60,6 +63,9 @@ export interface TournamentModel {
  * that also serves every other request, so an uncached fit is felt by everyone.
  */
 const modelCache = new Map<string, TournamentModel>();
+/** The fit settings cross-validation last chose per tournament, and for which scores. */
+const fitChoice = new Map<string, { dataKey: string; chosen: FitOptions }>();
+const fitChoosing = new Map<string, string>();
 
 export async function buildTournamentModel(
   tournamentId: string,
@@ -112,6 +118,7 @@ export async function buildTournamentModel(
   ]);
   const cached = modelCache.get(tournamentId);
   if (cached?.version === version) return withViewerEstimates(cached, tournamentId);
+  const fitStarted = performance.now();
 
   const scores = playerIds.length
     ? await prisma.score.findMany({
@@ -168,7 +175,41 @@ export async function buildTournamentModel(
 
   const { observations, excluded, playerCount, mapCount } = applyScope(scoped, scope);
 
-  const { model, chosen } = fitBestModel(observations);
+  // Which complexity to fit is decided by cross-validation - a grid of fits
+  // over many folds, seconds of work - on the advice thread. The model itself
+  // is one fit, done here with the best settings known so far: the ones last
+  // chosen for this tournament, or the plain additive model, which is what
+  // cross-validation picks on a pool-sized board anyway. If the thread comes
+  // back with something different, the next render refits with it.
+  const dataKey = JSON.stringify(observations.map((o) => [o.playerId, o.leaderboardId, o.acc]));
+  const settled = fitChoice.get(tournamentId);
+  const chosen: FitOptions = settled?.chosen ?? { latentFactors: 0, biasRegularization: 0.5 };
+  const model = fitSkillModel(observations, chosen);
+
+  if (settled?.dataKey !== dataKey && fitChoosing.get(tournamentId) !== dataKey) {
+    fitChoosing.set(tournamentId, dataKey);
+    void runChooseModel([...observations])
+      .then(async (better) => {
+        if (fitChoosing.get(tournamentId) !== dataKey) return;
+        fitChoosing.delete(tournamentId);
+        fitChoice.set(tournamentId, { dataKey, chosen: better });
+        if (JSON.stringify(better) === JSON.stringify(chosen)) return;
+
+        // A different model means different predictions: drop the cached one
+        // and bring open match pages up to date. Pool pages pick it up on
+        // their next refresh.
+        modelCache.delete(tournamentId);
+        const live = await prisma.match.findMany({
+          where: { tournamentId, state: { not: 'COMPLETE' } },
+          select: { id: true },
+        });
+        await Promise.all(live.map((m) => announceMatchChange(m.id)));
+      })
+      .catch((err) => {
+        if (fitChoosing.get(tournamentId) === dataKey) fitChoosing.delete(tournamentId);
+        console.error('[model] choosing fit options failed:', err);
+      });
+  }
 
   const observed = new Set(observations.map((o) => failKey(o.playerId, o.leaderboardId)));
   const detailed = scores
@@ -212,6 +253,11 @@ export async function buildTournamentModel(
     version,
   };
   modelCache.set(tournamentId, built);
+  // This runs on the request thread, so how long it takes is how long the site
+  // stalls when scores change. Worth being able to see.
+  console.info(
+    `[model] fitted ${observations.length} scores for ${playerCount} players in ${Math.round(performance.now() - fitStarted)}ms`,
+  );
   return withViewerEstimates(built, tournamentId);
 }
 

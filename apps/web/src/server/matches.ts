@@ -15,15 +15,9 @@ import {
   type ValidationResult,
 } from './match-helpers';
 import { buildTournamentModel, predictorFor, type TournamentModel } from './stats';
-import {
-  evaluateMaps,
-  recommendAction,
-  recommendLineups,
-  type MapValue,
-  type ActionAdvice,
-  type SimMap,
-  type LineupMap,
-} from '@bscs/core/optimize';
+import { runMatchAdvice } from './advice-thread';
+import { announceMatchChange } from '@/lib/redis';
+import type { MatchAdviceInput, MatchAdviceResult, SimMap } from '@bscs/core/optimize';
 
 /** Everything the match room needs, assembled in one place. */
 
@@ -358,170 +352,121 @@ export function buildPickBanContext(
 //  Advice
 // ---------------------------------------------------------------------------
 
-export interface MatchAdvice {
-  /** Every pool map scored from the given team's point of view. */
-  mapValues: MapValue[];
-  /** Ranked advice for the action currently on the clock. */
-  actionAdvice: ActionAdvice[];
-  /** Recommended lineups, by objective. */
-  lineups: {
-    winProbability: { lineups: LineupMap; winProbability: number; expectedMargin: number; conceded: string[] } | null;
-    expectedMargin: { lineups: LineupMap; winProbability: number; expectedMargin: number; conceded: string[] } | null;
-  };
-  /** Why there is no lineup advice, when there is none. */
-  lineupsInfeasible: string | null;
+export interface MatchAdvice extends MatchAdviceResult {
   model: TournamentModel;
+  /**
+   * True while the numbers are still being worked out on the advice thread.
+   * What is shown meanwhile is the previous advice for this match and side, or
+   * nothing yet; the page is told to refresh when the real thing lands.
+   */
+  calculating: boolean;
 }
 
-/** Advice per match and side, kept until the match or the model moves on. */
-const adviceCache = new Map<string, { key: string; advice: MatchAdvice }>();
+const EMPTY_ADVICE: MatchAdviceResult = {
+  mapValues: [],
+  actionAdvice: [],
+  lineups: { winProbability: null, expectedMargin: null },
+  lineupsInfeasible: null,
+};
 
-export async function buildAdvice(
-  match: MatchView,
-  forTeamId: string,
-): Promise<MatchAdvice> {
+/** Finished advice per match and side, and what is being computed for each. */
+const adviceCache = new Map<string, { key: string; result: MatchAdviceResult }>();
+const adviceInFlight = new Map<string, string>();
+
+/**
+ * Advice for a match from one team's side - without ever making the page wait.
+ *
+ * The simulation is seconds of CPU. It runs on its own thread (see
+ * advice-thread.ts), and this returns straight away: the finished advice if
+ * its inputs have not changed, otherwise whatever was last known, flagged as
+ * `calculating`. When the thread finishes, every open copy of the match page
+ * is told to refresh over the same channel picks and bans use, and that render
+ * finds the result waiting here.
+ */
+export async function buildAdvice(match: MatchView, forTeamId: string): Promise<MatchAdvice> {
   const model = await buildTournamentModel(match.tournament.id);
-
-  // The simulation is seconds of CPU on the thread that serves everyone, and
-  // this page is rendered by every viewer on every live update. Its inputs
-  // change only when someone acts, a roster changes, or a score lands.
-  // Per viewer where the viewer has estimates of their own, so two people with
-  // different opinions do not keep evicting each other.
-  const slot = `${match.id}:${forTeamId}:${model.estimates.size ? model.version.split('|viewer:')[1] : ''}`;
-  const key = JSON.stringify([
-    model.version,
-    match.format,
-    match.actions.map((a) => [a.seq, a.type, a.teamId, a.poolMapId]),
-    match.plannedMaps.map((m) => m.poolMapId),
-    match.teamA.players.map((p) => p.id),
-    match.teamB.players.map((p) => p.id),
-  ]);
-  const hit = adviceCache.get(slot);
-  if (hit?.key === key) return hit.advice;
-
-  const advice = await computeAdvice(match, forTeamId, model);
-  adviceCache.set(slot, { key, advice });
-  // Matches finish; their advice need not be held forever.
-  if (adviceCache.size > 200) adviceCache.delete(adviceCache.keys().next().value!);
-  return advice;
-}
-
-async function computeAdvice(
-  match: MatchView,
-  forTeamId: string,
-  model: TournamentModel,
-): Promise<MatchAdvice> {
   const predict = predictorFor(model);
 
   const ourTeam = forTeamId === match.teamA.id ? match.teamA : match.teamB;
   const theirTeam = forTeamId === match.teamA.id ? match.teamB : match.teamA;
+  const ourRoster = ourTeam.players.map((p) => p.id);
+  const theirRoster = theirTeam.players.map((p) => p.id);
 
-  const poolSimMaps: SimMap[] = match.pool.maps.map((pm) => ({
+  const toSimMap = (pm: { poolMapId: string; leaderboardId: string; maxScore: number; isTiebreaker: boolean }): SimMap => ({
     id: pm.poolMapId,
     leaderboardId: pm.leaderboardId,
     maxScore: pm.maxScore,
     isTiebreaker: pm.isTiebreaker,
-  }));
+  });
+  const poolMaps = match.pool.maps.map(toSimMap);
+  const playedMaps = match.plannedMaps.map((pm) =>
+    toSimMap({
+      poolMapId: pm.poolMapId,
+      leaderboardId: pm.map.leaderboardId,
+      maxScore: pm.map.maxScore,
+      isTiebreaker: pm.isTiebreaker,
+    }),
+  );
 
-  const setup = {
-    maps: poolSimMaps,
+  // The model is closures and cannot cross to a thread, so flatten what the
+  // simulation will ask it into a table. A few hundred cheap lookups.
+  const predictions: MatchAdviceInput['predictions'] = {};
+  for (const playerId of new Set([...ourRoster, ...theirRoster])) {
+    const row: Record<string, ReturnType<typeof predict>> = {};
+    for (const map of poolMaps) row[map.leaderboardId] = predict(playerId, map.leaderboardId);
+    predictions[playerId] = row;
+  }
+
+  const input: MatchAdviceInput = {
     format: match.format,
-    // A Set: a shared player is on both rosters but is one person with one run.
-    playerIds: [...new Set([...ourTeam.players, ...theirTeam.players].map((p) => p.id))],
-    predict,
+    poolMaps,
+    playedMaps,
+    ourRoster,
+    theirRoster,
+    predictions,
+    pending: match.pending
+      ? { type: match.pending.type, availableMapIds: match.pending.availableMapIds }
+      : null,
     iterations: 10_000,
     seed: hashSeed(match.id),
   };
 
-  const mapValues =
-    ourTeam.players.length >= match.format.playersPerMap &&
-    theirTeam.players.length >= match.format.playersPerMap
-      ? evaluateMaps({
-          maps: poolSimMaps,
-          format: match.format,
-          ourRoster: ourTeam.players.map((p) => p.id),
-          theirRoster: theirTeam.players.map((p) => p.id),
-          setup,
-        })
-      : [];
+  // Per viewer where the viewer has estimates of their own (they are part of
+  // `predictions`), so two people with different opinions do not evict each other.
+  const slot = `${match.id}:${forTeamId}:${model.estimates.size ? model.version.split('|viewer:')[1] : ''}`;
+  const key = JSON.stringify(input);
 
-  const actionAdvice = match.pending
-    ? recommendAction(match.pending.type, match.pending.availableMapIds, mapValues)
-    : [];
+  const cached = adviceCache.get(slot);
+  if (cached?.key === key) return { ...cached.result, model, calculating: false };
 
-  // Lineup advice only makes sense once the maps are known.
-  const playedSimMaps: SimMap[] = match.plannedMaps.map((pm) => ({
-    id: pm.poolMapId,
-    leaderboardId: pm.map.leaderboardId,
-    maxScore: pm.map.maxScore,
-    isTiebreaker: pm.isTiebreaker,
-  }));
-
-  const lineups: MatchAdvice['lineups'] = { winProbability: null, expectedMargin: null };
-  let lineupsInfeasible: string | null = null;
-
-  // ...and all of them: appearance limits and the duo rule are about the whole
-  // card, so advice for a half-picked one is either wrong or "impossible".
-  if (
-    !match.pending &&
-    playedSimMaps.length &&
-    ourTeam.players.length >= match.format.playersPerMap
-  ) {
-    // The opponent's lineups are rarely known in advance, so assume they field
-    // a reasonable spread rather than pretending we can see their card.
-    const opponentLineups = assumeOpponentLineups(
-      theirTeam.players.map((p) => p.id),
-      playedSimMaps,
-      match.format.playersPerMap,
-    );
-
-    for (const objective of ['WIN_PROBABILITY', 'EXPECTED_MARGIN'] as const) {
-      const result = recommendLineups(
-        { ...setup, maps: playedSimMaps },
-        {
-          maps: playedSimMaps,
-          format: match.format,
-          roster: ourTeam.players.map((p) => p.id),
-          opponentLineups,
-          objective,
-        },
-      );
-      if (result.best) {
-        const key = objective === 'WIN_PROBABILITY' ? 'winProbability' : 'expectedMargin';
-        lineups[key] = {
-          lineups: result.best.lineups,
-          winProbability: result.best.winProbability,
-          expectedMargin: result.best.expectedMargin,
-          conceded: result.best.concededMapIds,
-        };
-      } else if (result.infeasible) {
-        lineupsInfeasible = result.infeasible;
-      }
-    }
+  if (adviceInFlight.get(slot) !== key) {
+    adviceInFlight.set(slot, key);
+    void runMatchAdvice(input)
+      .then((result) => {
+        // Only if this is still what the slot wants: a pick made meanwhile has
+        // already queued its own job, and this answer is to the old question.
+        if (adviceInFlight.get(slot) !== key) return;
+        adviceInFlight.delete(slot);
+        adviceCache.set(slot, { key, result });
+        // Matches finish; their advice need not be held for ever.
+        if (adviceCache.size > 200) adviceCache.delete(adviceCache.keys().next().value!);
+        return announceMatchChange(match.id);
+      })
+      .catch((err) => {
+        if (adviceInFlight.get(slot) === key) adviceInFlight.delete(slot);
+        console.error('[advice] failed:', err);
+      });
   }
 
-  return { mapValues, actionAdvice, lineups, lineupsInfeasible, model };
-}
-
-/** A plausible opponent card: rotate through their roster evenly. */
-function assumeOpponentLineups(
-  roster: readonly string[],
-  maps: readonly SimMap[],
-  playersPerMap: number,
-): LineupMap {
-  const lineups: Record<string, string[]> = {};
-  if (roster.length < playersPerMap) return lineups;
-
-  let cursor = 0;
-  for (const map of maps) {
-    const group: string[] = [];
-    for (let i = 0; i < playersPerMap; i++) {
-      group.push(roster[cursor % roster.length]!);
-      cursor++;
-    }
-    lineups[map.id] = group;
-  }
-  return lineups;
+  // Stale beats blank for map values, which barely move between picks. Lineup
+  // advice for a different card would mislead, so that waits for the real one.
+  const stale = cached?.result;
+  return {
+    ...EMPTY_ADVICE,
+    mapValues: stale?.mapValues ?? [],
+    model,
+    calculating: true,
+  };
 }
 
 /** Stable per-match seed, so a reload shows the same numbers. */
