@@ -8,6 +8,7 @@ import {
   Empty,
   Button,
   Field,
+  FormError,
   FieldAction,
   inputClass,
   Avatar,
@@ -24,10 +25,13 @@ export const dynamic = 'force-dynamic';
 
 export default async function TeamsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const { slug } = await params;
+  const { error } = await searchParams;
 
   const tournament = await prisma.tournament.findUnique({
     where: { slug },
@@ -87,6 +91,8 @@ export default async function TeamsPage({
         title="Teams and rosters"
         meta={`${teams.length} teams · ${teams.reduce((n, t) => n + t.members.length, 0)} players`}
       />
+
+      <FormError message={error} />
 
       <div className="grid gap-6 md:grid-cols-2">
         {teams.map((team) => (
@@ -168,6 +174,7 @@ export default async function TeamsPage({
           <Panel title="New team">
             <form action={createTeam} className="flex flex-wrap items-start gap-3">
               <input type="hidden" name="tournamentId" value={tournament.id} />
+              <input type="hidden" name="from" value="teams" />
               <div className="min-w-[10rem] flex-1">
                 <Field label="Name">
                   <input name="name" className={inputClass} required />
@@ -222,7 +229,7 @@ export default async function TeamsPage({
                 </Field>
                 <Field
                   label="Coin flip winner"
-                  hint="They take the first step in the pick/ban order."
+                  hint="They take the first step in the pick/ban order. Choose one of the two teams above; anything else falls back to Team A."
                 >
                   <select name="coinFlipWinnerId" className={inputClass}>
                     {teams.map((t) => (

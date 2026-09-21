@@ -76,6 +76,19 @@ export function PageHeader({
   );
 }
 
+/** A form's complaint, carried back in ?error= by `failBack`. */
+export function FormError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <p
+      role="alert"
+      className="rounded-lg border border-red-400/30 bg-red-500/12 px-4 py-2 text-sm text-red-200"
+    >
+      {message}
+    </p>
+  );
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-8 text-center text-sm text-muted">{children}</p>;
 }

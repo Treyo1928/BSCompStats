@@ -8,6 +8,7 @@ import { getActor } from './session';
 import { importPool } from './pools';
 import { requestRefresh } from '@/lib/redis';
 import { beatLeader } from './pools';
+import { failBack } from './form-errors';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
 
@@ -68,6 +69,13 @@ export async function importPoolAction(formData: FormData): Promise<void> {
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'IMPORT_POOL');
 
+  const destination = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { slug: true },
+  });
+  if (!destination) throw new Error('No such tournament.');
+  const back = `/t/${destination.slug}`;
+
   const name = String(formData.get('name') ?? '').trim() || 'Pool 1';
   const source = String(formData.get('source') ?? '').trim();
 
@@ -76,27 +84,32 @@ export async function importPoolAction(formData: FormData): Promise<void> {
   if (file instanceof File && file.size > 0) {
     // A .bplist is JSON. Cap the size - BeatLeader's own playlists embed a
     // multi-megabyte cover image and there is no reason to accept more.
-    if (file.size > 25 * 1024 * 1024) throw new Error('That playlist file is too large.');
+    if (file.size > 25 * 1024 * 1024) failBack(back, 'That playlist file is too large (25 MB at most).');
     try {
       rawPlaylist = JSON.parse(await file.text());
     } catch {
-      throw new Error('That file is not a playlist - a .bplist is JSON.');
+      failBack(back, 'That file is not a playlist - a .bplist is JSON.');
     }
   } else if (!source) {
-    throw new Error('Paste a playlist link or choose a .bplist file.');
+    failBack(back, 'Paste a playlist link or choose a .bplist file.');
   }
 
-  const result = await importPool({ tournamentId, name, source, rawPlaylist });
+  let result: Awaited<ReturnType<typeof importPool>>;
+  try {
+    result = await importPool({ tournamentId, name, source, rawPlaylist });
+  } catch (err) {
+    // What importPool throws itself is about the playlist it was given and is
+    // written to be read. Anything from the database is not.
+    const known = err instanceof Error && !('code' in err) && !err.name.startsWith('Prisma');
+    if (!known) console.error('[import] failed:', err);
+    failBack(back, known ? err.message : 'The import failed. Check the server log.');
+  }
 
   // New maps mean new things to track, so ask for a score sync straight away.
   await requestRefresh(result.poolId, actor.userId);
 
-  const tournament = await prisma.tournament.findUnique({
-    where: { id: tournamentId },
-    select: { slug: true },
-  });
-  revalidatePath(`/t/${tournament?.slug}`);
-  redirect(`/t/${tournament?.slug}/pool/${result.poolId}`);
+  revalidatePath(back);
+  redirect(`${back}/pool/${result.poolId}`);
 }
 
 export async function setPoolMapMeta(formData: FormData): Promise<void> {
@@ -393,6 +406,21 @@ export async function createTeam(formData: FormData): Promise<void> {
 
   const name = String(formData.get('name') ?? '').trim();
   if (!name) throw new Error('A team needs a name.');
+
+  const tournament = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { slug: true },
+  });
+  if (!tournament) throw new Error('No such tournament.');
+  // The form exists on two pages; go back to whichever sent it.
+  const back =
+    formData.get('from') === 'teams' ? `/t/${tournament.slug}/teams` : `/t/${tournament.slug}`;
+
+  const taken = await prisma.team.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, division: { tournamentId } },
+    select: { id: true },
+  });
+  if (taken) failBack(back, `There is already a team called "${name}" in this tournament.`);
 
   let division = await prisma.division.findFirst({ where: { tournamentId } });
   division ??= await prisma.division.create({

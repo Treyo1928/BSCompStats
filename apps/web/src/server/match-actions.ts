@@ -18,6 +18,7 @@ import {
 } from './match-helpers';
 import { buildPickBanContext } from './matches';
 import { getActor, realUser } from './session';
+import { failBack } from './form-errors';
 
 /**
  * Match mutations.
@@ -38,7 +39,6 @@ export async function createMatch(formData: FormData): Promise<void> {
   const poolId = String(formData.get('poolId'));
   const teamAId = String(formData.get('teamAId'));
   const teamBId = String(formData.get('teamBId'));
-  if (teamAId === teamBId) throw new Error('A team cannot play itself.');
 
   const [pool, tournament] = await Promise.all([
     prisma.mapPool.findUnique({
@@ -61,11 +61,15 @@ export async function createMatch(formData: FormData): Promise<void> {
     throw new Error('Pool or tournament not found.');
   }
 
+  const back = `/t/${tournament.slug}/teams`;
+  if (teamAId === teamBId) failBack(back, 'A team cannot play itself - choose two different teams.');
+
   const format = parseFormat(tournament.defaultFormat);
 
   // Catch a pool too small to finish pick/ban now, rather than stranding two
   // captains halfway through with nothing left to pick.
-  assertPoolIsBigEnough({
+  try {
+    assertPoolIsBigEnough({
     format,
     poolMapIds: pool.maps
       .filter((m) => !(format.tiebreaker === 'DESIGNATED' && m.isTiebreaker))
@@ -73,7 +77,11 @@ export async function createMatch(formData: FormData): Promise<void> {
     coinWinnerTeamId: teamAId,
     coinLoserTeamId: teamBId,
     actions: [],
-  });
+    });
+  } catch (err) {
+    if (!(err instanceof PickBanError)) throw err;
+    failBack(back, err.message);
+  }
 
   const teams = await prisma.team.findMany({
     where: { id: { in: [teamAId, teamBId] }, division: { tournamentId } },
@@ -492,6 +500,14 @@ export async function completeMatch(formData: FormData): Promise<void> {
       if (totalA > totalB) a++;
       else if (totalB > totalA) b++;
     }
+  }
+
+  // A format decided on aggregate counts points, not maps: winning three maps
+  // narrowly and losing one badly can lose the match.
+  const format = parseFormat(match.format ?? match.tournament.defaultFormat);
+  if (format.winCondition === 'AGGREGATE_MARGIN') {
+    a = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamAId), 0);
+    b = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamBId), 0);
   }
 
   await prisma.match.update({

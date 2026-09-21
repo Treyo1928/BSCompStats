@@ -8,6 +8,7 @@ import {
   Empty,
   Button,
   Field,
+  FormError,
   FieldAction,
   inputClass,
   Badge,
@@ -28,10 +29,13 @@ export const dynamic = 'force-dynamic';
 
 export default async function TournamentPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const { slug } = await params;
+  const { error } = await searchParams;
 
   const tournament = await prisma.tournament.findUnique({
     where: { slug },
@@ -130,6 +134,8 @@ export default async function TournamentPage({
           </>
         }
       />
+
+      <FormError message={error} />
 
       {/* Matches first: on match night this is what everyone came for. */}
       <Panel title="Matches">
