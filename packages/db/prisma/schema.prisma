@@ -39,7 +39,6 @@ model User {
   players            Player[]
   tournamentMembers  TournamentMember[]
   ownedTournaments   Tournament[]       @relation("TournamentOwner")
-  estimatesSet       PredictionEstimate[]
   actionsPerformed   MatchAction[]      @relation("ActingUser")
   actionsOnBehalfOf  MatchAction[]      @relation("OnBehalfOfUser")
 }
@@ -113,7 +112,6 @@ model Player {
   teamMembers  TeamMember[]
   lineupSlots  LineupSlot[]
   attempts     MatchMapAttempt[]
-  estimates    PredictionEstimate[]
   profile      PlayerProfile?
 
   @@index([userId])
@@ -226,7 +224,6 @@ model Leaderboard {
   scores      Score[]
   scoreEvents ScoreEvent[]
   poolMaps    PoolMap[]
-  estimates   PredictionEstimate[]
 
   @@unique([mapId, difficultyValue, mode])
   @@index([mapId])
@@ -345,7 +342,6 @@ model Tournament {
   pools     MapPool[]
   matches   Match[]
   members   TournamentMember[]
-  estimates PredictionEstimate[]
 
   @@index([ownerId])
 }
@@ -676,27 +672,4 @@ model ShareLink {
   expiresAt DateTime?
 
   @@index([matchId])
-}
-
-/// What someone who knows a player expects them to score on a map they have not
-/// played. The model only knows what BeatLeader knows; a captain knows that a
-/// teammate cannot play speed maps even though nothing on record says so.
-model PredictionEstimate {
-  id            String      @id @default(cuid())
-  tournamentId  String
-  tournament    Tournament  @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  playerId      String
-  player        Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  leaderboardId String
-  leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
-
-  /// 0..1
-  accuracy Float
-
-  setById String?
-  setBy   User?   @relation(fields: [setById], references: [id], onDelete: SetNull)
-
-  createdAt DateTime @default(now())
-
-  @@unique([tournamentId, playerId, leaderboardId])
 }

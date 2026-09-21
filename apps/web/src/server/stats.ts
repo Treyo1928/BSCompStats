@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { prisma } from '@bscs/db';
 import {
   applyScope,
@@ -43,8 +44,8 @@ export interface TournamentModel {
   maxScores: Record<string, number>;
   chosenLatentFactors: number;
   /**
-   * Accuracies people have entered for maps a player has not played, keyed by
-   * `failKey`. These win over the model: it only knows what is on BeatLeader.
+   * Accuracies this viewer has entered for maps a player has not played, keyed
+   * by `failKey`. They win over the model, for this viewer only.
    */
   estimates: Map<string, number>;
   /** Changes whenever anything the model was fitted on changes. */
@@ -101,18 +102,8 @@ export async function buildTournamentModel(
     _max: { timeset: true },
     _sum: { baseScore: true },
   });
-  const estimateRows = await prisma.predictionEstimate.findMany({
-    where: { tournamentId },
-    select: { playerId: true, leaderboardId: true, accuracy: true },
-    orderBy: { id: 'asc' },
-  });
-  const estimates = new Map(
-    estimateRows.map((e) => [failKey(e.playerId, e.leaderboardId), e.accuracy]),
-  );
-
   const version = JSON.stringify([
     scope,
-    estimateRows,
     [...playerIds].sort(),
     [...poolLeaderboardIds].sort(),
     pulse._count,
@@ -120,7 +111,7 @@ export async function buildTournamentModel(
     pulse._sum.baseScore,
   ]);
   const cached = modelCache.get(tournamentId);
-  if (cached?.version === version) return cached;
+  if (cached?.version === version) return withViewerEstimates(cached, tournamentId);
 
   const scores = playerIds.length
     ? await prisma.score.findMany({
@@ -217,11 +208,56 @@ export async function buildTournamentModel(
     mapCount,
     maxScores,
     chosenLatentFactors: chosen.latentFactors ?? 0,
-    estimates,
+    estimates: new Map(),
     version,
   };
   modelCache.set(tournamentId, built);
-  return built;
+  return withViewerEstimates(built, tournamentId);
+}
+
+export const ESTIMATES_COOKIE = 'bscs-estimates';
+
+/** tournamentId -> failKey -> accuracy (0..1), as kept in the viewer's session cookie. */
+export type EstimateCookie = Record<string, Record<string, number>>;
+
+export function parseEstimateCookie(raw: string | undefined): EstimateCookie {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as EstimateCookie) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Lay the viewer's own estimates over the shared model.
+ *
+ * An estimate is one person's opinion, so it is kept in their browser session
+ * and applied only to what they are shown. The fitted model underneath is
+ * shared and cached; this makes a per-viewer copy and marks its version, so
+ * anything cached off the back of it (match advice) is not shared either.
+ */
+async function withViewerEstimates(
+  shared: TournamentModel,
+  tournamentId: string,
+): Promise<TournamentModel> {
+  let mine: Record<string, number> | undefined;
+  try {
+    mine = parseEstimateCookie((await cookies()).get(ESTIMATES_COOKIE)?.value)[tournamentId];
+  } catch {
+    // Outside a request there is no viewer, and so no estimates.
+  }
+  const entries = Object.entries(mine ?? {}).filter(
+    ([, acc]) => typeof acc === 'number' && acc > 0 && acc <= 1,
+  );
+  if (entries.length === 0) return shared;
+
+  return {
+    ...shared,
+    estimates: new Map(entries),
+    version: `${shared.version}|viewer:${JSON.stringify(entries.sort())}`,
+  };
 }
 
 export const failKey = (playerId: string, leaderboardId: string): string =>

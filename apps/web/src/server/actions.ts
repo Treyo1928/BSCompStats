@@ -8,7 +8,9 @@ import { getActor } from './session';
 import { importPool } from './pools';
 import { requestRefresh } from '@/lib/redis';
 import { beatLeader } from './pools';
+import { cookies } from 'next/headers';
 import { failBack } from './form-errors';
+import { ESTIMATES_COOKIE, failKey, parseEstimateCookie } from './stats';
 import { SCOPE_PRESETS } from '@bscs/core/stats';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
@@ -228,8 +230,12 @@ export async function setStatsScope(formData: FormData): Promise<void> {
 }
 
 /**
- * Set, or clear, what a player is expected to score on a map they have not
- * played. Staff can do it for anyone; a captain for their own players.
+ * Set, or clear, the viewer's own estimate of what a player would score on a
+ * map they have not played.
+ *
+ * Kept in a session cookie, not the database: it changes what this viewer is
+ * shown and nobody else, and it is gone when they close the browser. So anyone
+ * who can see the pool may use it - there is nothing here to abuse.
  */
 export async function setPredictionEstimate(formData: FormData): Promise<void> {
   const poolId = String(formData.get('poolId'));
@@ -240,44 +246,57 @@ export async function setPredictionEstimate(formData: FormData): Promise<void> {
     where: { id: poolId },
     select: {
       tournamentId: true,
-      tournament: { select: { slug: true } },
+      tournament: { select: { slug: true, isPublic: true } },
       maps: { where: { leaderboardId }, select: { id: true } },
     },
   });
   if (!pool || pool.maps.length === 0) throw new Error('That map is not in this pool.');
-  const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
 
-  const actor = await getActor(pool.tournamentId);
-  if (!actor) throw new Error('Sign in first.');
+  const actor = (await getActor(pool.tournamentId)) ?? {
+    userId: '',
+    globalRole: 'USER' as const,
+    tournamentRole: null,
+  };
+  assertCan(actor, 'VIEW', { isPublic: pool.tournament.isPublic });
 
-  const spots = await prisma.teamMember.findMany({
+  const onRoster = await prisma.teamMember.findFirst({
     where: { playerId, team: { division: { tournamentId: pool.tournamentId } } },
-    select: { teamId: true },
+    select: { id: true },
   });
-  if (spots.length === 0) throw new Error('That player is not in this tournament.');
-  if (!can(actor, 'MANAGE_TEAMS') && !spots.some((s) => isCaptainOf(actor, s.teamId))) {
-    throw new ForbiddenError('MANAGE_TEAMS');
-  }
+  if (!onRoster) throw new Error('That player is not in this tournament.');
 
-  const key = { tournamentId_playerId_leaderboardId: { tournamentId: pool.tournamentId, playerId, leaderboardId } };
+  const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
+  const jar = await cookies();
+  const all = parseEstimateCookie(jar.get(ESTIMATES_COOKIE)?.value);
+  const mine = { ...(all[pool.tournamentId] ?? {}) };
+  const key = failKey(playerId, leaderboardId);
   const raw = String(formData.get('accuracy') ?? '').replace('%', '').trim();
 
   if (raw === '' || formData.get('clear') === 'on') {
-    await prisma.predictionEstimate.deleteMany({
-      where: { tournamentId: pool.tournamentId, playerId, leaderboardId },
-    });
+    delete mine[key];
   } else {
     const percent = Number(raw);
     if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
       failBack(back, `"${raw}" is not an accuracy. Enter a percentage, such as 45.`);
     }
-    await prisma.predictionEstimate.upsert({
-      where: key,
-      create: { ...key.tournamentId_playerId_leaderboardId, accuracy: percent / 100, setById: actor.userId },
-      update: { accuracy: percent / 100, setById: actor.userId },
-    });
+    // A cookie is small; a hundred estimates is already far more than anyone sets.
+    if (!(key in mine) && Object.keys(mine).length >= 100) {
+      failBack(back, 'That is a lot of estimates. Clear some before adding more.');
+    }
+    mine[key] = Math.round(percent * 100) / 10000;
   }
-  revalidatePath('/t', 'layout');
+
+  if (Object.keys(mine).length > 0) all[pool.tournamentId] = mine;
+  else delete all[pool.tournamentId];
+
+  // No maxAge: a session cookie, gone when the browser closes.
+  jar.set(ESTIMATES_COOKIE, JSON.stringify(all), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+  });
+  revalidatePath(back);
 }
 
 export async function importPoolAction(formData: FormData): Promise<void> {

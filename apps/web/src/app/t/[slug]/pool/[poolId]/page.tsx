@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can, isCaptainOf } from '@bscs/core/match';
+import { can } from '@bscs/core/match';
 import { describeScope } from '@bscs/core/stats';
 import {
   Panel,
@@ -77,11 +77,28 @@ export default async function PoolPage({
     `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}${once ? '&once=1' : ''}#outlook`;
   const mapById = new Map(board.maps.map((m) => [m.poolMapId, m]));
 
-  // Estimates: organisers for anyone, a captain for their own players.
-  const mayEstimateFor = (teamId: string | null) =>
-    can(actor, 'MANAGE_TEAMS') || isCaptainOf(actor, teamId);
+  // Which teams the viewer plays for - they stay open when a big board starts collapsed.
+  const myTeamIds = actor.userId
+    ? (
+        await prisma.teamMember.findMany({
+          where: {
+            player: { userId: actor.userId },
+            team: { division: { tournamentId: pool.tournament.id } },
+          },
+          select: { teamId: true },
+        })
+      ).map((spot) => spot.teamId)
+    : [];
+
+  // Estimates are the viewer's own and touch nobody else's view, so anyone
+  // looking at the board may set them for any player.
   const allRows = board.teams.flatMap((t) => t.rows);
-  const estimablePlayers = allRows.filter((row) => mayEstimateFor(row.teamId));
+  const seenPlayers = new Set<string>();
+  const estimablePlayers = allRows.filter((row) => {
+    if (seenPlayers.has(row.playerId)) return false;
+    seenPlayers.add(row.playerId);
+    return true;
+  });
   const seenEstimates = new Set<string>();
   const currentEstimates = allRows.flatMap((row) =>
     row.cells
@@ -99,7 +116,7 @@ export default async function PoolPage({
         leaderboardId: cell.leaderboardId,
         mapName: board.maps.find((m) => m.leaderboardId === cell.leaderboardId)?.name ?? 'map',
         accuracy: cell.predictedAcc,
-        canClear: mayEstimateFor(row.teamId),
+        canClear: true,
       })),
   );
 
@@ -146,7 +163,7 @@ export default async function PoolPage({
         </Panel>
       ) : (
         <Panel flush>
-          <PoolBoardTable board={board} />
+          <PoolBoardTable maps={board.maps} teams={board.teams} myTeamIds={myTeamIds} />
           <Legend />
         </Panel>
       )}
@@ -156,7 +173,7 @@ export default async function PoolPage({
       {estimablePlayers.length > 0 && (
         <Panel
           title="Your own estimates"
-          subtitle="Where you know better than the numbers - what a player would really score on a map they have not played"
+          subtitle="Where you know better than the numbers. Only you see these, and they are forgotten when you close your browser."
         >
           <form action={setPredictionEstimate} className="flex flex-wrap items-start gap-3">
             <input type="hidden" name="poolId" value={poolId} />
@@ -198,9 +215,8 @@ export default async function PoolPage({
             </FieldAction>
           </form>
           <p className="mt-2 text-xs text-faint">
-            Shown on the board as ≈ and used in every lineup and win-chance calculation. It only
-            applies while the player has no real score on that map - once they play it, their score
-            takes over.
+            Shown on your board as ≈ and used in the lineups and win chances you are shown - nobody
+            else&apos;s. It only applies while the player has no real score on that map.
           </p>
 
           {currentEstimates.length > 0 && (
@@ -385,11 +401,14 @@ export default async function PoolPage({
             )}
             <p className="border-t border-edge px-4 py-2 text-xs text-faint">
               {eachGroupOnce
-                ? `No ${outlook.playersPerMap === 2 ? 'duo' : 'group'} is used twice on either side, so these are the best groups across the whole pool rather than map by map.${
-                    outlook.ruleSkippedFor.length > 0
-                      ? ` Not applied to ${outlook.ruleSkippedFor.join(' or ')}: with every map in the pool counted there are not enough to go round, so that side simply fields its strongest on each map.`
-                      : ''
-                  }`
+                ? outlook.repeatsNeeded.length === 0
+                  ? `No ${outlook.playersPerMap === 2 ? 'duo' : 'group'} is used twice on either side, so these are the best groups across the whole pool rather than map by map.`
+                  : `Repeats are kept to the minimum. ${outlook.repeatsNeeded
+                      .map(
+                        (r) =>
+                          `${r.teamName} has ${r.available} possible ${outlook.playersPerMap === 2 ? 'duos' : 'groups'} for ${r.maps} maps, so ${r.maps - r.available === 1 ? 'one has' : `${r.maps - r.available} have`} to play again.`,
+                      )
+                      .join(' ')} A real match plays fewer maps than the whole pool, so this rarely bites there.`
                 : 'Each map is judged on its own: the group shown is the strongest for that map alone. Turn on the rule above to see the best set when no pairing can be used twice.'}{' '}
               A match also limits how many maps one player can play, which the lineup advice on a
               match page accounts for.
@@ -418,7 +437,17 @@ export default async function PoolPage({
                     </p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <DifficultyChip value={map.difficultyValue} label={map.difficultyLabel} />
-                      {map.category && <Badge tone="accent">{map.category}</Badge>}
+                      {map.category ? (
+                        <Badge tone="accent">{map.category}</Badge>
+                      ) : (
+                        map.autoCategory && (
+                          <Badge
+                            title={`Guessed from BeatLeader's ratings: pass ${map.ratings.pass.toFixed(1)}, tech ${map.ratings.tech.toFixed(1)}, acc ${map.ratings.acc.toFixed(1)}. Pass is speed and stamina; tech is awkward patterns.`}
+                          >
+                            {map.autoCategory}
+                          </Badge>
+                        )
+                      )}
                       {map.scatter >= 1.75 && (
                         <Badge
                           tone="warn"

@@ -1,3 +1,6 @@
+'use client';
+
+import { useState } from 'react';
 import { Avatar, DifficultyChip, MapCover, heat, pct, num, teamInk, teamWash } from './ui';
 import type { PoolBoard, BoardCell, BoardMap } from '@/server/board';
 
@@ -12,13 +15,40 @@ import type { PoolBoard, BoardCell, BoardMap } from '@/server/board';
  * sitting there as a number that drags an average down silently.
  */
 
+/** Above this many teams the board opens collapsed, so a big field is scannable. */
+const COLLAPSE_ABOVE = 5;
+
 export function PoolBoardTable({
-  board,
+  maps,
+  teams,
+  myTeamIds = [],
   showPredictions = true,
 }: {
-  board: PoolBoard;
+  // Only the plain data: the board's model holds functions, which cannot cross
+  // into a client component.
+  maps: PoolBoard['maps'];
+  teams: PoolBoard['teams'];
+  /** Teams the viewer is on; these stay open when the rest start collapsed. */
+  myTeamIds?: string[];
   showPredictions?: boolean;
 }) {
+  const board = { maps, teams };
+  const keyOf = (teamId: string | null) => teamId ?? 'unassigned';
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () =>
+      new Set(
+        teams.length > COLLAPSE_ABOVE
+          ? teams.filter((t) => !t.teamId || !myTeamIds.includes(t.teamId)).map((t) => keyOf(t.teamId))
+          : [],
+      ),
+  );
+  const toggle = (key: string) =>
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+
   // Shade each column against its own range: comparing a 98% on an easy map
   // with a 91% on a hard one is exactly the mistake the colours should prevent.
   const columnRange = new Map<string, { min: number; max: number }>();
@@ -63,6 +93,9 @@ export function PoolBoardTable({
 
         {board.teams.map((team) => {
           const ink = teamInk(team.color, team.rows[0]?.teamColorSecondary);
+          const key = keyOf(team.teamId);
+          const isCollapsed = collapsed.has(key);
+          const teamAverages = team.rows.map((r) => r.meanAcc).filter((a): a is number => a != null);
           return (
             <tbody key={team.teamId ?? 'unassigned'}>
               <tr>
@@ -73,19 +106,31 @@ export function PoolBoardTable({
                     background: `linear-gradient(90deg, ${teamWash(team.color, 0.85)}, ${teamWash(team.color, 0.15)} 55%, transparent)`,
                   }}
                 >
-                  <div
+                  <button
+                    type="button"
+                    onClick={() => toggle(key)}
+                    aria-expanded={!isCollapsed}
+                    title={isCollapsed ? `Show ${team.teamName}'s players` : `Hide ${team.teamName}'s players`}
                     className="sticky left-0 inline-flex items-center gap-2 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-widest"
                     style={{ color: ink, borderLeft: `3px solid ${team.color}` }}
                   >
+                    <span
+                      aria-hidden
+                      className={`inline-block text-[9px] transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                    >
+                      ▶
+                    </span>
                     {team.teamName}
                     <span className="font-normal normal-case tracking-normal text-faint">
                       {team.rows.length} players
+                      {isCollapsed && teamAverages.length > 0 &&
+                        ` · team average ${pct(teamAverages.reduce((a, b) => a + b, 0) / teamAverages.length, 1)}`}
                     </span>
-                  </div>
+                  </button>
                 </td>
               </tr>
 
-              {team.rows.map((row) => (
+              {!isCollapsed && team.rows.map((row) => (
                 <tr key={row.playerId} className="group">
                   <th
                     scope="row"
@@ -190,7 +235,7 @@ function MapHeader({ map }: { map: BoardMap }) {
         </span>
         <DifficultyChip value={map.difficultyValue} label={map.difficultyLabel} />
         <span className="h-3 text-[9px] font-semibold uppercase tracking-widest text-accent">
-          {map.category ?? ''}
+          {map.category ?? map.autoCategory ?? ''}
         </span>
       </a>
     </th>
@@ -216,7 +261,7 @@ function Cell({
             cell.isEstimate ? (
               <span
                 className="text-xs font-medium text-accent"
-                title="Entered by hand, in place of the model's prediction. Used in every lineup and win-chance calculation."
+                title="Your own estimate, in place of the model's prediction. Only you see it, and it is used in the lineups and win chances you are shown."
               >
                 ≈{pct(cell.predictedAcc, 1)}
               </span>

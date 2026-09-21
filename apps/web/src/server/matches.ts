@@ -380,7 +380,9 @@ export async function buildAdvice(
   // The simulation is seconds of CPU on the thread that serves everyone, and
   // this page is rendered by every viewer on every live update. Its inputs
   // change only when someone acts, a roster changes, or a score lands.
-  const slot = `${match.id}:${forTeamId}`;
+  // Per viewer where the viewer has estimates of their own, so two people with
+  // different opinions do not keep evicting each other.
+  const slot = `${match.id}:${forTeamId}:${model.estimates.size ? model.version.split('|viewer:')[1] : ''}`;
   const key = JSON.stringify([
     model.version,
     match.format,

@@ -1,3 +1,4 @@
+import { categorizeMap } from '@bscs/core/beatleader';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import { buildTournamentModel, failKey, type TournamentModel } from './stats';
@@ -19,6 +20,7 @@ export interface BoardCell {
   isDnf: boolean;
   fullCombo: boolean;
   misses: number;
+  /** BeatLeader's web replay viewer for this score. Null when the score has no id. */
   replayUrl: string | null;
   /** Model estimate, shown when there is no real score. */
   predictedAcc: number;
@@ -70,6 +72,10 @@ export interface BoardMap {
   isTiebreaker: boolean;
   ranked: boolean;
   stars: number;
+  /** Guessed from the ratings when nobody has labelled the map. */
+  autoCategory: string | null;
+  /** BeatLeader's difficulty ratings; all zero when it has not rated the map. */
+  ratings: { acc: number; pass: number; tech: number };
   /** Mean accuracy across everyone who played it - how hard it proved to be. */
   fieldMeanAcc: number | null;
 }
@@ -113,6 +119,9 @@ export async function buildPoolBoard(
               maxScore: true,
               ranked: true,
               stars: true,
+              accRating: true,
+              passRating: true,
+              techRating: true,
               map: {
                 select: { name: true, subName: true, mapper: true, coverImage: true },
               },
@@ -150,7 +159,7 @@ export async function buildPoolBoard(
           fullCombo: true,
           missedNotes: true,
           badCuts: true,
-          replayUrl: true,
+          beatLeaderScoreId: true,
         },
       })
     : [];
@@ -204,6 +213,16 @@ export async function buildPoolBoard(
     isTiebreaker: pm.isTiebreaker,
     ranked: pm.leaderboard.ranked,
     stars: pm.leaderboard.stars,
+    autoCategory: categorizeMap({
+      acc: pm.leaderboard.accRating,
+      pass: pm.leaderboard.passRating,
+      tech: pm.leaderboard.techRating,
+    }),
+    ratings: {
+      acc: pm.leaderboard.accRating,
+      pass: pm.leaderboard.passRating,
+      tech: pm.leaderboard.techRating,
+    },
     fieldMeanAcc: columnStats.get(pm.leaderboardId)?.mean ?? null,
   }));
 
@@ -226,7 +245,11 @@ export async function buildPoolBoard(
         isDnf: model.failKeys.has(failKey(member.player.id, leaderboardId)),
         fullCombo: score?.fullCombo ?? false,
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
-        replayUrl: score?.replayUrl ?? null,
+        // The stored replayUrl is the raw .bsor file, which a browser downloads.
+        // The viewer takes the score id and plays it.
+        replayUrl: score?.beatLeaderScoreId
+          ? `https://replay.beatleader.com/?scoreId=${score.beatLeaderScoreId}`
+          : null,
         predictedAcc: estimate ?? prediction.acc,
         predictionConfidence: prediction.confidence,
         isEstimate: estimate != null,

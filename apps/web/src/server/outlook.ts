@@ -42,8 +42,8 @@ export interface PoolOutlook {
   maps: OutlookMap[];
   /** Why there are no lineups, when the roster is too small to field one. */
   shortHanded: string | null;
-  /** Teams too small for "each group once" to be possible, so it was not applied to them. */
-  ruleSkippedFor: string[];
+  /** Teams with fewer pairings than maps, which therefore had to repeat some. */
+  repeatsNeeded: Array<{ teamName: string; available: number; maps: number }>;
 }
 
 export async function buildPoolOutlook(
@@ -85,7 +85,7 @@ export async function buildPoolOutlook(
       playersPerMap: k,
       formatName: format.name,
       maps: [],
-      ruleSkippedFor: [],
+      repeatsNeeded: [],
       shortHanded: `${team.teamName} has ${roster.length} player${roster.length === 1 ? '' : 's'}, and this format fields ${k} per map.`,
     };
   }
@@ -125,70 +125,60 @@ export async function buildPoolOutlook(
   // chosen across the whole pool. The tiebreaker is exempt where the format
   // says so, as in a match.
   //
-  // A roster with fewer pairings than there are maps cannot follow the rule at
-  // all - three players make three duos - so it is simply not applied to that
-  // team, rather than leaving maps empty.
+  // A small roster has fewer pairings than a big pool has maps - four players
+  // make six duos, and this pool may have seven maps. Then nobody can avoid a
+  // repeat, so the rule becomes "as few repeats as possible" - one repeat for
+  // six duos over seven maps - and the note says who had to.
   const assigned = new Map<string, { playerIds: string[]; winProbability: number }>();
   const opponentAssigned = new Map<string, string[]>();
-  const ruleSkippedFor: string[] = [];
+  const repeatsNeeded: PoolOutlook['repeatsNeeded'] = [];
 
   if (options.eachGroupOnce && values) {
     const constrained = board.maps.filter(
       (m) => !(m.isTiebreaker && format.rules.tiebreakerExemptFromDuos) && values.has(m.poolMapId),
     );
     const first = constrained[0] ? values.get(constrained[0].poolMapId)! : null;
-    const weCan = (first?.groups.length ?? 0) >= constrained.length;
-    const theyCan = (first?.opponentGroups.length ?? 0) >= constrained.length;
-    const unit = k === 2 ? 'duos' : 'groups';
-    if (!weCan) {
-      ruleSkippedFor.push(`${team.teamName} (${first?.groups.length ?? 0} possible ${unit} for ${constrained.length} maps)`);
-    }
-    if (!theyCan && opponent) {
-      ruleSkippedFor.push(`${opponent.teamName} (${first?.opponentGroups.length ?? 0} possible ${unit} for ${constrained.length} maps)`);
-    }
+    const note = (teamName: string, available: number) => {
+      if (available < constrained.length) {
+        repeatsNeeded.push({ teamName, available, maps: constrained.length });
+      }
+    };
+    note(team.teamName, first?.groups.length ?? 0);
+    if (opponent) note(opponent.teamName, first?.opponentGroups.length ?? 0);
 
-    // Theirs first: the groups that hold us down most, none used twice.
+    // Theirs first: the groups that hold us down most.
     const theirIndex = new Map<string, number>();
-    if (theyCan) {
-      const chosen = assignDistinct(
-        constrained.map((m) =>
-          values.get(m.poolMapId)!.opponentGroups.map((g, index) => ({
-            playerIds: g.playerIds,
-            value: 1 - g.average,
-            index,
-          })),
-        ),
-      );
-      constrained.forEach((m, i) => {
-        const pick = chosen[i];
-        if (!pick) return;
-        theirIndex.set(m.poolMapId, pick.index);
-        opponentAssigned.set(m.poolMapId, pick.playerIds);
-      });
-    }
+    const theirs = assignSpread(
+      constrained.map((m) =>
+        values.get(m.poolMapId)!.opponentGroups.map((g, index) => ({
+          playerIds: g.playerIds,
+          value: 1 - g.average,
+          index,
+        })),
+      ),
+    );
+    constrained.forEach((m, i) => {
+      const pick = theirs[i];
+      if (!pick) return;
+      theirIndex.set(m.poolMapId, pick.index);
+      opponentAssigned.set(m.poolMapId, pick.playerIds);
+    });
 
     // Then ours, judged against whoever they are now fielding on each map.
-    const against = (m: (typeof constrained)[number]) => {
-      const value = values.get(m.poolMapId)!;
-      const b = theirIndex.get(m.poolMapId);
-      return value.groups.map((g) => ({
-        playerIds: g.playerIds,
-        value: b == null ? g.vsTheirBest : g.vs[b]!,
-      }));
-    };
-    if (weCan) {
-      const chosen = assignDistinct(constrained.map(against));
-      constrained.forEach((m, i) => {
-        const pick = chosen[i];
-        if (pick) assigned.set(m.poolMapId, { playerIds: pick.playerIds, winProbability: pick.value });
-      });
-    } else {
-      // Unconstrained for us, but still measured against their constrained groups.
-      for (const m of constrained) {
-        const best = against(m).reduce((top, g) => (g.value > top.value ? g : top));
-        assigned.set(m.poolMapId, { playerIds: best.playerIds, winProbability: best.value });
-      }
-    }
+    const ours = assignSpread(
+      constrained.map((m) => {
+        const value = values.get(m.poolMapId)!;
+        const b = theirIndex.get(m.poolMapId);
+        return value.groups.map((g) => ({
+          playerIds: g.playerIds,
+          value: b == null ? g.vsTheirBest : g.vs[b]!,
+        }));
+      }),
+    );
+    constrained.forEach((m, i) => {
+      const pick = ours[i];
+      if (pick) assigned.set(m.poolMapId, { playerIds: pick.playerIds, winProbability: pick.value });
+    });
   }
 
   const maps = board.maps.map((map): OutlookMap => {
@@ -217,22 +207,25 @@ export async function buildPoolOutlook(
     };
   });
 
-  return { playersPerMap: k, formatName: format.name, maps, shortHanded: null, ruleSkippedFor };
+  return { playersPerMap: k, formatName: format.name, maps, shortHanded: null, repeatsNeeded };
 }
 
 /**
- * One option per map, none used twice, maximising the total value.
+ * One option per map, maximising the total, with as few repeats as the numbers
+ * allow: none when there are at least as many options as maps, otherwise
+ * exactly the shortfall - six duos over seven maps means one duo plays twice,
+ * not three of them.
  *
- * Depth-first with a bound. Only each map's top N options can matter (at most
- * N-1 of them can be taken by the other N-1 maps), which keeps the search small
- * however large the roster is. Callers make sure there are at least as many
- * options as maps, so a full assignment always exists.
+ * Depth-first with a bound. Only each map's top N options can matter (the other
+ * N-1 maps cannot take more than that away), which keeps the search small
+ * however large the roster is.
  */
-function assignDistinct<T extends { playerIds: string[]; value: number }>(
-  perMap: T[][],
-): Array<T | null> {
+function assignSpread<T extends { playerIds: string[]; value: number }>(perMap: T[][]): Array<T | null> {
   const n = perMap.length;
   const keyOf = (g: T) => [...g.playerIds].sort().join('|');
+  const distinct = new Set(perMap.flatMap((groups) => groups.map(keyOf))).size;
+  const repeatsAllowed = Math.max(0, n - distinct);
+
   const options = perMap.map((groups) =>
     [...groups].sort((a, b) => b.value - a.value).slice(0, Math.max(n, 1)),
   );
@@ -243,9 +236,9 @@ function assignDistinct<T extends { playerIds: string[]; value: number }>(
   let best: Array<T | null> = new Array(n).fill(null);
   let bestTotal = -1;
   const current: Array<T | null> = new Array(n).fill(null);
-  const used = new Set<string>();
+  const used = new Map<string, number>();
 
-  const visit = (i: number, total: number) => {
+  const visit = (i: number, total: number, repeatsLeft: number) => {
     if (total + ceiling[i]! <= bestTotal) return;
     if (i === n) {
       bestTotal = total;
@@ -254,14 +247,15 @@ function assignDistinct<T extends { playerIds: string[]; value: number }>(
     }
     for (const group of options[i]!) {
       const key = keyOf(group);
-      if (used.has(key)) continue;
-      used.add(key);
+      const count = used.get(key) ?? 0;
+      if (count > 0 && repeatsLeft === 0) continue;
+      used.set(key, count + 1);
       current[i] = group;
-      visit(i + 1, total + group.value);
-      used.delete(key);
+      visit(i + 1, total + group.value, count > 0 ? repeatsLeft - 1 : repeatsLeft);
+      used.set(key, count);
     }
     current[i] = null;
   };
-  visit(0, 0);
+  visit(0, 0, repeatsAllowed);
   return best;
 }
