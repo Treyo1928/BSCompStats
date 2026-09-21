@@ -12,7 +12,6 @@ import {
   PickBanError,
   resolveMapPlan,
   validateLineups,
-  assertPoolIsBigEnough,
   isCaptainOf,
   type LineupInput,
 } from './match-helpers';
@@ -20,6 +19,7 @@ import { buildPickBanContext } from './matches';
 import { getActor, realUser } from './session';
 import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
+import { cleanUpAdHocTeams, openMatch } from './custom-teams';
 
 /**
  * Match mutations.
@@ -43,82 +43,27 @@ export async function createMatch(formData: FormData): Promise<void> {
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'CREATE_MATCH');
 
-  const poolId = String(formData.get('poolId'));
-  const teamAId = String(formData.get('teamAId'));
-  const teamBId = String(formData.get('teamBId'));
-
-  const [pool, tournament] = await Promise.all([
-    prisma.mapPool.findUnique({
-      where: { id: poolId },
-      select: {
-        id: true,
-        tournamentId: true,
-        maps: { select: { id: true, isTiebreaker: true } },
-      },
-    }),
-    prisma.tournament.findUnique({
-      where: { id: tournamentId },
-      select: { slug: true, defaultFormat: true },
-    }),
-  ]);
-  // Permission was checked against tournamentId, so everything else named in
-  // the form has to belong to it - otherwise a match in your own tournament
-  // becomes a window onto someone else's private pool and rosters.
-  if (!pool || !tournament || pool.tournamentId !== tournamentId) {
-    throw new Error('Pool or tournament not found.');
-  }
+  const tournament = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { slug: true },
+  });
+  if (!tournament) throw new Error('Pool or tournament not found.');
 
   const back =
     formData.get('from') === 'teams' ? `/t/${tournament.slug}/teams` : `/t/${tournament.slug}`;
-  if (teamAId === teamBId) failBack(back, 'A team cannot play itself - choose two different teams.');
 
-  const format = parseFormat(tournament.defaultFormat);
-
-  // Catch a pool too small to finish pick/ban now, rather than stranding two
-  // captains halfway through with nothing left to pick.
-  try {
-    assertPoolIsBigEnough({
-    format,
-    poolMapIds: pool.maps
-      .filter((m) => !(format.tiebreaker === 'DESIGNATED' && m.isTiebreaker))
-      .map((m) => m.id),
-    coinWinnerTeamId: teamAId,
-    coinLoserTeamId: teamBId,
-    actions: [],
-    });
-  } catch (err) {
-    if (!(err instanceof PickBanError)) throw err;
-    failBack(back, err.message);
-  }
-
-  const teams = await prisma.team.findMany({
-    where: { id: { in: [teamAId, teamBId] }, division: { tournamentId } },
-    select: { id: true, name: true },
+  const opened = await openMatch({
+    tournamentId,
+    poolId: String(formData.get('poolId')),
+    teamAId: String(formData.get('teamAId')),
+    teamBId: String(formData.get('teamBId')),
+    coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+    blindLineups: formData.get('blindLineups') === 'on',
+    name: String(formData.get('name') ?? ''),
   });
-  const teamA = teams.find((t) => t.id === teamAId);
-  const teamB = teams.find((t) => t.id === teamBId);
-  if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
+  if ('error' in opened) failBack(back, opened.error);
 
-  // "A" or "B" rather than a team id, so the form cannot name a third team.
-  const coinFlipWinnerId = formData.get('coinFlip') === 'B' ? teamBId : teamAId;
-
-  const match = await prisma.match.create({
-    data: {
-      tournamentId,
-      poolId,
-      teamAId,
-      teamBId,
-      coinFlipWinnerId,
-      name:
-        String(formData.get('name') ?? '').trim() ||
-        `${teamA?.name ?? 'Team A'} vs ${teamB?.name ?? 'Team B'}`,
-      state: 'PICKBAN',
-      startedAt: new Date(),
-      blindLineups: formData.get('blindLineups') === 'on',
-    },
-  });
-
-  redirect(`/t/${tournament.slug}/match/${match.id}`);
+  redirect(`/t/${tournament.slug}/match/${opened.matchId}`);
 }
 
 export async function submitPickBan(formData: FormData): Promise<void> {
@@ -616,6 +561,8 @@ export async function deleteMatch(formData: FormData): Promise<void> {
 
   // Picks, bans, maps, lineups and scores all cascade from the match.
   await prisma.match.delete({ where: { id: matchId } });
+  // A side made up for this match has nothing left to exist for.
+  await cleanUpAdHocTeams([match.teamAId, match.teamBId]);
   await announceMatchChange(matchId);
   revalidatePath(`/t/${match.tournament.slug}`);
   redirect(`/t/${match.tournament.slug}`);

@@ -112,6 +112,7 @@ model Player {
   teamMembers  TeamMember[]
   lineupSlots  LineupSlot[]
   attempts     MatchMapAttempt[]
+  draftSpots   DraftPlayer[]
   profile      PlayerProfile?
 
   @@index([userId])
@@ -341,6 +342,7 @@ model Tournament {
   divisions Division[]
   pools     MapPool[]
   matches   Match[]
+  drafts    Draft[]
   members   TournamentMember[]
 
   @@index([ownerId])
@@ -390,6 +392,12 @@ model Team {
   colorSecondary String @default("#A5B4FC")
   logo  String?
 
+  /// A side put together for particular matches - a mixed scrim, a captains'
+  /// draft - rather than one entered in the tournament. It plays, is advised
+  /// and is permissioned like any team, but stays out of the tournament's own
+  /// team lists, and goes when its last match does.
+  adHoc Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -403,6 +411,8 @@ model Team {
   picks       MatchMap[]   @relation("PickedBy")
   lineups     Lineup[]
   attempts    MatchMapAttempt[]
+  draftsAsA   Draft[]      @relation("DraftTeamA")
+  draftsAsB   Draft[]      @relation("DraftTeamB")
 
   @@unique([divisionId, name])
 }
@@ -530,6 +540,7 @@ model Match {
   actions    MatchAction[]
   maps       MatchMap[]
   shareLinks ShareLink[]
+  draft      Draft?
 
   @@index([tournamentId])
   @@index([poolId])
@@ -661,6 +672,65 @@ model MatchMapAttempt {
   /// Per team: a player rostered on both sides has their run counted for each.
   @@unique([matchMapId, teamId, playerId, attempt])
   @@index([matchMapId])
+}
+
+// ===========================================================================
+//  Captains' drafts
+// ===========================================================================
+
+/// Two captains choosing sides from a pool of players, turn by turn.
+///
+/// The sides are ordinary (ad hoc) teams from the moment the draft is created,
+/// with each captain already on theirs. A pick adds the player to that roster,
+/// so captaincy, permissions and predictions need nothing draft-specific - and
+/// when the last pick is made the teams are simply ready to play.
+model Draft {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  name String
+
+  teamAId String
+  teamA   Team   @relation("DraftTeamA", fields: [teamAId], references: [id], onDelete: Cascade)
+  teamBId String
+  teamB   Team   @relation("DraftTeamB", fields: [teamBId], references: [id], onDelete: Cascade)
+
+  /// "SNAKE" (A B B A A B ...) or "ALTERNATE" (A B A B ...). See packages/core/match/draft.
+  order     String  @default("SNAKE")
+  /// "A" or "B".
+  firstPick String  @default("A")
+  /// With an odd number to choose from, the last player left plays for both sides.
+  shareOdd  Boolean @default(false)
+
+  /// The match these sides went on to play, once someone has started it.
+  matchId String? @unique
+  match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  players DraftPlayer[]
+
+  @@index([tournamentId])
+}
+
+/// Someone in a draft's pool. Unpicked until pickNumber is set.
+model DraftPlayer {
+  id       String @id @default(cuid())
+  draftId  String
+  draft    Draft  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  /// 0-based position in the draft order. Unique per draft, which is what
+  /// stops two people taking the same turn.
+  pickNumber Int?
+  /// "A", "B", or "BOTH" for the shared last player.
+  side       String?
+
+  @@unique([draftId, playerId])
+  @@unique([draftId, pickNumber])
 }
 
 /// Read-only public access to a match for spectators and stream overlays.

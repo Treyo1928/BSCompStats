@@ -28,6 +28,7 @@ export const getTournamentSummary = cache(async (slug: string) => {
       divisions: {
         select: {
           teams: {
+            where: { adHoc: false },
             orderBy: { name: 'asc' },
             select: {
               id: true,
@@ -108,6 +109,8 @@ export const getPoolSummary = cache(async (slug: string, poolId: string) => {
 
   const members = await prisma.teamMember.findMany({
     where: { team: { division: { tournamentId: pool.tournamentId } } },
+    // Match-only sides first, so the team a player is entered with is the one kept.
+    orderBy: { team: { adHoc: 'desc' } },
     select: { player: { select: { id: true, name: true } }, team: { select: { name: true, color: true } } },
   });
   const teamOf = new Map(members.map((m) => [m.player.id, m.team]));

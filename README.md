@@ -46,6 +46,22 @@ normal case for friendly scrims.
 **Recommendations, including when to lose on purpose.** See
 [The recommendation engine](#the-recommendation-engine).
 
+**Custom matches and captains' drafts.** For sides that are not tournament
+teams - a mixed scrim, a stand-in roster. Name both sides outright (the same
+player may be on both), or pick two captains and a pool of players and let them
+take turns, snake or alternating, each from their own phone. With an odd number
+the last player left can play for both teams. The sides are real teams for the
+length of the match, so lineups, advice and captain permissions all work, and
+they are tidied away when the match is deleted.
+
+**Player stats, team first.** Every player against their teammates: rank on the
+team, maps where they are the team's best, how often they make the strongest
+duo, consistency, and a play style read off the model - specialist, anchor,
+steady, streaky, all-rounder. A lean toward a kind of map has to rest on two
+maps before it names a style; on one it is listed and marked as thin.
+
+**Built for a phone.** Match night happens standing next to a headset.
+
 **Deep player stats.** Skill and consistency derived from the score matrix,
 per-map predictions with confidence, fail probability, hand balance, FC and miss
 rates, category affinity, and score history built from the live feed.
@@ -293,7 +309,7 @@ production.
 
 | Command | Does |
 |---|---|
-| `npm test` | The core test suite (107 tests) |
+| `npm test` | The core test suite |
 | `npm run sync` | One-off score pull, then exit |
 | `npm run db:studio` | Browse the database |
 | `npm run typecheck` | Typecheck everything |

@@ -57,6 +57,12 @@ export interface PlayerProfile {
 
   /** Mean relative performance per organiser category tag, in logit units. */
   categoryAffinity: Record<string, number>;
+  /**
+   * The same comparison in plain accuracy (0..1): mean of actual minus what
+   * general skill predicts. For showing to people - a big lean is badly
+   * misstated by scaling the logit figure.
+   */
+  categoryAccDelta: Record<string, number>;
 
   lastPlayedAt: number | null;
 }
@@ -89,6 +95,7 @@ export function buildPlayerProfiles(
     // player does on maps the organiser tagged a given way. This is the honest
     // version of the spreadsheet's hand-written "Acc / Tech / Speed" headers.
     const byCategory = new Map<string, number[]>();
+    const accDeltas = new Map<string, number[]>();
     for (const s of clean) {
       const category = input.categories?.[s.leaderboardId];
       if (!category) continue;
@@ -98,11 +105,16 @@ export function buildPlayerProfiles(
       const list = byCategory.get(category) ?? [];
       list.push(logitDiff(s.acc, predicted));
       byCategory.set(category, list);
+      const deltas = accDeltas.get(category) ?? [];
+      deltas.push(s.acc - predicted);
+      accDeltas.set(category, deltas);
     }
 
     const categoryAffinity: Record<string, number> = {};
+    const categoryAccDelta: Record<string, number> = {};
     for (const [category, diffs] of byCategory) {
       categoryAffinity[category] = mean(diffs);
+      categoryAccDelta[category] = mean(accDeltas.get(category) ?? []);
     }
 
     const handDiffs = clean
@@ -130,6 +142,7 @@ export function buildPlayerProfiles(
       failCount: fails.length,
 
       categoryAffinity,
+      categoryAccDelta,
       lastPlayedAt: scores.reduce<number | null>(
         (latest, s) => (s.timeset && (!latest || s.timeset > latest) ? s.timeset : latest),
         null,

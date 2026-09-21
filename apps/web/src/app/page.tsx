@@ -55,7 +55,7 @@ export default async function HomePage() {
           },
         },
       },
-      divisions: { select: { teams: { select: { color: true } } } },
+      divisions: { select: { teams: { where: { adHoc: false }, select: { color: true } } } },
     },
   });
 

@@ -419,12 +419,33 @@ export async function searchPlayerCandidates(
   rawQuery: string,
 ): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
   const actor = await requireTeamManager(teamId);
+  return findCandidates(rawQuery, actor.globalRole === 'ADMIN', teamId);
+}
+
+/**
+ * The same search for someone putting a match-only side together, where there
+ * is no team yet for the player to be on.
+ */
+export async function searchGuestCandidates(
+  tournamentId: string,
+  rawQuery: string,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'CREATE_MATCH');
+  return findCandidates(rawQuery, actor.globalRole === 'ADMIN', null);
+}
+
+async function findCandidates(
+  rawQuery: string,
+  seesAccounts: boolean,
+  teamId: string | null,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
   // Anyone can create a tournament and so become a team manager somewhere.
   // Which BeatLeader profile belongs to which account is the site's business,
   // not theirs: only a site admin may browse by account name or see it. Others
   // can still find someone by their exact account name, which they must
-  // already know.
-  const seesAccounts = actor.globalRole === 'ADMIN';
+  // already know. That is what `seesAccounts` carries.
 
   const query = rawQuery.trim();
   if (!query) return { candidates: [], error: 'Enter a BeatLeader ID, profile link, or name.' };
@@ -519,10 +540,12 @@ export async function searchPlayerCandidates(
     }
   }
 
-  const members = await prisma.teamMember.findMany({
-    where: { teamId, player: { beatLeaderId: { in: ids } } },
-    select: { player: { select: { beatLeaderId: true } } },
-  });
+  const members = teamId
+    ? await prisma.teamMember.findMany({
+        where: { teamId, player: { beatLeaderId: { in: ids } } },
+        select: { player: { select: { beatLeaderId: true } } },
+      })
+    : [];
   for (const m of members) candidates.get(m.player.beatLeaderId)!.onTeam = true;
 
   // People with an account here are the likeliest intent, so they lead.
@@ -534,6 +557,61 @@ export async function searchPlayerCandidates(
   return { candidates: sorted.slice(0, 20), error };
 }
 
+export interface GuestPlayer {
+  id: string;
+  beatLeaderId: string;
+  name: string;
+  avatar: string | null;
+}
+
+/** The Player row for a BeatLeader profile, fetched and stored the first time it is asked for. */
+async function ensurePlayer(
+  beatLeaderId: string,
+): Promise<{ player: GuestPlayer } | { error: string }> {
+  const known = await prisma.player.findUnique({ where: { beatLeaderId } });
+  if (known) return { player: known };
+
+  let profile;
+  try {
+    profile = await beatLeader.getPlayer(beatLeaderId);
+  } catch {
+    return { error: 'BeatLeader could not be reached. Try again in a moment.' };
+  }
+  if (!profile) return { error: 'BeatLeader has no such player.' };
+
+  const player = await prisma.player.upsert({
+    where: { beatLeaderId: profile.id },
+    create: {
+      beatLeaderId: profile.id,
+      name: profile.name ?? `Player ${profile.id}`,
+      avatar: profile.avatar ?? null,
+      country: profile.country ?? null,
+      pp: profile.pp ?? 0,
+      rank: profile.rank ?? 0,
+    },
+    update: {},
+  });
+  return { player };
+}
+
+/**
+ * Make someone from outside the tournament available to a match-only side.
+ * They join nothing yet - that happens when the side is created.
+ */
+export async function registerGuest(
+  tournamentId: string,
+  beatLeaderId: string,
+): Promise<{ player?: GuestPlayer; error?: string }> {
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'CREATE_MATCH');
+
+  const found = await ensurePlayer(beatLeaderId);
+  if ('error' in found) return found;
+  const { id, beatLeaderId: blId, name, avatar } = found.player;
+  return { player: { id, beatLeaderId: blId, name, avatar } };
+}
+
 /** Adds one specific BeatLeader profile - the one picked from the candidates. */
 export async function addPlayerToTeam(
   teamId: string,
@@ -541,29 +619,9 @@ export async function addPlayerToTeam(
 ): Promise<{ error?: string }> {
   const actor = await requireTeamManager(teamId);
 
-  let player = await prisma.player.findUnique({ where: { beatLeaderId } });
-  if (!player) {
-    let profile;
-    try {
-      profile = await beatLeader.getPlayer(beatLeaderId);
-    } catch {
-      return { error: 'BeatLeader could not be reached. Try again in a moment.' };
-    }
-    if (!profile) return { error: 'BeatLeader has no such player.' };
-
-    player = await prisma.player.upsert({
-      where: { beatLeaderId: profile.id },
-      create: {
-        beatLeaderId: profile.id,
-        name: profile.name ?? `Player ${profile.id}`,
-        avatar: profile.avatar ?? null,
-        country: profile.country ?? null,
-        pp: profile.pp ?? 0,
-        rank: profile.rank ?? 0,
-      },
-      update: {},
-    });
-  }
+  const found = await ensurePlayer(beatLeaderId);
+  if ('error' in found) return found;
+  const player = found.player;
 
   // Max + 1 rather than the count: removals leave gaps, and a count would then
   // hand out an order that is already taken.

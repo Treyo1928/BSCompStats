@@ -41,12 +41,24 @@ body {
   font-feature-settings: "cv11", "ss01";
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  /* iOS inflates text in landscape and flashes grey on every tap otherwise. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Score grids are read by scanning columns, so numbers must line up. */
 .tabular { font-variant-numeric: tabular-nums; }
 
-a { color: inherit; }
+/*
+ * In the base layer, not loose in the file. Unlayered CSS beats every Tailwind
+ * utility whatever its specificity, so as a bare rule this overrode the colour
+ * class on every link: the Sign in button asked for dark text on the accent and
+ * got the nav's grey instead, and no link's hover colour ever applied.
+ */
+@layer base {
+  a { color: inherit; }
+}
 
 /* One visible keyboard focus ring for everything interactive. */
 :where(a, button, summary, select, [role="button"]):focus-visible {
@@ -66,3 +78,34 @@ a { color: inherit; }
     rgb(127 29 29 / 0.35);
   color: #fecaca;
 }
+
+/* ---------------------------------------------------------------------------
+ *  Phones
+ *
+ *  Most of the people using this on match night are standing next to a headset
+ *  with a phone in one hand. These rules are deliberately outside any layer, so
+ *  they win over the utility classes without every component having to carry a
+ *  second set of sizes.
+ * ------------------------------------------------------------------------- */
+
+/* Below 16px, iOS zooms the page into a field on focus and never zooms back. */
+@media (max-width: 639px) {
+  input, select, textarea { font-size: 16px; }
+}
+
+/* Fingers, not cursors: nothing tappable is shorter than 44px. */
+@media (pointer: coarse) {
+  button,
+  select,
+  summary,
+  input:not([type="checkbox"], [type="radio"], [type="color"], [type="file"], [type="hidden"]) {
+    min-height: 2.75rem;
+  }
+  input[type="checkbox"], input[type="radio"] { width: 1.25rem; height: 1.25rem; }
+  /* Double-tap to zoom costs every button a 300ms wait. */
+  a, button, select, summary, label, input { touch-action: manipulation; }
+}
+
+/* Side-scrolling strips (tournament sections, team tabs) show no scrollbar. */
+nav { scrollbar-width: none; }
+nav::-webkit-scrollbar { display: none; }

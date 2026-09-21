@@ -76,10 +76,10 @@ export function PoolBoardTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] border-separate border-spacing-0 text-sm">
+      <table className="w-full min-w-[640px] border-separate border-spacing-0 text-sm sm:min-w-[760px]">
         <thead>
           <tr>
-            <th className="sticky left-0 z-20 w-44 bg-panel px-4 pb-3 pt-4 text-left align-bottom text-[10px] font-medium uppercase tracking-wider text-faint">
+            <th className="sticky left-0 z-20 w-28 bg-panel px-2 pb-3 pt-4 text-left sm:w-44 sm:px-4 align-bottom text-[10px] font-medium uppercase tracking-wider text-faint">
               Player
             </th>
             {board.maps.map((map) => (
@@ -134,15 +134,18 @@ export function PoolBoardTable({
                 <tr key={row.playerId} className="group">
                   <th
                     scope="row"
-                    className="sticky left-0 z-10 bg-panel px-4 py-1 text-left font-medium group-hover:bg-raised"
+                    // Narrow on a phone, with a hairline so scores sliding under it read as "more that way".
+                    className="sticky left-0 z-10 max-w-28 border-r border-edge/70 bg-panel px-2 py-1 text-left font-medium group-hover:bg-raised sm:max-w-none sm:border-r-0 sm:px-4"
                   >
                     <a
                       href={`https://beatleader.com/u/${row.beatLeaderId}`}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="flex items-center gap-2.5 hover:underline"
+                      className="flex items-center gap-1.5 hover:underline sm:gap-2.5"
                     >
-                      <Avatar src={row.avatar} name={row.playerName} size={26} ring={team.color} />
+                      <span className="hidden sm:inline-flex">
+                        <Avatar src={row.avatar} name={row.playerName} size={26} ring={team.color} />
+                      </span>
                       <span
                         className={`truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
                         title={row.available ? undefined : 'Not available - left out of lineups and predictions'}
@@ -186,7 +189,7 @@ export function PoolBoardTable({
 
         <tfoot>
           <tr>
-            <th className="sticky left-0 z-10 border-t border-edge bg-panel px-4 py-2.5 text-left text-[10px] font-medium uppercase tracking-wider text-faint">
+            <th className="sticky left-0 z-10 border-t border-edge bg-panel px-2 py-2.5 text-left sm:px-4 text-[10px] font-medium uppercase tracking-wider text-faint">
               Field average
             </th>
             {board.maps.map((map) => (
@@ -212,7 +215,7 @@ function MapHeader({ map }: { map: BoardMap }) {
         href={`https://beatleader.com/leaderboard/global/${map.leaderboardId}`}
         target="_blank"
         rel="noreferrer noopener"
-        className="group/map mx-auto flex w-[7.25rem] flex-col items-center gap-1.5 text-center"
+        className="group/map mx-auto flex w-[5.5rem] flex-col items-center gap-1.5 text-center sm:w-[7.25rem]"
         title={[map.name, map.mapper ? `mapped by ${map.mapper}` : null, `max ${num(map.maxScore)}`]
           .filter(Boolean)
           .join(' · ')}

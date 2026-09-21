@@ -15,13 +15,17 @@ export const runtime = 'nodejs';
  * path - so nothing can leak through here that the page itself would hide.
  */
 export async function GET(request: Request) {
-  const matchId = new URL(request.url).searchParams.get('match');
+  const query = new URL(request.url).searchParams;
+  const draftId = query.get('draft');
+  // A captains' draft is kept current the same way, on the same channel, under
+  // a key no match id can collide with.
+  const matchId = draftId ? `draft:${draftId}` : query.get('match');
   if (!matchId) return new Response('Missing match.', { status: 400 });
 
-  const match = await prisma.match.findUnique({
-    where: { id: matchId },
-    select: { tournamentId: true, tournament: { select: { isPublic: true } } },
-  });
+  const select = { tournamentId: true, tournament: { select: { isPublic: true } } } as const;
+  const match = draftId
+    ? await prisma.draft.findUnique({ where: { id: draftId }, select })
+    : await prisma.match.findUnique({ where: { id: matchId }, select });
   if (!match) return new Response('Not found.', { status: 404 });
 
   const actor = await getActorOrAnonymous(match.tournamentId);

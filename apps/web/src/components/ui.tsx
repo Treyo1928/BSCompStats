@@ -23,7 +23,7 @@ export function Panel({
       className={`overflow-hidden rounded-xl border border-edge bg-panel/90 shadow-[0_1px_0_0_rgb(255_255_255/0.03)_inset,0_12px_32px_-16px_rgb(0_0_0/0.6)] ${className}`}
     >
       {(title || actions) && (
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-edge px-4 py-3">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-edge px-3 py-3 sm:px-4">
           <div className="min-w-0">
             {title && <h2 className="text-sm font-semibold tracking-tight">{title}</h2>}
             {subtitle && <p className="text-xs text-muted">{subtitle}</p>}
@@ -31,7 +31,7 @@ export function Panel({
           {actions && <div className="flex items-center gap-2">{actions}</div>}
         </header>
       )}
-      <div className={flush ? '' : 'p-4'}>{children}</div>
+      <div className={flush ? '' : 'p-3 sm:p-4'}>{children}</div>
     </section>
   );
 }
@@ -51,8 +51,8 @@ export function PageHeader({
   media?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-center justify-between gap-4">
-      <div className="flex min-w-0 items-center gap-4">
+    <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+      <div className="flex min-w-0 items-center gap-3 sm:gap-4">
         {media}
         <div className="min-w-0">
           {crumbs.length > 0 && (
@@ -67,7 +67,8 @@ export function PageHeader({
               ))}
             </nav>
           )}
-          <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+          {/* A phone has the height to wrap a long name and not the width to show it. */}
+          <h1 className="break-words text-xl font-semibold tracking-tight sm:truncate sm:text-3xl">{title}</h1>
           {meta && <p className="mt-1 text-sm text-muted">{meta}</p>}
         </div>
       </div>

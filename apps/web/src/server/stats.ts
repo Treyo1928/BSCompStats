@@ -2,10 +2,12 @@ import { cookies } from 'next/headers';
 import { runChooseModel } from './advice-thread';
 import { announceMatchChange } from '@/lib/redis';
 import { prisma } from '@bscs/db';
+import { categorizeMap } from '@bscs/core/beatleader';
 import {
   applyScope,
   buildFailModel,
   buildPlayerProfiles,
+  buildPlayStyles,
   classifyFails,
   fitSkillModel,
   type FitOptions,
@@ -13,6 +15,7 @@ import {
   DEFAULT_STATS_SCOPE,
   type FailModel,
   type PlayerProfile,
+  type PlayStyle,
   type ScopedScore,
   type SkillModel,
   type StatsScope,
@@ -31,6 +34,8 @@ export interface TournamentModel {
   model: SkillModel;
   failModel: FailModel;
   profiles: Record<string, PlayerProfile>;
+  /** Each profile read back as a description, relative to this tournament's field. */
+  styles: Record<string, PlayStyle>;
   scope: StatsScope;
   /**
    * Scores classified as anomalies - abandoned or disastrous runs - keyed by
@@ -140,7 +145,9 @@ export async function buildTournamentModel(
           accLeft: true,
           accRight: true,
           timeset: true,
-          leaderboard: { select: { maxScore: true, ranked: true } },
+          leaderboard: {
+            select: { maxScore: true, ranked: true, accRating: true, passRating: true, techRating: true },
+          },
         },
       })
     : [];
@@ -237,10 +244,24 @@ export async function buildTournamentModel(
     ).map((pm) => [pm.leaderboardId, pm.category]),
   );
 
+  // Where no organiser has tagged a map - which is every map outside the
+  // pools - a ranked one still has BeatLeader's ratings to guess from. That is what makes a wider scope worth
+  // having for play styles: hundreds of scores per kind of map instead of one.
+  for (const s of scores) {
+    categories[s.leaderboardId] ??= categorizeMap({
+      acc: s.leaderboard.accRating,
+      pass: s.leaderboard.passRating,
+      tech: s.leaderboard.techRating,
+    });
+  }
+
+  const profiles = buildPlayerProfiles({ scores: detailed, model, categories });
+
   const built: TournamentModel = {
     model,
     failModel: buildFailModel({ scores: detailed, model }),
-    profiles: buildPlayerProfiles({ scores: detailed, model, categories }),
+    profiles,
+    styles: buildPlayStyles({ profiles, scores: detailed, categories }),
     scope,
     failKeys,
     excluded,

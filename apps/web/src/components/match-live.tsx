@@ -4,18 +4,22 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 /**
- * Keeps a match page current: when anyone picks, bans, saves a lineup or
+ * Keeps a match page (or a captains' draft) current: when anyone picks, bans, saves a lineup or
  * enters a score - or when advice that was being calculated is ready - every
  * open copy of the page re-renders.
  *
  * Renders nothing. The stream only says that something changed; the data still
  * comes from the server, through the same checks as a normal page load.
  */
-export function MatchLive({ matchId }: { matchId: string }) {
+export function MatchLive({ matchId, draftId }: { matchId?: string; draftId?: string }) {
   const router = useRouter();
 
   useEffect(() => {
-    const source = new EventSource(`/api/events/match?match=${encodeURIComponent(matchId)}`);
+    const source = new EventSource(
+      draftId
+        ? `/api/events/match?draft=${encodeURIComponent(draftId)}`
+        : `/api/events/match?match=${encodeURIComponent(matchId ?? '')}`,
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const refresh = () => {
@@ -37,7 +41,7 @@ export function MatchLive({ matchId }: { matchId: string }) {
       clearTimeout(timer);
       source.close();
     };
-  }, [matchId, router]);
+  }, [matchId, draftId, router]);
 
   return null;
 }

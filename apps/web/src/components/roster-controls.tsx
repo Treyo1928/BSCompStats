@@ -20,6 +20,34 @@ const UNREACHABLE = 'The server could not be reached. Check your connection and 
  * meant, so nothing is added until the organiser has chosen from the list.
  */
 export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: string }) {
+  return (
+    <PlayerPicker
+      title={`Add to ${teamName}`}
+      label="Add player"
+      search={(query) => searchPlayerCandidates(teamId, query)}
+      add={(candidate) => addPlayerToTeam(teamId, candidate.beatLeaderId)}
+      className="mt-3 border-t border-[var(--color-edge)] pt-3"
+    />
+  );
+}
+
+/** The search box and "who did you mean" dialog, for whatever the player is being added to. */
+export function PlayerPicker({
+  title,
+  label,
+  search: runSearch,
+  add: runAdd,
+  takenLabel = 'On team',
+  className = '',
+}: {
+  title: string;
+  label: string;
+  search: (query: string) => Promise<{ candidates: PlayerCandidate[]; error?: string }>;
+  add: (candidate: PlayerCandidate) => Promise<{ error?: string }>;
+  /** Shown against a candidate with `onTeam` set, who cannot be added again. */
+  takenLabel?: string;
+  className?: string;
+}) {
   const [query, setQuery] = useState('');
   const [candidates, setCandidates] = useState<PlayerCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +68,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
       // A rejected action inside a transition takes the whole page down with
       // it, and "the request did not get through" is not worth that.
       try {
-        const result = await searchPlayerCandidates(teamId, query);
+        const result = await runSearch(query);
         setError(result.error ?? null);
         setCandidates(result.candidates);
       } catch {
@@ -54,7 +82,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
     setAdding(candidate.beatLeaderId);
     let result: { error?: string };
     try {
-      result = await addPlayerToTeam(teamId, candidate.beatLeaderId);
+      result = await runAdd(candidate);
     } catch {
       result = { error: UNREACHABLE };
     }
@@ -74,12 +102,9 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
 
   return (
     <>
-      <form
-        onSubmit={search}
-        className="mt-3 flex items-start gap-2 border-t border-[var(--color-edge)] pt-3"
-      >
-        <div className="flex-1">
-          <Field label="Add player" hint="BeatLeader ID, profile link, or name to search">
+      <form onSubmit={search} className={`flex items-start gap-2 ${className}`}>
+        <div className="min-w-0 flex-1">
+          <Field label={label} hint="BeatLeader ID, profile link, or name to search">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -106,7 +131,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
           <div className="flex max-h-[min(36rem,80vh)] flex-col">
             <div className="flex items-start justify-between gap-3 border-b border-edge px-4 py-3">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold tracking-tight">Add to {teamName}</h3>
+                <h3 className="text-base font-semibold tracking-tight">{title}</h3>
                 <p className="truncate text-xs text-muted">
                   {candidates.length === 0
                     ? `Nothing found for “${query}”`
@@ -156,7 +181,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
                     </span>
                     <span className="w-20 text-right text-xs tabular text-muted">
                       {c.onTeam
-                        ? 'On team'
+                        ? takenLabel
                         : adding === c.beatLeaderId
                           ? 'Adding…'
                           : c.pp > 0

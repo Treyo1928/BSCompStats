@@ -24,7 +24,13 @@ export const metadata: Metadata = {
 };
 
 /** The colour of the bar down the side of a Discord embed. */
-export const viewport: Viewport = { themeColor: '#8b7bff' };
+export const viewport: Viewport = {
+  themeColor: '#8b7bff',
+  width: 'device-width',
+  initialScale: 1,
+  // Lets the page run under the notch; the header and main pad themselves back in.
+  viewportFit: 'cover',
+};
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -32,7 +38,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen">
         <SiteHeader />
         <ViewAsBanner />
-        <main className="mx-auto w-full max-w-7xl px-4 py-6">{children}</main>
+        <main className="mx-auto w-full max-w-7xl px-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4 sm:px-4 sm:pt-6">
+          {children}
+        </main>
       </body>
     </html>
   );

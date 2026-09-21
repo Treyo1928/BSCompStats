@@ -195,7 +195,7 @@ export default async function MatchPage({
           background: `linear-gradient(90deg, ${teamWash(match.teamA.color)}, ${teamWash(match.teamA.color, 0.2)} 35%, var(--color-panel) 50%, ${teamWash(match.teamB.color, 0.2)} 65%, ${teamWash(match.teamB.color)})`,
         }}
       >
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-5 py-6 sm:px-8">
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-4 sm:gap-4 sm:px-8 sm:py-6">
           <TeamScore team={match.teamA} score={match.scoreboard.a} leading={match.scoreboard.a > match.scoreboard.b} />
           <div className="flex flex-col items-center gap-2">
             <Badge tone={match.state === 'COMPLETE' ? 'win' : match.state === 'PLAYING' ? 'warn' : 'accent'}>
@@ -604,7 +604,7 @@ export default async function MatchPage({
                                         <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
                                         <input type="hidden" name="teamId" value={team.id} />
                                         <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-faint">
-                                          <span className="w-24 shrink-0">{team.name}</span>
+                                          <span className="w-20 shrink-0 truncate sm:w-24">{team.name}</span>
                                           {runLabels.map((label) => (
                                             <span key={label} className="min-w-0 flex-1">
                                               {label}
@@ -615,7 +615,7 @@ export default async function MatchPage({
                                           const name = team.players.find((p) => p.id === playerId)?.name ?? 'Player';
                                           return (
                                             <div key={playerId} className="flex items-center gap-2 text-xs">
-                                              <span className="w-24 shrink-0 truncate text-muted">{name}</span>
+                                              <span className="w-20 shrink-0 truncate text-muted sm:w-24">{name}</span>
                                               {runLabels.map((label, index) => (
                                                 <input
                                                   key={label}
@@ -855,10 +855,15 @@ function TeamScore({
 }) {
   const right = align === 'right';
   return (
-    <div className={`flex items-center gap-4 sm:gap-6 ${right ? 'flex-row-reverse text-right' : ''}`}>
-      <div className="min-w-0 flex-1">
+    // Stacked on a phone: a name and a 60px numeral do not fit side by side in a third of the width.
+    <div
+      className={`flex min-w-0 flex-col gap-2 sm:items-center sm:gap-6 ${
+        right ? 'items-end text-right sm:flex-row-reverse' : 'items-start sm:flex-row'
+      }`}
+    >
+      <div className="min-w-0 max-w-full sm:flex-1">
         <p
-          className="truncate text-xl font-bold tracking-tight sm:text-2xl"
+          className="truncate text-base font-bold tracking-tight sm:text-2xl"
           style={{ color: teamInk(team.color, team.colorSecondary) }}
         >
           {team.name}
@@ -868,7 +873,7 @@ function TeamScore({
         </div>
       </div>
       <span
-        className={`text-5xl font-bold tabular sm:text-6xl ${leading ? 'text-ink' : 'text-muted'}`}
+        className={`text-4xl font-bold leading-none tabular sm:text-6xl ${leading ? 'text-ink' : 'text-muted'}`}
       >
         {score}
       </span>

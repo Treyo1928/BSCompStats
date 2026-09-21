@@ -67,12 +67,14 @@ export default async function TeamsPage({
           id: true,
           name: true,
           teams: {
-            orderBy: { name: 'asc' },
+            // Match-only sides after the teams entered in the tournament.
+            orderBy: [{ adHoc: 'asc' }, { name: 'asc' }],
             select: {
               id: true,
               name: true,
               color: true,
               colorSecondary: true,
+              adHoc: true,
               members: {
                 orderBy: { order: 'asc' },
                 select: {
@@ -105,13 +107,14 @@ export default async function TeamsPage({
 
   const canManage = can(actor, 'MANAGE_TEAMS');
   const teams = tournament.divisions.flatMap((d) => d.teams);
+  const entered = teams.filter((t) => !t.adHoc);
 
   return (
     <div className="space-y-6">
       <PageHeader
         crumbs={[{ label: tournament.name, href: `/t/${slug}` }]}
         title="Teams and rosters"
-        meta={`${teams.length} teams · ${teams.reduce((n, t) => n + t.members.length, 0)} players`}
+        meta={`${entered.length} teams · ${new Set(entered.flatMap((t) => t.members.map((m) => m.player.id))).size} players`}
       />
 
       <FormError message={error} />
@@ -127,10 +130,15 @@ export default async function TeamsPage({
               }}
             >
               <h2
-                className="min-w-0 truncate text-base font-semibold tracking-tight"
+                className="flex min-w-0 items-center gap-2 truncate text-base font-semibold tracking-tight"
                 style={{ color: teamInk(team.color, team.colorSecondary) }}
               >
-                {team.name}
+                <span className="truncate">{team.name}</span>
+                {team.adHoc && (
+                  <Badge title="Put together for a particular match. It is removed when its last match is deleted.">
+                    Match-only
+                  </Badge>
+                )}
               </h2>
               <span className="shrink-0 text-xs text-muted">
                 {team.members.filter((m) => m.available).length} of {team.members.length} available
@@ -143,12 +151,13 @@ export default async function TeamsPage({
             ) : (
               <ul className="-my-1.5 text-sm">
                 {team.members.map((member) => (
-                  <li key={member.id} className="flex items-center gap-1">
+                  // On a phone the controls drop to their own line rather than squeezing the name out.
+                  <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
                     <a
                       href={`https://beatleader.com/u/${member.player.beatLeaderId}`}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="-ml-2 flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised"
+                      className="-ml-2 flex min-w-0 flex-1 basis-full items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised sm:basis-0"
                     >
                       <Avatar
                         src={member.player.avatar}
@@ -182,7 +191,7 @@ export default async function TeamsPage({
                             Captain · no account
                           </Badge>
                         ))}
-                      <span className="w-16 text-right text-xs tabular text-muted">
+                      <span className="w-14 shrink-0 text-right text-xs tabular text-muted sm:w-16">
                         {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
                       </span>
                     </a>
@@ -279,7 +288,7 @@ export default async function TeamsPage({
           {can(actor, 'CREATE_MATCH') && (
             <NewMatchForm
               tournamentId={tournament.id}
-              teams={teams}
+              teams={entered}
               pools={tournament.pools}
               from="teams"
             />

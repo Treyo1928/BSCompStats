@@ -105,6 +105,7 @@ export default async function TournamentPage({
           id: true,
           name: true,
           teams: {
+            where: { adHoc: false },
             orderBy: { name: 'asc' },
             select: {
               id: true,
@@ -117,6 +118,17 @@ export default async function TournamentPage({
               },
             },
           },
+        },
+      },
+      drafts: {
+        where: { matchId: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          name: true,
+          players: { select: { pickNumber: true } },
+          teamA: { select: { color: true } },
+          teamB: { select: { color: true } },
         },
       },
       matches: {
@@ -229,13 +241,51 @@ export default async function TournamentPage({
         )}
       </Panel>
 
+      {tournament.drafts.length > 0 && (
+        <Panel title="Captains' drafts" subtitle="Sides being picked for a custom match">
+          <ul className="grid gap-3 md:grid-cols-2">
+            {tournament.drafts.map((draft) => {
+              const left = draft.players.filter((p) => p.pickNumber == null).length;
+              return (
+                <li key={draft.id}>
+                  <Link
+                    href={`/t/${tournament.slug}/draft/${draft.id}`}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-edge px-4 py-3 transition hover:border-faint"
+                    style={{
+                      background: `linear-gradient(90deg, ${teamWash(draft.teamA.color, 0.8)}, transparent 45%, transparent 55%, ${teamWash(draft.teamB.color, 0.8)})`,
+                    }}
+                  >
+                    <span className="min-w-0 truncate font-semibold">{draft.name}</span>
+                    <Badge tone={left === 0 ? 'win' : 'accent'}>
+                      {left === 0 ? 'Ready to play' : `${left} to pick`}
+                    </Badge>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </Panel>
+      )}
+
       {can(actor, 'CREATE_MATCH') && (
-        <NewMatchForm
-          tournamentId={tournament.id}
-          teams={teams}
-          pools={tournament.pools}
-          from="tournament"
-        />
+        <div className="space-y-2">
+          <NewMatchForm
+            tournamentId={tournament.id}
+            teams={teams}
+            pools={tournament.pools}
+            from="tournament"
+          />
+          <p className="px-1 text-sm text-muted">
+            Sides that are not tournament teams?{' '}
+            <Link
+              href={`/t/${tournament.slug}/custom`}
+              className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+            >
+              Set up a custom match or a captains&apos; draft
+            </Link>
+            .
+          </p>
+        </div>
       )}
 
       {finishedMatches.length > 0 && (

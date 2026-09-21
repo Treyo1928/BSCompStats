@@ -94,6 +94,42 @@ export interface PoolBoard {
   model: TournamentModel;
 }
 
+/**
+ * Who a tournament's boards and stats are about: everyone on a team entered in
+ * it, plus any match-only side that still has something to play. Once a
+ * match-only team's matches are over it drops off, rather than sitting on the
+ * board forever as a second copy of players who are already there.
+ */
+export function loadBoardMembers(tournamentId: string) {
+  return prisma.teamMember.findMany({
+    where: {
+      team: {
+        division: { tournamentId },
+        OR: [
+          { adHoc: false },
+          { matchesAsA: { some: { state: { not: 'COMPLETE' } } } },
+          { matchesAsB: { some: { state: { not: 'COMPLETE' } } } },
+          { draftsAsA: { some: { matchId: null } } },
+          { draftsAsB: { some: { matchId: null } } },
+        ],
+      },
+    },
+    // Entered teams first, so a player also on a match-only side is met there first.
+    orderBy: [{ team: { adHoc: 'asc' } }, { team: { name: 'asc' } }, { order: 'asc' }],
+    select: {
+      available: true,
+      isSub: true,
+      role: true,
+      player: {
+        select: { id: true, name: true, avatar: true, beatLeaderId: true, pp: true, rank: true },
+      },
+      team: {
+        select: { id: true, name: true, color: true, colorSecondary: true, adHoc: true },
+      },
+    },
+  });
+}
+
 export async function buildPoolBoard(
   poolId: string,
 ): Promise<PoolBoard | null> {
@@ -133,17 +169,7 @@ export async function buildPoolBoard(
   });
   if (!pool) return null;
 
-  const members = await prisma.teamMember.findMany({
-    where: { team: { division: { tournamentId: pool.tournamentId } } },
-    orderBy: [{ team: { name: 'asc' } }, { order: 'asc' }],
-    select: {
-      available: true,
-      player: { select: { id: true, name: true, avatar: true, beatLeaderId: true } },
-      team: {
-        select: { id: true, name: true, color: true, colorSecondary: true },
-      },
-    },
-  });
+  const members = await loadBoardMembers(pool.tournamentId);
 
   const leaderboardIds = pool.maps.map((m) => m.leaderboardId);
   const playerIds = [...new Set(members.map((m) => m.player.id))];

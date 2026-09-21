@@ -24,7 +24,7 @@ export async function SiteHeader() {
       : false;
 
   return (
-    <header className="sticky top-0 z-30 border-b border-edge bg-surface/80 backdrop-blur-md">
+    <header className="sticky top-0 z-30 border-b border-edge bg-surface/80 pt-[env(safe-area-inset-top)] backdrop-blur-md">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-2 px-3 py-2.5 sm:gap-4 sm:px-4">
         <Link href="/" className="group flex shrink-0 items-center gap-2.5">
           <Logo />
@@ -39,7 +39,7 @@ export async function SiteHeader() {
             Tournaments
           </Link>
           {isAdmin && (
-            <Link href="/admin/users" className="rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink">
+            <Link href="/admin/users" className="inline-flex h-10 items-center rounded-lg px-3 hover:bg-raised hover:text-ink sm:h-9">
               Users
             </Link>
           )}
@@ -70,7 +70,9 @@ export async function SiteHeader() {
           ) : authConfigured ? (
             <Link
               href="/signin"
-              className="ml-2 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 py-1.5 font-semibold text-surface hover:brightness-110"
+              // White on the accent itself is 3.3:1, so the button takes a deeper
+              // shade of the same purple, where white reads at 4.6:1.
+              className="ml-2 inline-flex h-10 shrink-0 items-center whitespace-nowrap rounded-lg bg-[#6f5cf5] px-4 font-semibold text-white shadow-[0_6px_16px_-8px_var(--color-accent)] hover:brightness-110 sm:h-9 sm:px-3"
             >
               Sign in
             </Link>

@@ -140,7 +140,8 @@ export default async function PoolPage({
       })),
   );
 
-  const playerCount = board.teams.reduce((acc, t) => acc + t.rows.length, 0);
+  // People, not rows: someone on a match-only side as well as their own team is on the board twice.
+  const playerCount = new Set(board.teams.flatMap((t) => t.rows.map((r) => r.playerId))).size;
 
   return (
     <div className="space-y-6">
