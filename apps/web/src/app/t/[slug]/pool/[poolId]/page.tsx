@@ -34,7 +34,7 @@ export default async function PoolPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; poolId: string }>;
-  searchParams: Promise<{ team?: string; vs?: string }>;
+  searchParams: Promise<{ team?: string; vs?: string; once?: string }>;
 }) {
   const { slug, poolId } = await params;
   const query = await searchParams;
@@ -61,16 +61,18 @@ export default async function PoolPage({
     realTeams.find((t) => t.teamId === query.vs && t.teamId !== outlookTeam?.teamId) ??
     realTeams.find((t) => t.teamId !== outlookTeam?.teamId) ??
     null;
+  const eachGroupOnce = query.once === '1';
   const outlook = outlookTeam
     ? await buildPoolOutlook(
         board,
         pool.tournament.id,
         outlookTeam.teamId,
         outlookOpponent?.teamId ?? null,
+        { eachGroupOnce },
       )
     : null;
-  const outlookHref = (team: string, vs?: string | null) =>
-    `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}#outlook`;
+  const outlookHref = (team: string, vs?: string | null, once = eachGroupOnce) =>
+    `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}${once ? '&once=1' : ''}#outlook`;
   const mapById = new Map(board.maps.map((m) => [m.poolMapId, m]));
 
   const playerCount = board.teams.reduce((acc, t) => acc + t.rows.length, 0);
@@ -165,6 +167,29 @@ export default async function PoolPage({
               )}
             </div>
 
+            {outlookOpponent && !outlook.shortHanded && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-edge px-4 py-2 text-xs">
+                <span className="text-muted">Rules</span>
+                <Link
+                  href={outlookHref(outlookTeam.teamId, outlookOpponent.teamId, !eachGroupOnce)}
+                  scroll={false}
+                  role="switch"
+                  aria-checked={eachGroupOnce}
+                  title="When on, a pairing used on one map cannot be used on another, as in a match. The groups shown are then the best set across the whole pool rather than the best for each map alone."
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium transition ${
+                    eachGroupOnce
+                      ? 'border-accent bg-accent/15 text-ink'
+                      : 'border-edge-strong text-muted hover:border-faint hover:text-ink'
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${eachGroupOnce ? 'bg-accent' : 'bg-edge-strong'}`}
+                  />
+                  Each {outlook.playersPerMap === 2 ? 'duo' : 'group'} on one map only
+                </Link>
+              </div>
+            )}
+
             {outlook.shortHanded ? (
               <div className="p-4">
                 <Empty>{outlook.shortHanded}</Empty>
@@ -249,8 +274,10 @@ export default async function PoolPage({
               </div>
             )}
             <p className="border-t border-edge px-4 py-2 text-xs text-faint">
-              Each map is judged on its own: the group shown is the strongest for that map alone. A real
-              match also limits how often the same players can pair up, which the lineup advice on a
+              {eachGroupOnce
+                ? `No ${outlook.playersPerMap === 2 ? 'duo' : 'group'} is used twice, so these are the best groups across the whole pool rather than map by map. The opponent's column is still their strongest group on each map.`
+                : 'Each map is judged on its own: the group shown is the strongest for that map alone. Turn on the rule above to see the best set when no pairing can be used twice.'}{' '}
+              A match also limits how many maps one player can play, which the lineup advice on a
               match page accounts for.
             </p>
           </Panel>

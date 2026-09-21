@@ -49,6 +49,7 @@ export async function buildPoolOutlook(
   tournamentId: string,
   teamId: string,
   opponentTeamId: string | null,
+  options: { eachGroupOnce?: boolean } = {},
 ): Promise<PoolOutlook | null> {
   const team = board.teams.find((t) => t.teamId === teamId);
   if (!team) return null;
@@ -116,11 +117,31 @@ export async function buildPoolOutlook(
         )
       : null;
 
+  // With "each duo once" on, the best group per map is no longer independent:
+  // a pairing spent on one map is gone for the rest. Choose the assignment that
+  // is best across the whole pool. The tiebreaker is exempt where the format
+  // says so, as in a match.
+  const assigned = new Map<string, { playerIds: string[]; vsTheirBest: number }>();
+  if (options.eachGroupOnce && values) {
+    const constrained = board.maps.filter(
+      (m) => !(m.isTiebreaker && format.rules.tiebreakerExemptFromDuos) && values.has(m.poolMapId),
+    );
+    const chosen = assignDistinctGroups(
+      constrained.map((m) => values.get(m.poolMapId)!.groups),
+    );
+    constrained.forEach((m, i) => {
+      const group = chosen[i];
+      if (group) assigned.set(m.poolMapId, group);
+    });
+  }
+
   const maps = board.maps.map((map): OutlookMap => {
     const value = values?.get(map.poolMapId);
+    const forced = assigned.get(map.poolMapId);
     // Without an opponent there is nothing to simulate against, so the best
     // group is simply the k players expected to score highest.
     const lineupIds =
+      forced?.playerIds ??
       value?.bestGroup ??
       [...roster]
         .sort((a, b) => predict(b, map.leaderboardId).acc - predict(a, map.leaderboardId).acc)
@@ -132,7 +153,7 @@ export async function buildPoolOutlook(
       lineupAcc: meanAcc(lineupIds, map.leaderboardId),
       versus: value
         ? {
-            winProbability: value.bestVsBest,
+            winProbability: forced?.vsTheirBest ?? value.bestVsBest,
             anyPairing: value.expected,
             opponentLineup: toPlayers(value.opponentBestGroup),
           }
@@ -141,4 +162,49 @@ export async function buildPoolOutlook(
   });
 
   return { playersPerMap: k, formatName: format.name, maps, shortHanded: null };
+}
+
+/**
+ * One group per map, no group twice, maximising the total win chance.
+ *
+ * Depth-first with a bound. Only each map's top N groups can matter (at most
+ * N-1 of them can be taken by the other N-1 maps), which keeps the search
+ * small however large the roster is.
+ */
+function assignDistinctGroups<T extends { playerIds: string[]; vsTheirBest: number }>(
+  perMap: T[][],
+): Array<T | null> {
+  const n = perMap.length;
+  const keyOf = (g: T) => [...g.playerIds].sort().join('|');
+  const options = perMap.map((groups) =>
+    [...groups].sort((a, b) => b.vsTheirBest - a.vsTheirBest).slice(0, Math.max(n, 1)),
+  );
+  // Best still achievable from map i onwards, ignoring the constraint.
+  const ceiling = new Array<number>(n + 1).fill(0);
+  for (let i = n - 1; i >= 0; i--) ceiling[i] = ceiling[i + 1]! + (options[i]![0]?.vsTheirBest ?? 0);
+
+  let best: Array<T | null> = new Array(n).fill(null);
+  let bestTotal = -1;
+  const current: Array<T | null> = new Array(n).fill(null);
+  const used = new Set<string>();
+
+  const visit = (i: number, total: number) => {
+    if (total + ceiling[i]! <= bestTotal) return;
+    if (i === n) {
+      bestTotal = total;
+      best = [...current];
+      return;
+    }
+    for (const group of options[i]!) {
+      const key = keyOf(group);
+      if (used.has(key)) continue;
+      used.add(key);
+      current[i] = group;
+      visit(i + 1, total + group.vsTheirBest);
+      used.delete(key);
+    }
+    current[i] = null;
+  };
+  visit(0, 0);
+  return best;
 }

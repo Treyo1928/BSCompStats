@@ -48,6 +48,17 @@ export interface MapValue {
   bestGroup: string[];
   /** Their strongest group here. */
   opponentBestGroup: string[];
+  /**
+   * Every group we could field, so a caller can choose under constraints of its
+   * own (each pairing used once, say) instead of taking `bestGroup` per map.
+   */
+  groups: Array<{
+    playerIds: string[];
+    /** Averaged over every group they could field. */
+    average: number;
+    /** Against `opponentBestGroup`. */
+    vsTheirBest: number;
+  }>;
 }
 
 export interface MapValueInput {
@@ -80,6 +91,7 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
 
     const ourGroupWin: number[] = new Array(ourGroups.length).fill(0);
     const theirGroupWin: number[] = new Array(theirGroups.length).fill(0);
+    const winRows: Float64Array[] = ourGroups.map(() => new Float64Array(theirGroups.length));
 
     for (let a = 0; a < ourGroups.length; a++) {
       for (let b = 0; b < theirGroups.length; b++) {
@@ -98,6 +110,7 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
         pairs++;
         ourGroupWin[a]! += winProb;
         theirGroupWin[b]! += winProb;
+        winRows[a]![b] = winProb;
       }
     }
 
@@ -122,6 +135,11 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
       expectedMargin: pairs ? sumMargin / pairs : 0,
       bestGroup: ourGroups[bestOurIndex]!,
       opponentBestGroup: theirGroups[bestTheirIndex]!,
+      groups: ourGroups.map((playerIds, a) => ({
+        playerIds,
+        average: ourGroupWin[a]! / theirGroups.length,
+        vsTheirBest: winRows[a]![bestTheirIndex]!,
+      })),
     };
   });
 }
