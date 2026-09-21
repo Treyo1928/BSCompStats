@@ -213,12 +213,21 @@ function Cell({
       <td className="p-[3px] text-center align-middle">
         <div className="flex h-[42px] items-center justify-center rounded-md border border-dashed border-edge">
           {showPredictions ? (
-            <span
-              className="text-xs italic text-faint"
-              title={`Predicted - nobody has recorded a score here. Confidence ${Math.round(cell.predictionConfidence * 100)}%.`}
-            >
-              ~{pct(cell.predictedAcc, 1)}
-            </span>
+            cell.isEstimate ? (
+              <span
+                className="text-xs font-medium text-accent"
+                title="Entered by hand, in place of the model's prediction. Used in every lineup and win-chance calculation."
+              >
+                ≈{pct(cell.predictedAcc, 1)}
+              </span>
+            ) : (
+              <span
+                className="text-xs italic text-faint"
+                title={`Predicted - no score recorded here. Likely between ${pct(cell.predictedLow, 0)} and ${pct(cell.predictedHigh, 0)}; the fewer comparable maps they have played, the wider that is. Someone who knows better can set their own estimate below the board.`}
+              >
+                ~{pct(cell.predictedAcc, 1)}
+              </span>
+            )
           ) : (
             <span className="text-faint">—</span>
           )}

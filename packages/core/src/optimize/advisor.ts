@@ -58,7 +58,11 @@ export interface MapValue {
     average: number;
     /** Against `opponentBestGroup`. */
     vsTheirBest: number;
+    /** Against each of `opponentGroups`, in that order. */
+    vs: number[];
   }>;
+  /** Every group they could field, with our win chance against it averaged over ours. */
+  opponentGroups: Array<{ playerIds: string[]; average: number }>;
 }
 
 export interface MapValueInput {
@@ -139,6 +143,11 @@ export function evaluateMaps(input: MapValueInput): MapValue[] {
         playerIds,
         average: ourGroupWin[a]! / theirGroups.length,
         vsTheirBest: winRows[a]![bestTheirIndex]!,
+        vs: Array.from(winRows[a]!),
+      })),
+      opponentGroups: theirGroups.map((playerIds, b) => ({
+        playerIds,
+        average: theirGroupWin[b]! / ourGroups.length,
       })),
     };
   });

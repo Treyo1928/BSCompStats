@@ -19,7 +19,7 @@ import {
 import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, MemberControls } from '@/components/roster-controls';
-import { createMatch } from '@/server/match-actions';
+import { NewMatchForm } from '@/components/new-match-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -256,64 +256,13 @@ export default async function TeamsPage({
             </form>
           </Panel>
 
-          {teams.length >= 2 && tournament.pools.length > 0 && (
-            <Panel title="New match" subtitle="Two teams and a pool is all it takes">
-              <form action={createMatch} className="space-y-3">
-                <input type="hidden" name="tournamentId" value={tournament.id} />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Team A">
-                    <select name="teamAId" className={inputClass} defaultValue={teams[0]!.id}>
-                      {teams.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Team B">
-                    <select name="teamBId" className={inputClass} defaultValue={teams[1]!.id}>
-                      {teams.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-                <Field label="Map pool">
-                  <select name="poolId" className={inputClass}>
-                    {tournament.pools.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field
-                  label="Coin flip winner"
-                  hint="They take the first step in the pick/ban order. Choose one of the two teams above; anything else falls back to Team A."
-                >
-                  <select name="coinFlipWinnerId" className={inputClass}>
-                    {teams.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <label className="flex items-start gap-2 text-sm">
-                  <input type="checkbox" name="blindLineups" className="mt-1" />
-                  <span>
-                    Hide lineups until both teams are done
-                    <span className="block text-xs text-faint">
-                      Each team sees only its own player choices until every map has been set by
-                      both sides. Left off, lineups appear for everyone as they are saved.
-                    </span>
-                  </span>
-                </label>
-                <Button type="submit">Create match</Button>
-              </form>
-            </Panel>
+          {can(actor, 'CREATE_MATCH') && (
+            <NewMatchForm
+              tournamentId={tournament.id}
+              teams={teams}
+              pools={tournament.pools}
+              from="teams"
+            />
           )}
         </div>
       )}

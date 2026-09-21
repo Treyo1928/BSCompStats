@@ -8,6 +8,7 @@ import {
   Empty,
   Button,
   Field,
+  Avatar,
   FormError,
   FieldAction,
   inputClass,
@@ -18,12 +19,16 @@ import {
   teamWash,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
+import { NewMatchForm } from '@/components/new-match-form';
 import {
   importPoolAction,
   createTeam,
   triggerRefresh,
   setTournamentVisibility,
   setCaptainsEnterScores,
+  addTournamentMember,
+  removeTournamentMember,
+  deleteTournament,
 } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
@@ -47,6 +52,10 @@ export default async function TournamentPage({
       description: true,
       isPublic: true,
       captainsEnterScores: true,
+      members: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, role: true, user: { select: { name: true, image: true } } },
+      },
       pools: {
         orderBy: { createdAt: 'asc' },
         select: {
@@ -101,6 +110,7 @@ export default async function TournamentPage({
   if (!can(actor, 'VIEW', { isPublic: tournament.isPublic })) notFound();
 
   const canManage = can(actor, 'MANAGE_TEAMS');
+  const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
   const teams = tournament.divisions.flatMap((d) => d.teams);
 
   return (
@@ -160,11 +170,7 @@ export default async function TournamentPage({
       <Panel title="Matches">
         {tournament.matches.length === 0 ? (
           <Empty>
-            No matches yet. Create one from the{' '}
-            <Link href={`/t/${tournament.slug}/teams`} className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent">
-              teams page
-            </Link>{' '}
-            once you have two teams and a pool.
+            No matches yet. One needs two teams and a map pool.
           </Empty>
         ) : (
           <ul className="grid gap-3 md:grid-cols-2">
@@ -206,6 +212,15 @@ export default async function TournamentPage({
           </ul>
         )}
       </Panel>
+
+      {can(actor, 'CREATE_MATCH') && (
+        <NewMatchForm
+          tournamentId={tournament.id}
+          teams={teams}
+          pools={tournament.pools}
+          from="tournament"
+        />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel
@@ -350,6 +365,98 @@ export default async function TournamentPage({
           )}
         </Panel>
       </div>
+
+      {can(actor, 'MANAGE_TOURNAMENT') && (
+        <Panel
+          title="People"
+          subtitle={
+            tournament.isPublic
+              ? 'Tournament admins can do everything inside this tournament'
+              : 'Tournament admins run it; viewers are who else can see this private tournament'
+          }
+        >
+          <ul className="divide-y divide-edge text-sm">
+            {tournament.members.map((member) => (
+              <li key={member.id} className="flex items-center gap-3 py-2">
+                <Avatar src={member.user.image} name={member.user.name ?? '?'} size={28} />
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {member.user.name ?? 'Unnamed user'}
+                </span>
+                <Badge tone={member.role === 'VIEWER' ? 'neutral' : 'accent'}>
+                  {member.role === 'OWNER'
+                    ? 'Owner'
+                    : member.role === 'ORGANIZER'
+                      ? 'Tournament admin'
+                      : member.role === 'VIEWER'
+                        ? 'Viewer'
+                        : member.role.toLowerCase()}
+                </Badge>
+                {member.role !== 'OWNER' && (member.role !== 'ORGANIZER' || grantsAdmin) && (
+                  <form action={removeTournamentMember}>
+                    <input type="hidden" name="memberId" value={member.id} />
+                    <button
+                      type="submit"
+                      className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
+                    >
+                      Remove
+                    </button>
+                  </form>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          <form
+            action={addTournamentMember}
+            className="mt-3 flex flex-wrap items-start gap-3 border-t border-edge pt-3"
+          >
+            <input type="hidden" name="tournamentId" value={tournament.id} />
+            <div className="min-w-[12rem] flex-1">
+              <Field
+                label="Add someone"
+                hint="Their account name here, or their BeatLeader ID. They must have signed in once."
+              >
+                <input name="who" className={inputClass} required />
+              </Field>
+            </div>
+            <Field label="As">
+              <select name="role" className={inputClass} defaultValue={grantsAdmin ? 'ORGANIZER' : 'VIEWER'}>
+                {grantsAdmin && <option value="ORGANIZER">Tournament admin</option>}
+                <option value="VIEWER">Viewer</option>
+              </select>
+            </Field>
+            <FieldAction>
+              <Button type="submit">Add</Button>
+            </FieldAction>
+          </form>
+          <p className="mt-2 text-xs text-faint">
+            Players on a roster, and their captains, can already see a private tournament - they do
+            not need adding here.
+          </p>
+        </Panel>
+      )}
+
+      {grantsAdmin && (
+        <details className="rounded-xl border border-red-400/20 bg-red-500/5 p-4 text-sm">
+          <summary className="cursor-pointer font-medium text-red-200">Delete this tournament</summary>
+          <form action={deleteTournament} className="mt-3 flex flex-wrap items-start gap-3">
+            <input type="hidden" name="tournamentId" value={tournament.id} />
+            <div className="min-w-[14rem] flex-1">
+              <Field
+                label={`Type "${tournament.name}" to confirm`}
+                hint="Deletes its teams, rosters, pools and every match. Players and their scores are kept. This cannot be undone."
+              >
+                <input name="confirmName" className={inputClass} autoComplete="off" required />
+              </Field>
+            </div>
+            <FieldAction>
+              <Button type="submit" variant="danger">
+                Delete forever
+              </Button>
+            </FieldAction>
+          </form>
+        </details>
+      )}
     </div>
   );
 }

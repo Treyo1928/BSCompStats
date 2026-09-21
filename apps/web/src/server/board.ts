@@ -23,6 +23,11 @@ export interface BoardCell {
   /** Model estimate, shown when there is no real score. */
   predictedAcc: number;
   predictionConfidence: number;
+  /** True when `predictedAcc` was entered by a person rather than modelled. */
+  isEstimate: boolean;
+  /** Roughly one standard deviation either side of the model's prediction. */
+  predictedLow: number;
+  predictedHigh: number;
   /** Rank within the column, 1-based. Null when unplayed. */
   rank: number | null;
 }
@@ -206,6 +211,10 @@ export async function buildPoolBoard(
     const cells: BoardCell[] = leaderboardIds.map((leaderboardId) => {
       const score = scoreBy.get(`${member.player.id}::${leaderboardId}`);
       const prediction = model.model.predict(member.player.id, leaderboardId);
+      const estimate =
+        prediction.observedAcc == null
+          ? model.estimates.get(failKey(member.player.id, leaderboardId))
+          : undefined;
       const column = columnStats.get(leaderboardId);
       const rank = score ? (column?.ranked.indexOf(member.player.id) ?? -1) + 1 : null;
 
@@ -218,8 +227,11 @@ export async function buildPoolBoard(
         fullCombo: score?.fullCombo ?? false,
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
         replayUrl: score?.replayUrl ?? null,
-        predictedAcc: prediction.acc,
+        predictedAcc: estimate ?? prediction.acc,
         predictionConfidence: prediction.confidence,
+        isEstimate: estimate != null,
+        predictedLow: prediction.accLow,
+        predictedHigh: prediction.accHigh,
         rank: rank && rank > 0 ? rank : null,
       };
     });

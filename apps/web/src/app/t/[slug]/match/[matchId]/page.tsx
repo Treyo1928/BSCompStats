@@ -21,6 +21,8 @@ import {
 } from '@/components/ui';
 import { LiveBadge } from '@/components/live-badge';
 import { MatchLive } from '@/components/match-live';
+import { FormBusy } from '@/components/busy-overlay';
+import { ConfirmButton } from '@/components/confirm-button';
 import { loadMatch, buildAdvice } from '@/server/matches';
 import { getActorOrAnonymous } from '@/server/session';
 import {
@@ -282,6 +284,7 @@ export default async function MatchPage({
                           <input type="hidden" name="matchId" value={match.id} />
                           <input type="hidden" name="poolMapId" value={map.poolMapId} />
                           <input type="hidden" name="teamId" value={match.pending!.teamId} />
+                          <FormBusy />
                           <button
                             type="submit"
                             disabled={!canAct}
@@ -500,7 +503,10 @@ export default async function MatchPage({
                                   Replay called by {id === match.teamA.id ? match.teamA.name : match.teamB.name}
                                 </Badge>
                               ))}
-                              <span>Both teams play again; each player&apos;s best run counts.</span>
+                              <span>
+                                Both teams play the map again and enter the new scores in the Replay
+                                column. Each player&apos;s best run counts.
+                              </span>
                               {can(actor, 'UNDO_ACTION') && match.state !== 'COMPLETE' && (
                                 <form action={cancelReplay}>
                                   <input type="hidden" name="matchId" value={match.id} />
@@ -524,42 +530,60 @@ export default async function MatchPage({
                                 const mayReplay =
                                   can(actor, 'SET_LINEUP', { teamId: team.id }) &&
                                   (replaysUsed.get(team.id) ?? 0) < match.format.rules.replaysPerTeam;
-                                if (lineup.length === 0 || (!mayEnter && !mayReplay)) return <div key={team.id} />;
-                                const runs = 1 + planned.replayCalledByTeamIds.length;
+                                if (!mayEnter && !mayReplay) return <div key={team.id} />;
+
+                                const replays = planned.replayCalledByTeamIds.length;
+                                const runLabels = ['First run', ...Array.from({ length: replays }, (_, n) =>
+                                  replays === 1 ? 'Replay' : `Replay ${n + 1}`,
+                                )];
                                 const entered = planned.runs[team.id] ?? {};
 
                                 return (
                                   <div key={team.id} className="space-y-2">
-                                    {mayEnter && (
+                                    {mayEnter && lineup.length === 0 && (
+                                      <p className="text-xs text-faint">
+                                        Set {team.name}&apos;s lineup for this map to enter their scores.
+                                      </p>
+                                    )}
+                                    {mayEnter && lineup.length > 0 && (
                                       <form
                                         // Uncontrolled inputs keep what was typed; re-key so a
-                                        // save by someone else shows up.
-                                        key={JSON.stringify([entered, runs])}
+                                        // save by someone else, or a new replay, shows up.
+                                        key={JSON.stringify([entered, replays])}
                                         action={saveScores}
                                         className="space-y-1.5"
                                       >
                                         <input type="hidden" name="matchId" value={match.id} />
                                         <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
                                         <input type="hidden" name="teamId" value={team.id} />
-                                        {lineup.map((playerId) => (
-                                          <label key={playerId} className="flex items-center gap-2 text-xs">
-                                            <span className="w-24 shrink-0 truncate text-muted">
-                                              {team.players.find((p) => p.id === playerId)?.name ?? 'Player'}
+                                        <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-faint">
+                                          <span className="w-24 shrink-0">{team.name}</span>
+                                          {runLabels.map((label) => (
+                                            <span key={label} className="min-w-0 flex-1">
+                                              {label}
                                             </span>
-                                            {Array.from({ length: runs }, (_, i) => i + 1).map((attempt) => (
-                                              <input
-                                                key={attempt}
-                                                name={`score:${playerId}:${attempt}`}
-                                                inputMode="numeric"
-                                                autoComplete="off"
-                                                defaultValue={entered[playerId]?.[attempt] ?? ''}
-                                                placeholder={attempt === 1 ? 'Score' : `Replay ${attempt - 1}`}
-                                                aria-label={`${team.players.find((p) => p.id === playerId)?.name ?? 'Player'}, ${attempt === 1 ? 'score' : `replay ${attempt - 1}`}`}
-                                                className={`${inputClass} h-8 min-w-0 flex-1 tabular`}
-                                              />
-                                            ))}
-                                          </label>
-                                        ))}
+                                          ))}
+                                        </div>
+                                        {lineup.map((playerId) => {
+                                          const name = team.players.find((p) => p.id === playerId)?.name ?? 'Player';
+                                          return (
+                                            <div key={playerId} className="flex items-center gap-2 text-xs">
+                                              <span className="w-24 shrink-0 truncate text-muted">{name}</span>
+                                              {runLabels.map((label, index) => (
+                                                <input
+                                                  key={label}
+                                                  name={`score:${playerId}:${index + 1}`}
+                                                  inputMode="numeric"
+                                                  autoComplete="off"
+                                                  defaultValue={entered[playerId]?.[index + 1] ?? ''}
+                                                  placeholder="Score"
+                                                  aria-label={`${name}, ${label.toLowerCase()}`}
+                                                  className={`${inputClass} h-8 min-w-0 flex-1 tabular`}
+                                                />
+                                              ))}
+                                            </div>
+                                          );
+                                        })}
                                         <Button variant="ghost" type="submit" className="h-8">
                                           Save {team.name} scores
                                         </Button>
@@ -570,13 +594,13 @@ export default async function MatchPage({
                                         <input type="hidden" name="matchId" value={match.id} />
                                         <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
                                         <input type="hidden" name="teamId" value={team.id} />
-                                        <button
-                                          type="submit"
+                                        <ConfirmButton
+                                          question={`Use ${team.name}'s replay on ${planned.map.name}?\n\nBoth teams play the map again and enter their new scores. Each player's best run counts. ${team.name} ${match.format.rules.replaysPerTeam === 1 ? 'only gets one replay' : `gets ${match.format.rules.replaysPerTeam} replays`} this match.`}
                                           title={`Spend ${team.name}'s replay on this map. Both teams play it again and each player's best run counts.`}
                                           className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
                                         >
                                           Call {team.name}&apos;s replay on this map
-                                        </button>
+                                        </ConfirmButton>
                                       </form>
                                     )}
                                   </div>

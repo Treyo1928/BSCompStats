@@ -64,6 +64,128 @@ export async function setTournamentVisibility(formData: FormData): Promise<void>
   revalidatePath('/', 'layout');
 }
 
+/**
+ * People attached to a tournament.
+ *
+ * ORGANIZER is a tournament admin: everything inside this tournament - teams,
+ * pools, matches, scores, acting for either side - and nothing outside it.
+ * VIEWER only matters for a private tournament, where it is what lets someone
+ * see it at all.
+ *
+ * Handing out or taking away admin is for the owner and site admins. Other
+ * organisers can still let viewers in.
+ */
+export async function addTournamentMember(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  const tournament = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { slug: true },
+  });
+  if (!tournament) throw new Error('No such tournament.');
+  const back = `/t/${tournament.slug}`;
+
+  const role = formData.get('role') === 'ORGANIZER' ? 'ORGANIZER' : 'VIEWER';
+  const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
+  if (role === 'ORGANIZER' && !grantsAdmin) {
+    failBack(back, 'Only the tournament owner or a site admin can add tournament admins.');
+  }
+
+  const who = String(formData.get('who') ?? '').trim();
+  if (!who) failBack(back, 'Enter their account name or BeatLeader ID.');
+
+  // Exact matches only: this must not double as a way to browse who has an
+  // account here.
+  const matches = await prisma.user.findMany({
+    where: {
+      OR: [
+        { name: { equals: who, mode: 'insensitive' } },
+        { players: { some: { beatLeaderId: who } } },
+        { players: { some: { name: { equals: who, mode: 'insensitive' } } } },
+      ],
+    },
+    select: { id: true },
+    take: 2,
+  });
+  if (matches.length === 0) {
+    failBack(back, `Nobody called "${who}" has signed in here yet. They need to sign in once before they can be added.`);
+  }
+  if (matches.length > 1) {
+    failBack(back, `More than one account matches "${who}". Use their BeatLeader ID instead.`);
+  }
+  const userId = matches[0]!.id;
+
+  const existing = await prisma.tournamentMember.findUnique({
+    where: { tournamentId_userId: { tournamentId, userId } },
+    select: { role: true },
+  });
+  if (existing?.role === 'OWNER') failBack(back, 'They already own this tournament.');
+  if (existing?.role === 'ORGANIZER' && !grantsAdmin) {
+    failBack(back, 'They are a tournament admin; only the owner or a site admin can change that.');
+  }
+
+  await prisma.tournamentMember.upsert({
+    where: { tournamentId_userId: { tournamentId, userId } },
+    create: { tournamentId, userId, role },
+    update: { role },
+  });
+  revalidatePath('/', 'layout');
+}
+
+export async function removeTournamentMember(formData: FormData): Promise<void> {
+  const memberId = String(formData.get('memberId'));
+  const member = await prisma.tournamentMember.findUnique({
+    where: { id: memberId },
+    select: { tournamentId: true, role: true },
+  });
+  if (!member) return;
+
+  const actor = await getActor(member.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
+  if (member.role === 'OWNER' || (member.role === 'ORGANIZER' && !grantsAdmin)) {
+    throw new ForbiddenError('MANAGE_TOURNAMENT');
+  }
+
+  await prisma.tournamentMember.delete({ where: { id: memberId } });
+  revalidatePath('/', 'layout');
+}
+
+/** Gone for good, with its teams, pools and matches. Owner or site admin only. */
+export async function deleteTournament(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  if (actor.globalRole !== 'ADMIN' && actor.tournamentRole !== 'OWNER') {
+    throw new ForbiddenError('MANAGE_TOURNAMENT');
+  }
+
+  const tournament = await prisma.tournament.findUnique({
+    where: { id: tournamentId },
+    select: { name: true, slug: true },
+  });
+  if (!tournament) redirect('/');
+
+  // Typing the name is the confirmation: this form works without JavaScript,
+  // and a mis-click must not be able to do this.
+  if (String(formData.get('confirmName') ?? '').trim() !== tournament.name) {
+    failBack(`/t/${tournament.slug}`, `Type the tournament's name exactly ("${tournament.name}") to delete it.`);
+  }
+
+  // Matches point at teams and pools without cascading, so they go first.
+  await prisma.$transaction([
+    prisma.match.deleteMany({ where: { tournamentId } }),
+    prisma.tournament.delete({ where: { id: tournamentId } }),
+  ]);
+  revalidatePath('/', 'layout');
+  redirect('/');
+}
+
 export async function setCaptainsEnterScores(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
@@ -102,6 +224,59 @@ export async function setStatsScope(formData: FormData): Promise<void> {
 
   await prisma.tournament.update({ where: { id: tournamentId }, data: { statsScope: scope } });
   await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * Set, or clear, what a player is expected to score on a map they have not
+ * played. Staff can do it for anyone; a captain for their own players.
+ */
+export async function setPredictionEstimate(formData: FormData): Promise<void> {
+  const poolId = String(formData.get('poolId'));
+  const playerId = String(formData.get('playerId'));
+  const leaderboardId = String(formData.get('leaderboardId'));
+
+  const pool = await prisma.mapPool.findUnique({
+    where: { id: poolId },
+    select: {
+      tournamentId: true,
+      tournament: { select: { slug: true } },
+      maps: { where: { leaderboardId }, select: { id: true } },
+    },
+  });
+  if (!pool || pool.maps.length === 0) throw new Error('That map is not in this pool.');
+  const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
+
+  const actor = await getActor(pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+
+  const spots = await prisma.teamMember.findMany({
+    where: { playerId, team: { division: { tournamentId: pool.tournamentId } } },
+    select: { teamId: true },
+  });
+  if (spots.length === 0) throw new Error('That player is not in this tournament.');
+  if (!can(actor, 'MANAGE_TEAMS') && !spots.some((s) => isCaptainOf(actor, s.teamId))) {
+    throw new ForbiddenError('MANAGE_TEAMS');
+  }
+
+  const key = { tournamentId_playerId_leaderboardId: { tournamentId: pool.tournamentId, playerId, leaderboardId } };
+  const raw = String(formData.get('accuracy') ?? '').replace('%', '').trim();
+
+  if (raw === '' || formData.get('clear') === 'on') {
+    await prisma.predictionEstimate.deleteMany({
+      where: { tournamentId: pool.tournamentId, playerId, leaderboardId },
+    });
+  } else {
+    const percent = Number(raw);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      failBack(back, `"${raw}" is not an accuracy. Enter a percentage, such as 45.`);
+    }
+    await prisma.predictionEstimate.upsert({
+      where: key,
+      create: { ...key.tournamentId_playerId_leaderboardId, accuracy: percent / 100, setById: actor.userId },
+      update: { accuracy: percent / 100, setById: actor.userId },
+    });
+  }
   revalidatePath('/t', 'layout');
 }
 

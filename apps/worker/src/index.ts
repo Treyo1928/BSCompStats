@@ -5,6 +5,7 @@ import { CHANNELS, closeBus, createSubscriber, type RefreshRequest } from './bus
 import { syncAll } from './sync.js';
 import { ScoreSocket } from './socket.js';
 import { syncHistories } from './history.js';
+import { syncProfiles } from './profiles.js';
 
 /**
  * The ingestion worker.
@@ -34,6 +35,9 @@ async function poll(poolId?: string, reason = 'scheduled'): Promise<void> {
     if (checked) {
       log.info(`${reason} poll: checked ${checked} pairs, wrote ${written} in ${seconds}s`);
     }
+
+    const profiles = await syncProfiles();
+    if (profiles) log.info(`profiles: refreshed ${profiles} players`);
 
     // After the pool, so match-night scores are never waiting behind a backfill.
     const history = await syncHistories();

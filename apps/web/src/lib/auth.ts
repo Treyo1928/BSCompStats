@@ -153,11 +153,40 @@ function isBootstrapAdmin(provider: string, providerAccountId: string, profile: 
   });
 }
 
+/**
+ * BeatLeader's identity endpoint returns an id and a name and nothing else, so
+ * the picture has to be asked for separately. Best effort: signing in must not
+ * fail because a profile lookup was slow.
+ */
+async function fetchBeatLeaderAvatar(beatLeaderId: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(
+      `${env.BEATLEADER_API_URL.replace(/\/+$/, '')}/player/${encodeURIComponent(beatLeaderId)}`,
+      { signal: AbortSignal.timeout(5_000), headers: { accept: 'application/json' } },
+    );
+    if (!response.ok) return undefined;
+    const profile = (await response.json()) as { avatar?: unknown };
+    return typeof profile.avatar === 'string' && profile.avatar ? profile.avatar : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function linkBeatLeaderPlayer(
   userId: string,
   beatLeaderId: string,
   details: { name?: string; avatar?: string },
 ): Promise<void> {
+  details = { ...details, avatar: details.avatar ?? (await fetchBeatLeaderAvatar(beatLeaderId)) };
+
+  // Someone with no Discord picture gets their BeatLeader one.
+  if (details.avatar) {
+    await prisma.user.updateMany({
+      where: { id: userId, image: null },
+      data: { image: details.avatar },
+    });
+  }
+
   const existing = await prisma.player.findUnique({ where: { beatLeaderId } });
 
   if (existing) {

@@ -68,7 +68,8 @@ export async function createMatch(formData: FormData): Promise<void> {
     throw new Error('Pool or tournament not found.');
   }
 
-  const back = `/t/${tournament.slug}/teams`;
+  const back =
+    formData.get('from') === 'teams' ? `/t/${tournament.slug}/teams` : `/t/${tournament.slug}`;
   if (teamAId === teamBId) failBack(back, 'A team cannot play itself - choose two different teams.');
 
   const format = parseFormat(tournament.defaultFormat);
@@ -98,8 +99,8 @@ export async function createMatch(formData: FormData): Promise<void> {
   const teamB = teams.find((t) => t.id === teamBId);
   if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
 
-  const requestedCoinWinner = String(formData.get('coinFlipWinnerId') ?? '');
-  const coinFlipWinnerId = requestedCoinWinner === teamBId ? teamBId : teamAId;
+  // "A" or "B" rather than a team id, so the form cannot name a third team.
+  const coinFlipWinnerId = formData.get('coinFlip') === 'B' ? teamBId : teamAId;
 
   const match = await prisma.match.create({
     data: {

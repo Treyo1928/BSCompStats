@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can } from '@bscs/core/match';
+import { can, isCaptainOf } from '@bscs/core/match';
 import { describeScope } from '@bscs/core/stats';
 import {
   Panel,
   PageHeader,
   Empty,
+  FieldAction,
+  FormError,
   inputClass,
   Field,
   Button,
@@ -25,7 +27,7 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { buildPoolOutlook } from '@/server/outlook';
 import { getActorOrAnonymous } from '@/server/session';
-import { setStatsScope, triggerRefresh } from '@/server/actions';
+import { setPredictionEstimate, setStatsScope, triggerRefresh } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +36,7 @@ export default async function PoolPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; poolId: string }>;
-  searchParams: Promise<{ team?: string; vs?: string; once?: string }>;
+  searchParams: Promise<{ team?: string; vs?: string; once?: string; error?: string }>;
 }) {
   const { slug, poolId } = await params;
   const query = await searchParams;
@@ -74,6 +76,32 @@ export default async function PoolPage({
   const outlookHref = (team: string, vs?: string | null, once = eachGroupOnce) =>
     `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}${once ? '&once=1' : ''}#outlook`;
   const mapById = new Map(board.maps.map((m) => [m.poolMapId, m]));
+
+  // Estimates: organisers for anyone, a captain for their own players.
+  const mayEstimateFor = (teamId: string | null) =>
+    can(actor, 'MANAGE_TEAMS') || isCaptainOf(actor, teamId);
+  const allRows = board.teams.flatMap((t) => t.rows);
+  const estimablePlayers = allRows.filter((row) => mayEstimateFor(row.teamId));
+  const seenEstimates = new Set<string>();
+  const currentEstimates = allRows.flatMap((row) =>
+    row.cells
+      .filter((cell) => cell.isEstimate && cell.acc == null)
+      .filter((cell) => {
+        // A player on two teams has two rows but one estimate.
+        const key = `${row.playerId}:${cell.leaderboardId}`;
+        if (seenEstimates.has(key)) return false;
+        seenEstimates.add(key);
+        return true;
+      })
+      .map((cell) => ({
+        playerId: row.playerId,
+        playerName: row.playerName,
+        leaderboardId: cell.leaderboardId,
+        mapName: board.maps.find((m) => m.leaderboardId === cell.leaderboardId)?.name ?? 'map',
+        accuracy: cell.predictedAcc,
+        canClear: mayEstimateFor(row.teamId),
+      })),
+  );
 
   const playerCount = board.teams.reduce((acc, t) => acc + t.rows.length, 0);
 
@@ -120,6 +148,88 @@ export default async function PoolPage({
         <Panel flush>
           <PoolBoardTable board={board} />
           <Legend />
+        </Panel>
+      )}
+
+      <FormError message={query.error} />
+
+      {estimablePlayers.length > 0 && (
+        <Panel
+          title="Your own estimates"
+          subtitle="Where you know better than the numbers - what a player would really score on a map they have not played"
+        >
+          <form action={setPredictionEstimate} className="flex flex-wrap items-start gap-3">
+            <input type="hidden" name="poolId" value={poolId} />
+            <div className="min-w-[10rem] flex-1">
+              <Field label="Player">
+                <select name="playerId" className={inputClass}>
+                  {estimablePlayers.map((row) => (
+                    <option key={`${row.teamId}:${row.playerId}`} value={row.playerId}>
+                      {row.playerName} ({row.teamName})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="min-w-[12rem] flex-1">
+              <Field label="Map">
+                <select name="leaderboardId" className={inputClass}>
+                  {board.maps.map((m) => (
+                    <option key={m.leaderboardId} value={m.leaderboardId}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="w-32">
+              <Field label="Expected accuracy">
+                <input
+                  name="accuracy"
+                  inputMode="decimal"
+                  placeholder="e.g. 45"
+                  className={inputClass}
+                  required
+                />
+              </Field>
+            </div>
+            <FieldAction>
+              <Button type="submit">Set</Button>
+            </FieldAction>
+          </form>
+          <p className="mt-2 text-xs text-faint">
+            Shown on the board as ≈ and used in every lineup and win-chance calculation. It only
+            applies while the player has no real score on that map - once they play it, their score
+            takes over.
+          </p>
+
+          {currentEstimates.length > 0 && (
+            <ul className="mt-3 divide-y divide-edge border-t border-edge text-sm">
+              {currentEstimates.map((e) => (
+                <li key={`${e.playerId}:${e.leaderboardId}`} className="flex items-center gap-3 py-1.5">
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="font-medium">{e.playerName}</span>
+                    <span className="text-muted"> on {e.mapName}</span>
+                  </span>
+                  <span className="tabular text-accent">≈{pct(e.accuracy, 1)}</span>
+                  {e.canClear && (
+                    <form action={setPredictionEstimate}>
+                      <input type="hidden" name="poolId" value={poolId} />
+                      <input type="hidden" name="playerId" value={e.playerId} />
+                      <input type="hidden" name="leaderboardId" value={e.leaderboardId} />
+                      <input type="hidden" name="clear" value="on" />
+                      <button
+                        type="submit"
+                        className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
+                      >
+                        Clear
+                      </button>
+                    </form>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </Panel>
       )}
 
@@ -241,13 +351,7 @@ export default async function PoolPage({
                             </span>
                           </td>
                           <td className="px-3 py-2">
-                            {row.exhausted ? (
-                              <span className="text-xs text-faint">
-                                no unused {outlook.playersPerMap === 2 ? 'duo' : 'group'} left
-                              </span>
-                            ) : (
-                              <LineupCell people={row.lineup} ring={outlookTeam.color} />
-                            )}
+                            <LineupCell people={row.lineup} ring={outlookTeam.color} />
                           </td>
                           <td className="px-3 py-2 text-right tabular">
                             {row.lineupAcc != null ? pct(row.lineupAcc) : '—'}
@@ -281,7 +385,11 @@ export default async function PoolPage({
             )}
             <p className="border-t border-edge px-4 py-2 text-xs text-faint">
               {eachGroupOnce
-                ? `No ${outlook.playersPerMap === 2 ? 'duo' : 'group'} is used twice, so these are the best groups across the whole pool rather than map by map. The opponent's column is still their strongest group on each map.`
+                ? `No ${outlook.playersPerMap === 2 ? 'duo' : 'group'} is used twice on either side, so these are the best groups across the whole pool rather than map by map.${
+                    outlook.ruleSkippedFor.length > 0
+                      ? ` Not applied to ${outlook.ruleSkippedFor.join(' or ')}: with every map in the pool counted there are not enough to go round, so that side simply fields its strongest on each map.`
+                      : ''
+                  }`
                 : 'Each map is judged on its own: the group shown is the strongest for that map alone. Turn on the rule above to see the best set when no pairing can be used twice.'}{' '}
               A match also limits how many maps one player can play, which the lineup advice on a
               match page accounts for.

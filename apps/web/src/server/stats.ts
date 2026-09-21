@@ -42,6 +42,11 @@ export interface TournamentModel {
   /** leaderboardId -> maxScore, so callers can turn accuracy back into points. */
   maxScores: Record<string, number>;
   chosenLatentFactors: number;
+  /**
+   * Accuracies people have entered for maps a player has not played, keyed by
+   * `failKey`. These win over the model: it only knows what is on BeatLeader.
+   */
+  estimates: Map<string, number>;
   /** Changes whenever anything the model was fitted on changes. */
   version: string;
 }
@@ -96,8 +101,18 @@ export async function buildTournamentModel(
     _max: { timeset: true },
     _sum: { baseScore: true },
   });
+  const estimateRows = await prisma.predictionEstimate.findMany({
+    where: { tournamentId },
+    select: { playerId: true, leaderboardId: true, accuracy: true },
+    orderBy: { id: 'asc' },
+  });
+  const estimates = new Map(
+    estimateRows.map((e) => [failKey(e.playerId, e.leaderboardId), e.accuracy]),
+  );
+
   const version = JSON.stringify([
     scope,
+    estimateRows,
     [...playerIds].sort(),
     [...poolLeaderboardIds].sort(),
     pulse._count,
@@ -202,6 +217,7 @@ export async function buildTournamentModel(
     mapCount,
     maxScores,
     chosenLatentFactors: chosen.latentFactors ?? 0,
+    estimates,
     version,
   };
   modelCache.set(tournamentId, built);
@@ -219,8 +235,13 @@ export const failKey = (playerId: string, leaderboardId: string): string =>
 export function predictorFor(built: TournamentModel) {
   return (playerId: string, leaderboardId: string) => {
     const prediction = built.model.predict(playerId, leaderboardId);
+    // A real score always wins; an estimate only stands in where there is none.
+    const estimate =
+      prediction.observedAcc == null
+        ? built.estimates.get(failKey(playerId, leaderboardId))
+        : undefined;
     return {
-      acc: prediction.acc,
+      acc: estimate ?? prediction.acc,
       sigmaLogit: prediction.sigmaLogit,
       failProbability: built.failModel.probability(playerId, leaderboardId),
     };

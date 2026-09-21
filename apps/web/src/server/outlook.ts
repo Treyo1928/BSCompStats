@@ -27,8 +27,6 @@ export interface OutlookMap {
   /** Mean accuracy that group is expected to post. */
   lineupAcc: number | null;
   /** Filled only when there is an opponent to measure against. */
-  /** "Each group once" is on and the roster had no unused pairing left for this map. */
-  exhausted?: boolean;
   versus: {
     /** The two groups shown, head to head. */
     winProbability: number;
@@ -44,6 +42,8 @@ export interface PoolOutlook {
   maps: OutlookMap[];
   /** Why there are no lineups, when the roster is too small to field one. */
   shortHanded: string | null;
+  /** Teams too small for "each group once" to be possible, so it was not applied to them. */
+  ruleSkippedFor: string[];
 }
 
 export async function buildPoolOutlook(
@@ -85,6 +85,7 @@ export async function buildPoolOutlook(
       playersPerMap: k,
       formatName: format.name,
       maps: [],
+      ruleSkippedFor: [],
       shortHanded: `${team.teamName} has ${roster.length} player${roster.length === 1 ? '' : 's'}, and this format fields ${k} per map.`,
     };
   }
@@ -120,24 +121,74 @@ export async function buildPoolOutlook(
       : null;
 
   // With "each duo once" on, the best group per map is no longer independent:
-  // a pairing spent on one map is gone for the rest. Choose the assignment that
-  // is best across the whole pool. The tiebreaker is exempt where the format
+  // a pairing spent on one map is gone for the rest, so each side's groups are
+  // chosen across the whole pool. The tiebreaker is exempt where the format
   // says so, as in a match.
-  const assigned = new Map<string, { playerIds: string[]; vsTheirBest: number }>();
-  /** Maps left with no unused pairing to give them. */
-  const exhausted = new Set<string>();
+  //
+  // A roster with fewer pairings than there are maps cannot follow the rule at
+  // all - three players make three duos - so it is simply not applied to that
+  // team, rather than leaving maps empty.
+  const assigned = new Map<string, { playerIds: string[]; winProbability: number }>();
+  const opponentAssigned = new Map<string, string[]>();
+  const ruleSkippedFor: string[] = [];
+
   if (options.eachGroupOnce && values) {
     const constrained = board.maps.filter(
       (m) => !(m.isTiebreaker && format.rules.tiebreakerExemptFromDuos) && values.has(m.poolMapId),
     );
-    const chosen = assignDistinctGroups(
-      constrained.map((m) => values.get(m.poolMapId)!.groups),
-    );
-    constrained.forEach((m, i) => {
-      const group = chosen[i];
-      if (group) assigned.set(m.poolMapId, group);
-      else exhausted.add(m.poolMapId);
-    });
+    const first = constrained[0] ? values.get(constrained[0].poolMapId)! : null;
+    const weCan = (first?.groups.length ?? 0) >= constrained.length;
+    const theyCan = (first?.opponentGroups.length ?? 0) >= constrained.length;
+    const unit = k === 2 ? 'duos' : 'groups';
+    if (!weCan) {
+      ruleSkippedFor.push(`${team.teamName} (${first?.groups.length ?? 0} possible ${unit} for ${constrained.length} maps)`);
+    }
+    if (!theyCan && opponent) {
+      ruleSkippedFor.push(`${opponent.teamName} (${first?.opponentGroups.length ?? 0} possible ${unit} for ${constrained.length} maps)`);
+    }
+
+    // Theirs first: the groups that hold us down most, none used twice.
+    const theirIndex = new Map<string, number>();
+    if (theyCan) {
+      const chosen = assignDistinct(
+        constrained.map((m) =>
+          values.get(m.poolMapId)!.opponentGroups.map((g, index) => ({
+            playerIds: g.playerIds,
+            value: 1 - g.average,
+            index,
+          })),
+        ),
+      );
+      constrained.forEach((m, i) => {
+        const pick = chosen[i];
+        if (!pick) return;
+        theirIndex.set(m.poolMapId, pick.index);
+        opponentAssigned.set(m.poolMapId, pick.playerIds);
+      });
+    }
+
+    // Then ours, judged against whoever they are now fielding on each map.
+    const against = (m: (typeof constrained)[number]) => {
+      const value = values.get(m.poolMapId)!;
+      const b = theirIndex.get(m.poolMapId);
+      return value.groups.map((g) => ({
+        playerIds: g.playerIds,
+        value: b == null ? g.vsTheirBest : g.vs[b]!,
+      }));
+    };
+    if (weCan) {
+      const chosen = assignDistinct(constrained.map(against));
+      constrained.forEach((m, i) => {
+        const pick = chosen[i];
+        if (pick) assigned.set(m.poolMapId, { playerIds: pick.playerIds, winProbability: pick.value });
+      });
+    } else {
+      // Unconstrained for us, but still measured against their constrained groups.
+      for (const m of constrained) {
+        const best = against(m).reduce((top, g) => (g.value > top.value ? g : top));
+        assigned.set(m.poolMapId, { playerIds: best.playerIds, winProbability: best.value });
+      }
+    }
   }
 
   const maps = board.maps.map((map): OutlookMap => {
@@ -145,10 +196,6 @@ export async function buildPoolOutlook(
     const forced = assigned.get(map.poolMapId);
     // Without an opponent there is nothing to simulate against, so the best
     // group is simply the k players expected to score highest.
-    if (exhausted.has(map.poolMapId)) {
-      return { poolMapId: map.poolMapId, lineup: [], lineupAcc: null, versus: null, exhausted: true };
-    }
-
     const lineupIds =
       forced?.playerIds ??
       value?.bestGroup ??
@@ -162,35 +209,36 @@ export async function buildPoolOutlook(
       lineupAcc: meanAcc(lineupIds, map.leaderboardId),
       versus: value
         ? {
-            winProbability: forced?.vsTheirBest ?? value.bestVsBest,
+            winProbability: forced?.winProbability ?? value.bestVsBest,
             anyPairing: value.expected,
-            opponentLineup: toPlayers(value.opponentBestGroup),
+            opponentLineup: toPlayers(opponentAssigned.get(map.poolMapId) ?? value.opponentBestGroup),
           }
         : null,
     };
   });
 
-  return { playersPerMap: k, formatName: format.name, maps, shortHanded: null };
+  return { playersPerMap: k, formatName: format.name, maps, shortHanded: null, ruleSkippedFor };
 }
 
 /**
- * One group per map, no group twice, maximising the total win chance.
+ * One option per map, none used twice, maximising the total value.
  *
- * Depth-first with a bound. Only each map's top N groups can matter (at most
- * N-1 of them can be taken by the other N-1 maps), which keeps the search
- * small however large the roster is.
+ * Depth-first with a bound. Only each map's top N options can matter (at most
+ * N-1 of them can be taken by the other N-1 maps), which keeps the search small
+ * however large the roster is. Callers make sure there are at least as many
+ * options as maps, so a full assignment always exists.
  */
-function assignDistinctGroups<T extends { playerIds: string[]; vsTheirBest: number }>(
+function assignDistinct<T extends { playerIds: string[]; value: number }>(
   perMap: T[][],
 ): Array<T | null> {
   const n = perMap.length;
   const keyOf = (g: T) => [...g.playerIds].sort().join('|');
   const options = perMap.map((groups) =>
-    [...groups].sort((a, b) => b.vsTheirBest - a.vsTheirBest).slice(0, Math.max(n, 1)),
+    [...groups].sort((a, b) => b.value - a.value).slice(0, Math.max(n, 1)),
   );
   // Best still achievable from map i onwards, ignoring the constraint.
   const ceiling = new Array<number>(n + 1).fill(0);
-  for (let i = n - 1; i >= 0; i--) ceiling[i] = ceiling[i + 1]! + (options[i]![0]?.vsTheirBest ?? 0);
+  for (let i = n - 1; i >= 0; i--) ceiling[i] = ceiling[i + 1]! + (options[i]![0]?.value ?? 0);
 
   let best: Array<T | null> = new Array(n).fill(null);
   let bestTotal = -1;
@@ -209,13 +257,10 @@ function assignDistinctGroups<T extends { playerIds: string[]; vsTheirBest: numb
       if (used.has(key)) continue;
       used.add(key);
       current[i] = group;
-      visit(i + 1, total + group.vsTheirBest);
+      visit(i + 1, total + group.value);
       used.delete(key);
     }
-    // A small roster runs out of pairings before the pool runs out of maps.
-    // Leave this one empty rather than fail the whole assignment.
     current[i] = null;
-    visit(i + 1, total);
   };
   visit(0, 0);
   return best;
