@@ -8,6 +8,7 @@ import {
   Empty,
   Button,
   Field,
+  FieldAction,
   inputClass,
   Badge,
   AvatarStack,
@@ -135,7 +136,7 @@ export default async function TournamentPage({
         {tournament.matches.length === 0 ? (
           <Empty>
             No matches yet. Create one from the{' '}
-            <Link href={`/t/${tournament.slug}/teams`} className="text-accent hover:underline">
+            <Link href={`/t/${tournament.slug}/teams`} className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent">
               teams page
             </Link>{' '}
             once you have two teams and a pool.
@@ -240,7 +241,7 @@ export default async function TournamentPage({
                     type="file"
                     name="file"
                     accept=".bplist,.json,application/json"
-                    className="text-sm text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-edge file:px-3 file:py-1.5 file:text-sm file:text-ink"
+                    className="w-full text-sm text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-edge file:px-3 file:py-1.5 file:text-sm file:text-ink"
                   />
                 </Field>
                 <Button type="submit">Import pool</Button>
@@ -255,7 +256,7 @@ export default async function TournamentPage({
             teams.length > 0 ? (
               <Link
                 href={`/t/${tournament.slug}/teams`}
-                className="text-xs text-accent hover:underline"
+                className="text-xs text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
               >
                 Manage rosters
               </Link>
@@ -301,7 +302,7 @@ export default async function TournamentPage({
           {canManage && (
             <form
               action={createTeam}
-              className="mt-4 flex flex-wrap items-end gap-3 border-t border-edge pt-4"
+              className="mt-4 flex flex-wrap items-start gap-3 border-t border-edge pt-4"
             >
               <input type="hidden" name="tournamentId" value={tournament.id} />
               <div className="min-w-[10rem] flex-1">
@@ -314,10 +315,12 @@ export default async function TournamentPage({
                   type="color"
                   name="color"
                   defaultValue="#7c3aed"
-                  className="h-9 w-14 rounded-lg border border-edge bg-transparent"
+                  className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
                 />
               </Field>
-              <Button type="submit">Add</Button>
+              <FieldAction>
+                <Button type="submit">Add</Button>
+              </FieldAction>
             </form>
           )}
         </Panel>

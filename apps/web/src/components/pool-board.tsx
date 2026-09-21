@@ -180,7 +180,7 @@ function MapHeader({ map }: { map: BoardMap }) {
             </span>
           )}
         </span>
-        <span className="line-clamp-2 text-xs font-medium leading-tight text-ink group-hover/map:underline">
+        <span className="line-clamp-2 h-[1.875rem] text-xs font-medium leading-tight text-ink group-hover/map:underline">
           {map.name}
         </span>
         <DifficultyChip value={map.difficultyValue} label={map.difficultyLabel} />
@@ -228,7 +228,7 @@ function Cell({
   const inner = (
     <span className="relative flex h-[42px] flex-col items-center justify-center leading-tight">
       <span className="text-[13px] font-semibold tabular">{pct(cell.acc)}</span>
-      <span className="text-[10px] tabular opacity-60">{num(cell.score ?? 0)}</span>
+      <span className="text-[10px] tabular opacity-75">{num(cell.score ?? 0)}</span>
       {cell.rank === 1 && !cell.isDnf && (
         <span className="absolute right-1 top-0.5 text-[9px] opacity-80" aria-label="Best on this map">
           ★

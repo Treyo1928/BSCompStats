@@ -8,7 +8,7 @@ import {
   setTeamCaptain,
   type PlayerCandidate,
 } from '@/server/actions';
-import { Avatar, Badge, Button, Field, inputClass } from './ui';
+import { Avatar, Badge, Button, Field, FieldAction, inputClass } from './ui';
 
 const UNREACHABLE = 'The server could not be reached. Check your connection and try again.';
 
@@ -75,7 +75,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
     <>
       <form
         onSubmit={search}
-        className="mt-3 flex items-end gap-2 border-t border-[var(--color-edge)] pt-3"
+        className="mt-3 flex items-start gap-2 border-t border-[var(--color-edge)] pt-3"
       >
         <div className="flex-1">
           <Field label="Add player" hint="BeatLeader ID, profile link, or name to search">
@@ -87,9 +87,11 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
             />
           </Field>
         </div>
-        <Button type="submit" disabled={searching}>
-          {searching ? 'Searching…' : 'Add'}
-        </Button>
+        <FieldAction>
+          <Button type="submit" disabled={searching}>
+            {searching ? 'Searching…' : 'Add'}
+          </Button>
+        </FieldAction>
       </form>
 
       <dialog
@@ -131,7 +133,7 @@ export function AddPlayerForm({ teamId, teamName }: { teamId: string; teamName: 
                     type="button"
                     disabled={c.onTeam || adding !== null}
                     onClick={() => add(c)}
-                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition hover:bg-raised disabled:cursor-not-allowed disabled:opacity-75 disabled:hover:bg-transparent"
                   >
                     <Avatar src={c.avatar} name={c.name} size={36} />
                     <span className="min-w-0 flex-1">
@@ -202,7 +204,7 @@ export function MemberControls({
     : `Make ${playerName} captain of ${teamName}`;
 
   return (
-    <span className="flex shrink-0 items-center" title={failed ? UNREACHABLE : undefined}>
+    <span className="-mr-2 flex shrink-0 items-center" title={failed ? UNREACHABLE : undefined}>
       <button
         type="button"
         disabled={pending}
@@ -210,7 +212,7 @@ export function MemberControls({
         title={captainLabel}
         aria-label={captainLabel}
         onClick={() => run(() => setTeamCaptain(memberId, !isCaptain))}
-        className={`rounded-lg px-2 py-1 transition hover:bg-raised disabled:opacity-50 ${
+        className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-raised disabled:opacity-50 ${
           isCaptain ? 'text-accent' : 'text-faint hover:text-ink'
         }`}
       >
@@ -225,7 +227,7 @@ export function MemberControls({
           if (!window.confirm(`Remove ${playerName} from ${teamName}?`)) return;
           run(() => removePlayerFromTeam(memberId));
         }}
-        className={`rounded-lg px-2 py-1 transition hover:bg-red-600/20 hover:text-lose disabled:opacity-50 ${
+        className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-red-600/20 hover:text-lose disabled:opacity-50 ${
           failed ? 'text-warn' : 'text-faint'
         }`}
       >

@@ -7,11 +7,14 @@
 @theme {
   --color-ink: #eceef6;
   --color-muted: #8f98b3;
-  --color-faint: #5d6580;
+  /* Was #5d6580, which sat near 3:1 on every surface it was used on. */
+  --color-faint: #7d86a3;
   --color-surface: #0a0c13;
   --color-panel: #12151f;
   --color-raised: #191d2b;
   --color-edge: #242a3c;
+  /* For things whose outline is the only sign of where they are: inputs, meters. */
+  --color-edge-strong: #454e6b;
   --color-accent: #8b7bff;
   --color-accent-2: #38bdf8;
   --color-win: #4ade80;
@@ -44,6 +47,12 @@ body {
 .tabular { font-variant-numeric: tabular-nums; }
 
 a { color: inherit; }
+
+/* One visible keyboard focus ring for everything interactive. */
+:where(a, button, summary, select, [role="button"]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 
 ::selection { background: rgb(139 123 255 / 0.35); }
 

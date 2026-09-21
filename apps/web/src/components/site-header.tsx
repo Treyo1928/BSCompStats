@@ -25,16 +25,17 @@ export async function SiteHeader() {
 
   return (
     <header className="sticky top-0 z-30 border-b border-edge bg-surface/80 backdrop-blur-md">
-      <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-2.5">
-        <Link href="/" className="group flex items-center gap-2.5">
+      <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-2 px-3 py-2.5 sm:gap-4 sm:px-4">
+        <Link href="/" className="group flex shrink-0 items-center gap-2.5">
           <Logo />
           <span className="text-[15px] font-semibold tracking-tight">
             BSComp<span className="text-muted group-hover:text-ink">Stats</span>
           </span>
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm text-muted">
-          <Link href="/" className="rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink">
+        <nav className="flex min-w-0 items-center gap-1 text-sm text-muted">
+          {/* The logo already goes home, so this is the first thing to give way on a phone. */}
+          <Link href="/" className="hidden rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink sm:block">
             Tournaments
           </Link>
           {isAdmin && (
@@ -49,34 +50,34 @@ export async function SiteHeader() {
                 (await cookies()).delete(VIEW_AS_COOKIE);
                 await signOut({ redirectTo: '/' });
               }}
-              className="ml-2 flex items-center gap-2 border-l border-edge pl-3"
+              className="ml-2 flex min-w-0 items-center gap-2 border-l border-edge pl-3"
             >
               {canLinkBeatLeader && (
                 <Link
                   href="/signin"
-                  className="rounded-lg border border-edge px-2.5 py-1 text-xs hover:border-faint hover:text-ink"
+                  className="hidden h-8 shrink-0 items-center whitespace-nowrap rounded-lg border border-edge-strong px-2.5 text-xs hover:border-faint hover:text-ink sm:inline-flex"
                   title="Attach your BeatLeader profile so your scores are attributed to you"
                 >
                   Link BeatLeader
                 </Link>
               )}
               <Avatar src={user.image} name={user.name ?? '?'} size={26} />
-              <span className="hidden text-ink sm:inline">{user.name ?? 'Signed in'}</span>
-              <button className="rounded-lg px-2 py-1.5 hover:bg-raised hover:text-ink" type="submit">
+              <span className="hidden max-w-[10rem] truncate text-ink sm:inline">{user.name ?? 'Signed in'}</span>
+              <button className="shrink-0 whitespace-nowrap rounded-lg px-2 py-1.5 hover:bg-raised hover:text-ink" type="submit">
                 Sign out
               </button>
             </form>
           ) : authConfigured ? (
             <Link
               href="/signin"
-              className="ml-2 rounded-lg bg-accent px-3 py-1.5 font-medium text-white hover:brightness-110"
+              className="ml-2 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 py-1.5 font-semibold text-surface hover:brightness-110"
             >
               Sign in
             </Link>
           ) : (
             <Link
               href="/signin"
-              className="ml-2 rounded-lg border border-dashed border-edge px-3 py-1.5 text-xs hover:text-ink"
+              className="ml-2 shrink-0 whitespace-nowrap rounded-lg border border-dashed border-faint px-3 py-1.5 text-xs hover:text-ink"
               title="No sign-in provider is configured yet - see docs/auth-setup.md"
             >
               Set up sign-in

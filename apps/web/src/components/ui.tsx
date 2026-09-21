@@ -51,7 +51,7 @@ export function PageHeader({
   media?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-end justify-between gap-4">
+    <header className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-4">
         {media}
         <div className="min-w-0">
@@ -71,7 +71,7 @@ export function PageHeader({
           {meta && <p className="mt-1 text-sm text-muted">{meta}</p>}
         </div>
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex min-w-0 flex-wrap items-center gap-2">{actions}</div>}
     </header>
   );
 }
@@ -99,7 +99,7 @@ export function Badge({
   return (
     <span
       title={title}
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${tones[tone]}`}
+      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${tones[tone]}`}
     >
       {children}
     </span>
@@ -115,14 +115,14 @@ export function Button({
 }) {
   const variants: Record<string, string> = {
     primary:
-      'bg-accent text-white shadow-[0_6px_16px_-8px_var(--color-accent)] hover:brightness-110',
+      'bg-accent font-semibold text-surface shadow-[0_6px_16px_-8px_var(--color-accent)] hover:brightness-110',
     ghost: 'border border-edge bg-raised/60 text-ink hover:border-faint hover:bg-raised',
     danger: 'bg-red-600/80 text-white hover:bg-red-600',
   };
   return (
     <button
       {...props}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${props.className ?? ''}`}
+      className={`inline-flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${variants[variant]} ${props.className ?? ''}`}
     >
       {children}
     </button>
@@ -139,16 +139,34 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-xs font-medium text-muted">{label}</span>
+    // A column, not a block: inputs are inline-block, so a narrow one (a colour
+    // swatch, a file picker) would otherwise sit beside its label, not under it.
+    <label className="flex flex-col items-start gap-1">
+      <span className="text-xs font-medium leading-4 text-muted">{label}</span>
       {children}
       {hint && <span className="block text-xs text-faint">{hint}</span>}
     </label>
   );
 }
 
+/**
+ * A button or checkbox that shares a row with Fields. It reserves the label
+ * line, so with `items-start` on the row it lines up with the inputs - and a
+ * hint under one of them can no longer drag it down.
+ */
+export function FieldAction({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span aria-hidden className="text-xs leading-4">
+        &nbsp;
+      </span>
+      <div className="flex h-9 items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
 export const inputClass =
-  'w-full rounded-lg border border-edge bg-surface/80 px-3 py-1.5 text-sm outline-none transition placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/20';
+  'h-9 w-full rounded-lg border border-edge-strong bg-surface/80 px-3 text-sm outline-none transition placeholder:text-faint focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/70';
 
 // ---------------------------------------------------------------------------
 //  Media
@@ -301,8 +319,8 @@ const DIFFICULTY_COLORS: Record<number, string> = {
   1: '#3cb371', // Easy
   3: '#59b0f4', // Normal
   5: '#ff7a59', // Hard
-  7: '#e5484d', // Expert
-  9: '#a66bff', // Expert+
+  7: '#ef7072', // Expert - lightened from #e5484d, which was 4.1:1 as chip text
+  9: '#b183ff', // Expert+
 };
 
 export function difficultyColor(value: number): string {
@@ -329,9 +347,39 @@ export function DifficultyChip({ value, label }: { value: number; label: string 
  * is that dark, use the secondary, or failing that a lightened primary.
  */
 export function teamInk(color: string, secondary?: string | null): string {
-  if (luminance(color) >= 0.2) return color;
-  if (secondary && luminance(secondary) >= 0.2) return secondary;
-  return mixWithWhite(color, 0.5);
+  // Team names are drawn on a wash of the team's own colour, which lifts the
+  // background toward the text. So the test is contrast against that wash,
+  // not how bright the colour is in isolation - plenty of mid-tone reds and
+  // purples pass a brightness check and still land near 3:1.
+  const background = washedPanelLuminance(color);
+  const readable = (rgb: [number, number, number]) =>
+    (luminanceOf(rgb) + 0.05) / (background + 0.05) >= 4.5;
+
+  for (const candidate of [color, secondary]) {
+    const rgb = candidate ? parseHex(candidate) : null;
+    if (rgb && readable(rgb)) return candidate!;
+  }
+
+  const base = parseHex(color);
+  if (!base) return color;
+  for (let amount = 0.2; amount < 0.85; amount += 0.1) {
+    const mixed = base.map((v) => Math.round(v + (255 - v) * amount)) as [number, number, number];
+    if (readable(mixed)) return `rgb(${mixed[0]} ${mixed[1]} ${mixed[2]})`;
+  }
+  return mixWithWhite(color, 0.85);
+}
+
+/** --color-panel at 90% over --color-surface: what a Panel actually paints. */
+const PANEL_RGB: [number, number, number] = [17, 20, 30];
+
+/** Luminance of the panel once `teamWash(color)` has been laid over it. */
+function washedPanelLuminance(color: string): number {
+  const rgb = parseHex(color);
+  if (!rgb) return luminanceOf(PANEL_RGB);
+  const alpha = 0.4 - 0.27 * Math.min(1, luminance(color) / 0.7);
+  return luminanceOf(
+    PANEL_RGB.map((v, i) => v + (rgb[i]! - v) * alpha) as [number, number, number],
+  );
 }
 
 /**
@@ -354,7 +402,10 @@ function parseHex(hex: string): [number, number, number] | null {
 
 function luminance(hex: string): number {
   const rgb = parseHex(hex);
-  if (!rgb) return 1;
+  return rgb ? luminanceOf(rgb) : 1;
+}
+
+function luminanceOf(rgb: readonly number[]): number {
   const [r, g, b] = rgb.map((v) => {
     const c = v / 255;
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -381,7 +432,7 @@ export function Meter({
 }) {
   const width = `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`;
   return (
-    <span className={`block h-1 overflow-hidden rounded-full bg-edge ${className}`}>
+    <span className={`block h-1 overflow-hidden rounded-full bg-edge-strong ${className}`}>
       <span className="block h-full rounded-full" style={{ width, background: color }} />
     </span>
   );

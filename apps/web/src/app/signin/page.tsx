@@ -51,7 +51,7 @@ export default async function SignInPage() {
               >
                 <button
                   type="submit"
-                  className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-gradient-to-r from-[#e6398b] to-[#8b3fe6] px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
+                  className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-gradient-to-r from-[#c92d77] to-[#8b3fe6] px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
                 >
                   <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
                     <path d="M5 19 19 5M5 5l14 14" stroke="currentColor" />

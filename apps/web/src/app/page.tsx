@@ -5,7 +5,7 @@ import {
   PageHeader,
   Empty,
   Button,
-  Field,
+  Field, FieldAction,
   inputClass,
   Badge,
   CoverStrip,
@@ -120,17 +120,19 @@ export default async function HomePage() {
 
       {user && (
         <Panel title="New tournament">
-          <form action={createTournament} className="flex flex-wrap items-end gap-3">
+          <form action={createTournament} className="flex flex-wrap items-start gap-3">
             <div className="min-w-[16rem] flex-1">
               <Field label="Name" hint="For example: MSU Beat Saber - Fall 2026">
                 <input name="name" className={inputClass} required />
               </Field>
             </div>
-            <label className="flex items-center gap-2 pb-2 text-sm">
-              <input type="checkbox" name="isPublic" defaultChecked />
-              Publicly visible
-            </label>
-            <Button type="submit">Create</Button>
+            <FieldAction>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" name="isPublic" defaultChecked />
+                Publicly visible
+              </label>
+              <Button type="submit">Create</Button>
+            </FieldAction>
           </form>
         </Panel>
       )}

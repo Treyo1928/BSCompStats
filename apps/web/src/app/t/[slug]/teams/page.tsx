@@ -8,6 +8,7 @@ import {
   Empty,
   Button,
   Field,
+  FieldAction,
   inputClass,
   Avatar,
   Badge,
@@ -98,19 +99,19 @@ export default async function TeamsPage({
               }}
             >
               <h2
-                className="text-base font-semibold tracking-tight"
+                className="min-w-0 truncate text-base font-semibold tracking-tight"
                 style={{ color: teamInk(team.color, team.colorSecondary) }}
               >
                 {team.name}
               </h2>
-              <span className="text-xs text-muted">{team.members.length} players</span>
+              <span className="shrink-0 text-xs text-muted">{team.members.length} players</span>
             </div>
 
             <div className="p-4">
             {team.members.length === 0 ? (
               <Empty>No players yet.</Empty>
             ) : (
-              <ul className="-my-1 text-sm">
+              <ul className="-my-1.5 text-sm">
                 {team.members.map((member) => (
                   <li key={member.id} className="flex items-center gap-1">
                     <a
@@ -165,7 +166,7 @@ export default async function TeamsPage({
       {canManage && (
         <div className="grid gap-6 md:grid-cols-2">
           <Panel title="New team">
-            <form action={createTeam} className="flex flex-wrap items-end gap-3">
+            <form action={createTeam} className="flex flex-wrap items-start gap-3">
               <input type="hidden" name="tournamentId" value={tournament.id} />
               <div className="min-w-[10rem] flex-1">
                 <Field label="Name">
@@ -177,10 +178,12 @@ export default async function TeamsPage({
                   type="color"
                   name="color"
                   defaultValue="#7c3aed"
-                  className="h-9 w-14 rounded-lg border border-edge bg-transparent"
+                  className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
                 />
               </Field>
-              <Button type="submit">Create</Button>
+              <FieldAction>
+                <Button type="submit">Create</Button>
+              </FieldAction>
             </form>
           </Panel>
 
