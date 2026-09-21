@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -26,10 +27,29 @@ import { PoolBoardTable } from '@/components/pool-board';
 import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { buildPoolOutlook } from '@/server/outlook';
+import { getPoolSummary } from '@/server/summaries';
 import { getActorOrAnonymous } from '@/server/session';
 import { setPredictionEstimate, setStatsScope, triggerRefresh } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string; poolId: string }>;
+}): Promise<Metadata> {
+  const { slug, poolId } = await params;
+  const pool = await getPoolSummary(slug, poolId);
+  if (!pool) return {};
+
+  const title = `${pool.name} - ${pool.tournamentName}`;
+  const description = [
+    pool.facts,
+    pool.leadersLine,
+    `Maps: ${pool.maps.map((m) => m.name).join(', ')}`,
+  ].join('. ');
+  return { title, description, openGraph: { title, description } };
+}
 
 export default async function PoolPage({
   params,

@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -21,6 +22,7 @@ import {
 import { getActorOrAnonymous } from '@/server/session';
 import { NewMatchForm } from '@/components/new-match-form';
 import { tallyMaps } from '@/server/match-summary';
+import { getTournamentSummary } from '@/server/summaries';
 import {
   importPoolAction,
   createTeam,
@@ -33,6 +35,21 @@ import {
 } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const t = await getTournamentSummary((await params).slug);
+  // Private or missing: say nothing about it, and let the site's card stand in.
+  if (!t) return {};
+
+  const description = [t.description, t.facts, t.results.length ? `Latest: ${t.results.join('; ')}.` : null]
+    .filter(Boolean)
+    .join(' - ');
+  return { title: t.name, description, openGraph: { title: t.name, description } };
+}
 
 /** What a match card shows of each team: its colours and who is on it. */
 const matchTeamSelect = {

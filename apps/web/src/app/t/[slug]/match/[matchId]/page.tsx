@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -21,6 +22,7 @@ import {
 } from '@/components/ui';
 import { LiveBadge } from '@/components/live-badge';
 import { MatchLive } from '@/components/match-live';
+import { getMatchSummary } from '@/server/summaries';
 import { ConfirmButton } from '@/components/confirm-button';
 import { loadMatch, buildAdvice } from '@/server/matches';
 import { getActorOrAnonymous } from '@/server/session';
@@ -37,6 +39,27 @@ import {
 import { LineupEditor } from '@/components/lineup-editor';
 
 export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string; matchId: string }>;
+}): Promise<Metadata> {
+  const { slug, matchId } = await params;
+  const match = await getMatchSummary(slug, matchId);
+  if (!match) return {};
+
+  const title = `${match.teamA.name} vs ${match.teamB.name} - ${match.tournamentName}`;
+  const description = [
+    match.status,
+    match.maps.length
+      ? `Maps: ${match.maps.map((m) => (m.isTiebreaker ? `${m.name} (tiebreaker)` : m.name)).join(', ')}`
+      : `Pool: ${match.poolName}`,
+    `${match.teamA.name}: ${match.teamA.players.join(', ')}`,
+    `${match.teamB.name}: ${match.teamB.players.join(', ')}`,
+  ].join('. ');
+  return { title, description, openGraph: { title, description } };
+}
 
 export default async function MatchPage({
   params,

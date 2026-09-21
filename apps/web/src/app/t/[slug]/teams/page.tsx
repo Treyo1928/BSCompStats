@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -20,8 +21,27 @@ import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, MemberControls } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
+import { getTournamentSummary } from '@/server/summaries';
 
 export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const t = await getTournamentSummary((await params).slug);
+  if (!t) return {};
+
+  const title = `Teams - ${t.name}`;
+  const description =
+    t.teams.length === 0
+      ? 'No teams yet.'
+      : t.teams
+          .map((team) => `${team.name}: ${team.members.map((m) => m.player.name).join(', ') || 'no players yet'}`)
+          .join(' | ');
+  return { title, description, openGraph: { title, description } };
+}
 
 export default async function TeamsPage({
   params,

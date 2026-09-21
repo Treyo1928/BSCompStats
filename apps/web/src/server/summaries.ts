@@ -1,0 +1,216 @@
+import { cache } from 'react';
+import { prisma } from '@bscs/db';
+import { tallyMaps } from './match-summary';
+
+/**
+ * What a page says about itself in a link preview.
+ *
+ * Previews are fetched by crawlers - Discord's, Slack's - with no session, and
+ * then shown to whoever is in the channel. So everything here describes public
+ * tournaments only: for a private one these return null and the page falls back
+ * to the site's generic card, exactly as if the link led nowhere.
+ *
+ * Wrapped in `cache` because a page's metadata and its image are built in the
+ * same request and ask for the same thing.
+ */
+
+const pct = (value: number, digits = 1) => `${(value * 100).toFixed(digits)}%`;
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+export const getTournamentSummary = cache(async (slug: string) => {
+  const t = await prisma.tournament.findUnique({
+    where: { slug },
+    select: {
+      name: true,
+      description: true,
+      isPublic: true,
+      pools: { select: { name: true, _count: { select: { maps: true } } } },
+      divisions: {
+        select: {
+          teams: {
+            orderBy: { name: 'asc' },
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              members: { orderBy: { order: 'asc' }, select: { role: true, player: { select: { name: true } } } },
+            },
+          },
+        },
+      },
+      matches: {
+        orderBy: { createdAt: 'desc' },
+        select: {
+          state: true,
+          winnerId: true,
+          teamAId: true,
+          teamBId: true,
+          teamA: { select: { name: true } },
+          teamB: { select: { name: true } },
+          maps: {
+            select: { isTiebreaker: true, attempts: { select: { teamId: true, playerId: true, score: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!t || !t.isPublic) return null;
+
+  const teams = t.divisions.flatMap((d) => d.teams);
+  const players = new Set(teams.flatMap((team) => team.members.map((m) => m.player.name))).size;
+  const live = t.matches.filter((m) => m.state !== 'COMPLETE');
+  const finished = t.matches.filter((m) => m.state === 'COMPLETE');
+
+  const results = finished.slice(0, 3).map((m) => {
+    const tally = tallyMaps(m.maps, m.teamAId, m.teamBId);
+    const aWon = m.winnerId === m.teamAId;
+    const bWon = m.winnerId === m.teamBId;
+    if (!aWon && !bWon) return `${m.teamA.name} ${tally.a}-${tally.b} ${m.teamB.name}`;
+    const [winner, loser] = aWon ? [m.teamA.name, m.teamB.name] : [m.teamB.name, m.teamA.name];
+    return `${winner} beat ${loser} ${Math.max(tally.a, tally.b)}-${Math.min(tally.a, tally.b)}`;
+  });
+
+  return {
+    name: t.name,
+    description: t.description,
+    teams,
+    players,
+    pools: t.pools,
+    liveCount: live.length,
+    finishedCount: finished.length,
+    results,
+    facts: [
+      plural(teams.length, 'team'),
+      plural(players, 'player'),
+      plural(t.pools.length, 'map pool'),
+      plural(t.matches.length, 'match') + (live.length ? ` (${live.length} under way)` : ''),
+    ].join(' · '),
+  };
+});
+
+export const getPoolSummary = cache(async (slug: string, poolId: string) => {
+  const pool = await prisma.mapPool.findUnique({
+    where: { id: poolId },
+    select: {
+      name: true,
+      tournamentId: true,
+      tournament: { select: { slug: true, name: true, isPublic: true } },
+      maps: {
+        orderBy: { order: 'asc' },
+        select: {
+          leaderboardId: true,
+          leaderboard: { select: { map: { select: { name: true, coverImage: true } } } },
+        },
+      },
+    },
+  });
+  if (!pool || pool.tournament.slug !== slug || !pool.tournament.isPublic) return null;
+
+  const members = await prisma.teamMember.findMany({
+    where: { team: { division: { tournamentId: pool.tournamentId } } },
+    select: { player: { select: { id: true, name: true } }, team: { select: { name: true, color: true } } },
+  });
+  const teamOf = new Map(members.map((m) => [m.player.id, m.team]));
+  const nameOf = new Map(members.map((m) => [m.player.id, m.player.name]));
+
+  const scores = await prisma.score.findMany({
+    where: {
+      playerId: { in: [...nameOf.keys()] },
+      leaderboardId: { in: pool.maps.map((m) => m.leaderboardId) },
+    },
+    select: { playerId: true, accuracy: true },
+  });
+
+  const byPlayer = new Map<string, number[]>();
+  for (const s of scores) byPlayer.set(s.playerId, [...(byPlayer.get(s.playerId) ?? []), s.accuracy]);
+
+  // Only people who have played most of the pool: one 99% on the easy map is
+  // not the top of a leaderboard.
+  const needed = Math.max(1, Math.ceil(pool.maps.length / 2));
+  const leaders = [...byPlayer]
+    .filter(([, accs]) => accs.length >= needed)
+    .map(([playerId, accs]) => ({
+      name: nameOf.get(playerId) ?? 'Player',
+      team: teamOf.get(playerId)?.name ?? null,
+      color: teamOf.get(playerId)?.color ?? '#8b7bff',
+      average: accs.reduce((a, b) => a + b, 0) / accs.length,
+      played: accs.length,
+    }))
+    .sort((a, b) => b.average - a.average)
+    .slice(0, 5);
+
+  return {
+    name: pool.name,
+    tournamentName: pool.tournament.name,
+    maps: pool.maps.map((m) => ({ name: m.leaderboard.map.name, cover: m.leaderboard.map.coverImage })),
+    playerCount: nameOf.size,
+    scoreCount: scores.length,
+    leaders,
+    teamColors: [...new Set(members.map((m) => m.team.color))],
+    facts: [
+      plural(pool.maps.length, 'map'),
+      plural(nameOf.size, 'player'),
+      plural(scores.length, 'score'),
+    ].join(' · '),
+    leadersLine: leaders.length
+      ? `Top averages: ${leaders.slice(0, 3).map((l) => `${l.name} ${pct(l.average)}`).join(', ')}`
+      : 'No scores yet',
+  };
+});
+
+export const getMatchSummary = cache(async (slug: string, matchId: string) => {
+  const m = await prisma.match.findUnique({
+    where: { id: matchId },
+    select: {
+      name: true,
+      state: true,
+      winnerId: true,
+      teamAId: true,
+      teamBId: true,
+      tournament: { select: { slug: true, name: true, isPublic: true } },
+      pool: { select: { name: true } },
+      teamA: { select: { name: true, color: true, members: { where: { available: true }, orderBy: { order: 'asc' }, select: { player: { select: { name: true } } } } } },
+      teamB: { select: { name: true, color: true, members: { where: { available: true }, orderBy: { order: 'asc' }, select: { player: { select: { name: true } } } } } },
+      maps: {
+        orderBy: { order: 'asc' },
+        select: {
+          isTiebreaker: true,
+          poolMap: { select: { leaderboard: { select: { map: { select: { name: true, coverImage: true } } } } } },
+          attempts: { select: { teamId: true, playerId: true, score: true } },
+        },
+      },
+    },
+  });
+  if (!m || m.tournament.slug !== slug || !m.tournament.isPublic) return null;
+
+  const tally = tallyMaps(m.maps, m.teamAId, m.teamBId);
+  const winner = m.winnerId === m.teamAId ? m.teamA : m.winnerId === m.teamBId ? m.teamB : null;
+
+  const status =
+    m.state === 'COMPLETE'
+      ? winner
+        ? `${winner.name} won ${Math.max(tally.a, tally.b)}-${Math.min(tally.a, tally.b)}`
+        : `Drawn ${tally.a}-${tally.b}`
+      : m.state === 'PLAYING'
+        ? tally.a + tally.b > 0
+          ? `In play, ${m.teamA.name} ${tally.a}-${tally.b} ${m.teamB.name}`
+          : 'Maps picked, about to play'
+        : 'Picking and banning maps';
+
+  return {
+    name: m.name,
+    tournamentName: m.tournament.name,
+    poolName: m.pool.name,
+    state: m.state,
+    status,
+    tally,
+    winnerName: winner?.name ?? null,
+    teamA: { name: m.teamA.name, color: m.teamA.color, players: m.teamA.members.map((x) => x.player.name) },
+    teamB: { name: m.teamB.name, color: m.teamB.color, players: m.teamB.members.map((x) => x.player.name) },
+    maps: m.maps.map((x) => ({
+      name: x.poolMap.leaderboard.map.name,
+      cover: x.poolMap.leaderboard.map.coverImage,
+      isTiebreaker: x.isTiebreaker,
+    })),
+  };
+});
