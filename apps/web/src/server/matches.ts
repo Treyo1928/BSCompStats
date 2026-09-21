@@ -40,6 +40,8 @@ export interface MatchView {
   };
   /** Lineups stay hidden from the other side until both teams have set every map. */
   blindLineups: boolean;
+  /** Set when the match was completed with a winner; null for a draw or an unfinished match. */
+  winnerId: string | null;
   format: MatchFormat;
   teamA: TeamView;
   teamB: TeamView;
@@ -262,6 +264,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     state: match.state,
     tournament: match.tournament,
     blindLineups: match.blindLineups,
+    winnerId: match.winnerId,
     format,
     teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),
     teamB: toTeamView(match.teamB, match.state === 'COMPLETE'),

@@ -20,6 +20,7 @@ import {
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
 import { NewMatchForm } from '@/components/new-match-form';
+import { tallyMaps } from '@/server/match-summary';
 import {
   importPoolAction,
   createTeam,
@@ -32,6 +33,18 @@ import {
 } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
+
+/** What a match card shows of each team: its colours and who is on it. */
+const matchTeamSelect = {
+  id: true,
+  name: true,
+  color: true,
+  colorSecondary: true,
+  members: {
+    orderBy: { order: 'asc' },
+    select: { available: true, player: { select: { id: true, name: true, avatar: true } } },
+  },
+} as const;
 
 export default async function TournamentPage({
   params,
@@ -91,14 +104,26 @@ export default async function TournamentPage({
       },
       matches: {
         orderBy: { createdAt: 'desc' },
-        take: 10,
+        take: 60,
         select: {
           id: true,
           name: true,
           state: true,
-          teamA: { select: { name: true, color: true, colorSecondary: true } },
-          teamB: { select: { name: true, color: true, colorSecondary: true } },
+          winnerId: true,
+          completedAt: true,
+          teamAId: true,
+          teamBId: true,
+          teamA: { select: matchTeamSelect },
+          teamB: { select: matchTeamSelect },
           pool: { select: { name: true } },
+          maps: {
+            orderBy: { order: 'asc' },
+            select: {
+              isTiebreaker: true,
+              poolMap: { select: { leaderboard: { select: { map: { select: { coverImage: true } } } } } },
+              attempts: { select: { teamId: true, playerId: true, score: true } },
+            },
+          },
         },
       },
     },
@@ -112,6 +137,10 @@ export default async function TournamentPage({
   const canManage = can(actor, 'MANAGE_TEAMS');
   const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
   const teams = tournament.divisions.flatMap((d) => d.teams);
+  const currentMatches = tournament.matches.filter((m) => m.state !== 'COMPLETE');
+  const finishedMatches = tournament.matches
+    .filter((m) => m.state === 'COMPLETE')
+    .sort((x, y) => (y.completedAt?.getTime() ?? 0) - (x.completedAt?.getTime() ?? 0));
 
   return (
     <div className="space-y-6">
@@ -167,47 +196,17 @@ export default async function TournamentPage({
       <FormError message={error} />
 
       {/* Matches first: on match night this is what everyone came for. */}
-      <Panel title="Matches">
-        {tournament.matches.length === 0 ? (
+      <Panel title="Matches" subtitle={currentMatches.length > 0 ? 'Under way or still to play' : undefined}>
+        {currentMatches.length === 0 ? (
           <Empty>
-            No matches yet. One needs two teams and a map pool.
+            {finishedMatches.length === 0
+              ? 'No matches yet. One needs two teams and a map pool.'
+              : 'Nothing under way. Finished matches are below.'}
           </Empty>
         ) : (
           <ul className="grid gap-3 md:grid-cols-2">
-            {tournament.matches.map((match) => (
-              <li key={match.id}>
-                <Link
-                  href={`/t/${tournament.slug}/match/${match.id}`}
-                  className="group block overflow-hidden rounded-lg border border-edge transition hover:border-faint"
-                  style={{
-                    background: `linear-gradient(90deg, ${teamWash(match.teamA.color, 0.8)}, transparent 45%, transparent 55%, ${teamWash(match.teamB.color, 0.8)})`,
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-3 px-4 py-3">
-                    <span
-                      className="min-w-0 flex-1 truncate text-base font-semibold"
-                      style={{ color: teamInk(match.teamA.color, match.teamA.colorSecondary) }}
-                    >
-                      {match.teamA.name}
-                    </span>
-                    <span className="text-xs font-medium uppercase tracking-widest text-faint">
-                      vs
-                    </span>
-                    <span
-                      className="min-w-0 flex-1 truncate text-right text-base font-semibold"
-                      style={{ color: teamInk(match.teamB.color, match.teamB.colorSecondary) }}
-                    >
-                      {match.teamB.name}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2 border-t border-edge/70 bg-panel/60 px-4 py-2 text-xs text-muted">
-                    <span className="truncate">
-                      {match.name || 'Match'} · {match.pool.name}
-                    </span>
-                    <MatchState state={match.state} />
-                  </div>
-                </Link>
-              </li>
+            {currentMatches.map((match) => (
+              <MatchCard key={match.id} slug={tournament.slug} match={match} />
             ))}
           </ul>
         )}
@@ -220,6 +219,16 @@ export default async function TournamentPage({
           pools={tournament.pools}
           from="tournament"
         />
+      )}
+
+      {finishedMatches.length > 0 && (
+        <Panel title="Finished matches" subtitle="Most recent first">
+          <ul className="grid gap-3 md:grid-cols-2">
+            {finishedMatches.map((match) => (
+              <MatchCard key={match.id} slug={tournament.slug} match={match} />
+            ))}
+          </ul>
+        </Panel>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -458,6 +467,110 @@ export default async function TournamentPage({
         </details>
       )}
     </div>
+  );
+}
+
+interface MatchCardData {
+  id: string;
+  name: string;
+  state: string;
+  winnerId: string | null;
+  teamAId: string;
+  teamBId: string;
+  teamA: MatchCardTeam;
+  teamB: MatchCardTeam;
+  pool: { name: string };
+  maps: Array<{
+    isTiebreaker: boolean;
+    poolMap: { leaderboard: { map: { coverImage: string | null } } };
+    attempts: Array<{ teamId: string; playerId: string; score: number }>;
+  }>;
+}
+
+interface MatchCardTeam {
+  name: string;
+  color: string;
+  colorSecondary: string;
+  members: Array<{ available: boolean; player: { id: string; name: string; avatar: string | null } }>;
+}
+
+/** A match at a glance: who, on which maps, and how it stands or ended. */
+function MatchCard({ slug, match }: { slug: string; match: MatchCardData }) {
+  const tally = tallyMaps(match.maps, match.teamAId, match.teamBId);
+  const finished = match.state === 'COMPLETE';
+  const winner =
+    match.winnerId === match.teamAId ? match.teamA : match.winnerId === match.teamBId ? match.teamB : null;
+  const started = tally.a + tally.b > 0;
+  // A finished match shows whoever was on the roster; a live one, who is available.
+  const people = (team: MatchCardTeam) =>
+    team.members.filter((m) => finished || m.available).map((m) => m.player);
+
+  const side = (team: MatchCardTeam, won: boolean, align: 'left' | 'right') => (
+    <div className={`min-w-0 flex-1 ${align === 'right' ? 'text-right' : ''}`}>
+      <p
+        className={`truncate text-base font-semibold ${finished && !won ? 'opacity-70' : ''}`}
+        style={{ color: teamInk(team.color, team.colorSecondary) }}
+      >
+        {team.name}
+        {won && <span className="ml-1.5 text-xs font-medium text-win">won</span>}
+      </p>
+      <div className={`mt-1.5 flex ${align === 'right' ? 'justify-end' : ''}`}>
+        <AvatarStack people={people(team)} size={24} ring={team.color} max={5} />
+      </div>
+    </div>
+  );
+
+  return (
+    <li>
+      <Link
+        href={`/t/${slug}/match/${match.id}`}
+        className="group block overflow-hidden rounded-lg border border-edge transition hover:border-faint"
+        style={{
+          background: `linear-gradient(90deg, ${teamWash(match.teamA.color, 0.8)}, transparent 45%, transparent 55%, ${teamWash(match.teamB.color, 0.8)})`,
+        }}
+      >
+        <div className="flex items-start justify-between gap-3 px-4 pt-3">
+          {side(match.teamA, winner === match.teamA, 'left')}
+          <div className="shrink-0 pt-0.5 text-center">
+            {started || finished ? (
+              <p className="text-lg font-bold tabular leading-none">
+                {tally.a}
+                <span className="mx-1 text-xs font-medium text-faint">-</span>
+                {tally.b}
+              </p>
+            ) : (
+              <p className="text-xs font-medium uppercase tracking-widest text-faint">vs</p>
+            )}
+          </div>
+          {side(match.teamB, winner === match.teamB, 'right')}
+        </div>
+
+        <div className="flex min-h-[2.25rem] items-center justify-center px-4 py-2">
+          {match.maps.length > 0 ? (
+            <CoverStrip
+              covers={match.maps.map((m) => m.poolMap.leaderboard.map.coverImage)}
+              size={26}
+              max={7}
+            />
+          ) : (
+            <span className="text-[11px] text-faint">Maps not picked yet</span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-edge/70 bg-panel/60 px-4 py-2 text-xs text-muted">
+          <span className="truncate">
+            {match.name || 'Match'} · {match.pool.name}
+          </span>
+          {finished ? (
+            <Badge tone="win">
+              {winner ? `${winner.name} won ${Math.max(tally.a, tally.b)}-${Math.min(tally.a, tally.b)}` : 'Draw'}
+            </Badge>
+          ) : (
+            <MatchState state={match.state} />
+          )}
+        </div>
+      </Link>
+    </li>
   );
 }
 

@@ -607,6 +607,21 @@ export async function completeMatch(formData: FormData): Promise<void> {
   await matchChanged(match.tournament.slug, matchId);
 }
 
+/** Remove a match and everything recorded in it. Staff only. */
+export async function deleteMatch(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'CREATE_MATCH');
+
+  // Picks, bans, maps, lineups and scores all cascade from the match.
+  await prisma.match.delete({ where: { id: matchId } });
+  await announceMatchChange(matchId);
+  revalidatePath(`/t/${match.tournament.slug}`);
+  redirect(`/t/${match.tournament.slug}`);
+}
+
 /** Reopen a completed match so its scores can be corrected. */
 export async function reopenMatch(formData: FormData): Promise<void> {
   const matchId = String(formData.get('matchId'));

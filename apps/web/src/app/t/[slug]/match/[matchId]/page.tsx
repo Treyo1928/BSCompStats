@@ -29,6 +29,7 @@ import {
   submitPickBan,
   undoLastAction,
   saveScores,
+  deleteMatch,
   callReplay,
   cancelReplay,
   completeMatch,
@@ -147,7 +148,22 @@ export default async function MatchPage({
             )}
           </>
         }
-        actions={<LiveBadge poolId={match.pool.id} />}
+        actions={
+          <>
+            <LiveBadge poolId={match.pool.id} />
+            {can(actor, 'CREATE_MATCH') && (
+              <form action={deleteMatch}>
+                <input type="hidden" name="matchId" value={match.id} />
+                <ConfirmButton
+                  question={`Delete ${match.name}?\n\nIts picks, bans, lineups and scores go with it. This cannot be undone.`}
+                  className="inline-flex h-9 items-center rounded-lg border border-edge px-3 text-sm font-medium text-muted transition hover:border-red-400/50 hover:text-lose"
+                >
+                  Delete match
+                </ConfirmButton>
+              </form>
+            )}
+          </>
+        }
       />
 
       {/* Scoreboard */}
@@ -164,6 +180,15 @@ export default async function MatchPage({
               {stateLabel[match.state] ?? match.state}
             </Badge>
             <span className="text-[10px] uppercase tracking-[0.2em] text-faint">maps won</span>
+            {match.state === 'COMPLETE' && (
+              <span className="text-sm font-semibold text-win">
+                {match.winnerId === match.teamA.id
+                  ? `${match.teamA.name} won`
+                  : match.winnerId === match.teamB.id
+                    ? `${match.teamB.name} won`
+                    : 'Draw'}
+              </span>
+            )}
           </div>
           <TeamScore
             team={match.teamB}
