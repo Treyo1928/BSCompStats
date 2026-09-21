@@ -38,7 +38,12 @@ const BeatLeader: OAuthConfig<BeatLeaderProfile> = {
   clientSecret: env.BEATLEADER_CLIENT_SECRET,
   // BeatLeader documents the secret travelling in the form body.
   client: { token_endpoint_auth_method: 'client_secret_post' },
-  checks: ['pkce', 'state'],
+  // No PKCE. Anyone not already logged in to BeatLeader is bounced through
+  // beatleader.com/signin/oauth2, which rebuilds the authorize request without
+  // `code_challenge` - the token exchange then rejects our `code_verifier`, so
+  // every first-time sign-in failed and only the retry worked. This is a
+  // confidential client with a secret, so `state` is sufficient.
+  checks: ['state'],
   profile(profile) {
     return {
       id: profile.id,
