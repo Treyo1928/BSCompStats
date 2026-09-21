@@ -1,0 +1,138 @@
+# BSCompStats - self-hosted Beat Saber competitive stats and match platform.
+#
+#   cp .env.example .env   # then edit it
+#   docker compose up -d
+#
+# Four services: the web app, a background worker for score ingestion, Postgres
+# and Redis. Add `--profile tls` to put Caddy in front with automatic HTTPS.
+
+name: bscompstats
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bscs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-bscompstats}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Without this the app races the database on a cold start and crash-loops.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-bscs} -d ${POSTGRES_DB:-bscompstats}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Migrations run once, in their own container, before anything serves.
+  #
+  # They used to run from the web container's entrypoint, but the web image is
+  # deliberately slimmed to Next.js's standalone output and does not carry the
+  # Prisma CLI's own dependencies. Giving migrations their own step keeps the
+  # runtime image small, makes a failed migration obvious instead of a
+  # crash-looping web container, and means both services wait for the schema.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    restart: 'no'
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bscs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bscompstats}?schema=public
+    command:
+      - node
+      - node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - packages/db/prisma/schema.prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bscs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bscompstats}?schema=public
+      REDIS_URL: redis://redis:6379
+      # Next's standalone server binds to $HOSTNAME, which Docker sets to the
+      # container id - so it listened on the container's own IP only and the
+      # healthcheck below, which dials 127.0.0.1, was refused every time.
+      HOSTNAME: 0.0.0.0
+      # Auth.js refuses every request in production ("UntrustedHost") unless it
+      # is told which host it is serving. Trust exactly the configured one.
+      AUTH_URL: ${APP_URL:-http://localhost:3000}
+    ports:
+      - '${WEB_PORT:-3000}:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bscs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bscompstats}?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ['tls']
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

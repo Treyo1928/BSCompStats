@@ -1,0 +1,20 @@
+# Local development overlay.
+#
+# The main compose file deliberately keeps Postgres and Redis off the host
+# network - nothing outside the compose network has any business reaching them
+# in production. For development you want to run the app with `npm run dev`
+# against containerised data stores, which needs the ports published:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis
+#   npm run dev
+#
+# Use the plain `docker compose up -d` for a real deployment.
+
+services:
+  postgres:
+    ports:
+      - '5432:5432'
+
+  redis:
+    ports:
+      - '6379:6379'

@@ -1,0 +1,35 @@
+# Note: unlike .gitignore, a bare pattern here matches only at the context
+# root. Nested paths need an explicit **/ prefix - and getting that wrong is
+# not harmless. A stale packages/*/tsconfig.tsbuildinfo copied in from the host
+# convinced `tsc -b` inside the image that the project was already built, so it
+# emitted nothing, while dist/ was correctly excluded. The result was a build
+# that failed with "Cannot resolve @bscs/db" for no visible reason.
+node_modules
+**/node_modules
+
+dist
+**/dist
+.next
+**/.next
+out
+**/out
+
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+coverage
+**/coverage
+*.log
+**/*.log
+
+.claude
+.vscode
+.idea
+README.md
+docker-compose.dev.yml

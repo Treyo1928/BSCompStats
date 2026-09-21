@@ -1,0 +1,655 @@
+// BSCompStats data model.
+//
+// Two identity concepts are deliberately kept apart:
+//   User   - someone who logs in (Discord / BeatLeader OAuth)
+//   Player - a Beat Saber competitor, keyed by BeatLeader ID
+// An organizer adds Players by BeatLeader ID long before those people ever sign
+// in, so Player.userId stays null until the account is linked.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+//  Identity & auth (Auth.js-compatible)
+// ===========================================================================
+
+enum GlobalRole {
+  USER
+  ADMIN
+}
+
+model User {
+  id            String     @id @default(cuid())
+  name          String?
+  email         String?    @unique
+  emailVerified DateTime?
+  image         String?
+  role          GlobalRole @default(USER)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  accounts           Account[]
+  sessions           Session[]
+  players            Player[]
+  tournamentMembers  TournamentMember[]
+  ownedTournaments   Tournament[]       @relation("TournamentOwner")
+  actionsPerformed   MatchAction[]      @relation("ActingUser")
+  actionsOnBehalfOf  MatchAction[]      @relation("OnBehalfOfUser")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String // "discord" | "beatleader"
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ===========================================================================
+//  Players
+// ===========================================================================
+
+model Player {
+  id           String   @id @default(cuid())
+  beatLeaderId String   @unique
+  scoreSaberId String?  @unique
+  name         String
+  avatar       String?
+  country      String?
+
+  // Set once the human behind this player links an account.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Cached BeatLeader headline figures, refreshed by the sync worker.
+  pp        Float    @default(0)
+  rank      Int      @default(0)
+  countryRank Int    @default(0)
+  lastSyncedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scores       Score[]
+  scoreEvents  ScoreEvent[]
+  teamMembers  TeamMember[]
+  lineupSlots  LineupSlot[]
+  attempts     MatchMapAttempt[]
+  profile      PlayerProfile?
+
+  @@index([userId])
+  @@index([name])
+}
+
+/// Derived skill model for a player, recomputed by the stats engine.
+/// Kept in its own table so recomputation never touches Player rows that the
+/// sync worker is also writing.
+model PlayerProfile {
+  playerId String @id
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  /// Intercept: how far above/below a map's predictedAcc this player lands.
+  bias Float @default(0)
+  /// Ridge-regression weights over the map rating vector.
+  accWeight  Float @default(0)
+  passWeight Float @default(0)
+  techWeight Float @default(0)
+
+  /// Spread of residuals - drives the Monte Carlo sampling.
+  sigma Float @default(0.02)
+
+  sampleSize Int   @default(0)
+  rSquared   Float @default(0)
+
+  // Descriptive stats surfaced in the UI.
+  meanAcc      Float @default(0)
+  fcRate       Float @default(0)
+  missRate     Float @default(0)
+  pauseRate    Float @default(0)
+  handBalance  Float @default(0) // accLeft - accRight, averaged
+
+  /// Mean relative performance per pool category tag, e.g. {"Tech": 0.31}.
+  categoryAffinity Json?
+
+  computedAt DateTime @default(now())
+}
+
+// ===========================================================================
+//  Maps & leaderboards
+// ===========================================================================
+
+/// Named BeatMap rather than Map so the generated TS type does not shadow the
+/// global Map constructor.
+model BeatMap {
+  id         String  @id // BeatLeader song id, e.g. "2d93e"
+  hash       String  @unique // lowercase
+  name       String
+  subName    String?
+  author     String?
+  mapper     String?
+  bpm        Float   @default(0)
+  duration   Int     @default(0)
+  coverImage String?
+  downloadUrl String?
+  uploadTime Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leaderboards Leaderboard[]
+
+  @@index([name])
+}
+
+model Leaderboard {
+  /// Derived, never looked up: `${songId}${difficultyValue}${mode}`.
+  id    String  @id
+  mapId String
+  map   BeatMap @relation(fields: [mapId], references: [id], onDelete: Cascade)
+
+  difficultyValue Int // 1 Easy, 3 Normal, 5 Hard, 7 Expert, 9 ExpertPlus
+  difficultyName  String
+  mode            Int // 1 = Standard
+  modeName        String
+  /// Mapper's own label for the difficulty, e.g. "Safe Bet".
+  customName      String?
+
+  maxScore Int   @default(0)
+  status   Int   @default(0)
+  ranked   Boolean @default(false)
+
+  // Rating vector (nomod). These are the features the stats model uses.
+  stars        Float @default(0)
+  accRating    Float @default(0)
+  passRating   Float @default(0)
+  techRating   Float @default(0)
+  predictedAcc Float @default(0)
+
+  // Chart shape. Useful on its own in the UI and as extra prediction features.
+  njs      Float @default(0)
+  nps      Float @default(0)
+  notes    Int   @default(0)
+  bombs    Int   @default(0)
+  walls    Int   @default(0)
+  chains   Int   @default(0)
+  sliders  Int   @default(0)
+  duration Int   @default(0)
+  peakEBPM Float @default(0)
+
+  // BeatLeader's own tag bitfields, stored raw for later decoding.
+  speedTags   Int @default(0)
+  styleTags   Int @default(0)
+  featureTags Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scores      Score[]
+  scoreEvents ScoreEvent[]
+  poolMaps    PoolMap[]
+
+  @@unique([mapId, difficultyValue, mode])
+  @@index([mapId])
+}
+
+// ===========================================================================
+//  Scores
+// ===========================================================================
+
+model Score {
+  id String @id @default(cuid())
+
+  playerId      String
+  player        Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  leaderboardId String
+  leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
+
+  /// BeatLeader's own score id - also the key for the replay viewer.
+  beatLeaderScoreId Int?
+
+  baseScore     Int
+  modifiedScore Int
+  accuracy      Float // 0..1, BeatLeader's own figure
+  pp            Float @default(0)
+  accPP         Float @default(0)
+  passPP        Float @default(0)
+  techPP        Float @default(0)
+  rank          Int   @default(0)
+  modifiers     String @default("")
+
+  missedNotes Int     @default(0)
+  badCuts     Int     @default(0)
+  bombCuts    Int     @default(0)
+  wallsHit    Int     @default(0)
+  pauses      Int     @default(0)
+  fullCombo   Boolean @default(false)
+  maxCombo    Int     @default(0)
+
+  accLeft  Float @default(0)
+  accRight Float @default(0)
+
+  hmd        Int     @default(0)
+  controller Int     @default(0)
+  platform   String?
+  replayUrl  String?
+
+  /// Unix seconds, from BeatLeader's `timeset`.
+  timeset   Int      @default(0)
+  fetchedAt DateTime @default(now())
+
+  @@unique([playerId, leaderboardId])
+  @@index([leaderboardId])
+  @@index([playerId])
+}
+
+/// Append-only log of every score seen on the live websocket feed. The REST API
+/// only ever exposes a player's current best, so this is the only way to get a
+/// real score-over-time history.
+model ScoreEvent {
+  id String @id @default(cuid())
+
+  playerId      String
+  player        Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  leaderboardId String
+  leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
+
+  beatLeaderScoreId Int?
+  baseScore         Int
+  accuracy          Float
+  modifiers         String  @default("")
+  missedNotes       Int     @default(0)
+  fullCombo         Boolean @default(false)
+  replayUrl         String?
+
+  timeset   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, leaderboardId, beatLeaderScoreId])
+  @@index([playerId, leaderboardId, timeset])
+}
+
+// ===========================================================================
+//  Tournaments, divisions, teams
+// ===========================================================================
+
+enum TournamentRole {
+  OWNER
+  ORGANIZER
+  CAPTAIN
+  PLAYER
+  VIEWER
+}
+
+model Tournament {
+  id        String  @id @default(cuid())
+  slug      String  @unique
+  name      String
+  description String?
+  isPublic  Boolean @default(true)
+
+  ownerId String
+  owner   User   @relation("TournamentOwner", fields: [ownerId], references: [id])
+
+  /// Default MatchFormat for matches in this tournament. See packages/core/match.
+  defaultFormat Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  divisions Division[]
+  pools     MapPool[]
+  matches   Match[]
+  members   TournamentMember[]
+
+  @@index([ownerId])
+}
+
+model TournamentMember {
+  id           String         @id @default(cuid())
+  tournamentId String
+  tournament   Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         TournamentRole @default(VIEWER)
+
+  /// Set when role is CAPTAIN - scopes their authority to one team.
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tournamentId, userId])
+  @@index([userId])
+  @@index([teamId])
+}
+
+model Division {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  name         String
+  order        Int        @default(0)
+
+  createdAt DateTime @default(now())
+
+  teams Team[]
+
+  @@unique([tournamentId, name])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  name  String
+  /// Primary colour, used for the pool board shading the sheets did by hand.
+  color String  @default("#4F46E5")
+  colorSecondary String @default("#A5B4FC")
+  logo  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members     TeamMember[]
+  captainSeats TournamentMember[]
+  matchesAsA  Match[]      @relation("TeamA")
+  matchesAsB  Match[]      @relation("TeamB")
+  coinFlipWins Match[]     @relation("CoinFlipWinner")
+  matchWins   Match[]      @relation("MatchWinner")
+  actions     MatchAction[]
+  picks       MatchMap[]   @relation("PickedBy")
+  lineups     Lineup[]
+  attempts    MatchMapAttempt[]
+
+  @@unique([divisionId, name])
+}
+
+enum TeamRole {
+  PLAYER
+  CAPTAIN
+  COACH
+  SUB
+}
+
+model TeamMember {
+  id       String   @id @default(cuid())
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  role     TeamRole @default(PLAYER)
+  order    Int      @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, playerId])
+  @@index([playerId])
+}
+
+// ===========================================================================
+//  Map pools
+// ===========================================================================
+
+model MapPool {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  name         String
+
+  /// Where this pool came from, e.g. "beatleader:110086" - lets us re-sync.
+  sourceType String?
+  sourceRef  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  maps    PoolMap[]
+  matches Match[]
+
+  @@unique([tournamentId, name])
+}
+
+model PoolMap {
+  id     String  @id @default(cuid())
+  poolId String
+  pool   MapPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+
+  leaderboardId String
+  leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+  /// Organiser's play-style tag: "True Acc", "Acc", "Tech", "Speed", ...
+  category String?
+  /// Overrides the leaderboard label on the board, e.g. "Safe Bet (Hard)".
+  label    String?
+  /// Reserved as the tiebreaker rather than being pickable.
+  isTiebreaker Boolean @default(false)
+
+  matchMaps MatchMap[]
+  bans      MatchAction[]
+
+  @@unique([poolId, leaderboardId])
+  @@index([poolId])
+}
+
+// ===========================================================================
+//  Matches
+// ===========================================================================
+
+enum MatchState {
+  SETUP
+  PICKBAN
+  PLAYING
+  COMPLETE
+}
+
+model Match {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  poolId       String
+  pool         MapPool    @relation(fields: [poolId], references: [id])
+
+  name  String
+  state MatchState @default(SETUP)
+
+  teamAId String
+  teamA   Team   @relation("TeamA", fields: [teamAId], references: [id])
+  teamBId String
+  teamB   Team   @relation("TeamB", fields: [teamBId], references: [id])
+
+  coinFlipWinnerId String?
+  coinFlipWinner   Team?   @relation("CoinFlipWinner", fields: [coinFlipWinnerId], references: [id], onDelete: SetNull)
+
+  winnerId String?
+  winner   Team?   @relation("MatchWinner", fields: [winnerId], references: [id], onDelete: SetNull)
+
+  /// Overrides Tournament.defaultFormat when present.
+  format Json?
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actions    MatchAction[]
+  maps       MatchMap[]
+  shareLinks ShareLink[]
+
+  @@index([tournamentId])
+  @@index([poolId])
+}
+
+enum MatchActionType {
+  PICK
+  BAN
+}
+
+/// Append-only log driving the pick/ban state machine. Never updated - an
+/// organiser "undo" appends a tombstone by setting undoneAt, so the history of
+/// who did what stays intact.
+model MatchAction {
+  id      String @id @default(cuid())
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  /// Position in the format's pickBanSequence.
+  seq  Int
+  type MatchActionType
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  poolMapId String
+  poolMap   PoolMap @relation(fields: [poolMapId], references: [id], onDelete: Cascade)
+
+  /// Who clicked. Differs from onBehalfOfUser when an organiser acts for a captain.
+  actingUserId String?
+  actingUser   User?   @relation("ActingUser", fields: [actingUserId], references: [id], onDelete: SetNull)
+  onBehalfOfUserId String?
+  onBehalfOfUser   User?   @relation("OnBehalfOfUser", fields: [onBehalfOfUserId], references: [id], onDelete: SetNull)
+
+  undoneAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@unique([matchId, seq])
+  @@index([matchId])
+}
+
+model MatchMap {
+  id      String @id @default(cuid())
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  poolMapId String
+  poolMap   PoolMap @relation(fields: [poolMapId], references: [id], onDelete: Cascade)
+
+  order        Int
+  isTiebreaker Boolean @default(false)
+
+  pickedById String?
+  pickedBy   Team?   @relation("PickedBy", fields: [pickedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  lineups  Lineup[]
+  attempts MatchMapAttempt[]
+
+  @@unique([matchId, order])
+  @@index([matchId])
+}
+
+/// One team's chosen players for one map.
+model Lineup {
+  id         String   @id @default(cuid())
+  matchMapId String
+  matchMap   MatchMap @relation(fields: [matchMapId], references: [id], onDelete: Cascade)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  /// Set once the captain locks it in; blocks further edits without an override.
+  lockedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slots LineupSlot[]
+
+  @@unique([matchMapId, teamId])
+}
+
+model LineupSlot {
+  id       String @id @default(cuid())
+  lineupId String
+  lineup   Lineup @relation(fields: [lineupId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  slot     Int
+
+  @@unique([lineupId, slot])
+  @@unique([lineupId, playerId])
+}
+
+/// A single run of a map by one player. A map replayed after a technical issue
+/// produces a second attempt; the team's counted score is the best attempt per
+/// player. This replaces the spreadsheet's bolted-on "Map 0 replay" block.
+model MatchMapAttempt {
+  id         String   @id @default(cuid())
+  matchMapId String
+  matchMap   MatchMap @relation(fields: [matchMapId], references: [id], onDelete: Cascade)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId   String
+  player     Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  attempt Int @default(1)
+
+  score    Int
+  accuracy Float @default(0)
+
+  /// AUTO when matched from BeatLeader, MANUAL when an organiser typed it.
+  source            String  @default("AUTO")
+  beatLeaderScoreId Int?
+  replayUrl         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchMapId, playerId, attempt])
+  @@index([matchMapId])
+}
+
+/// Read-only public access to a match for spectators and stream overlays.
+model ShareLink {
+  id      String  @id @default(cuid())
+  token   String  @unique
+  matchId String
+  match   Match   @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  /// "spectator" | "overlay"
+  kind    String  @default("spectator")
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([matchId])
+}

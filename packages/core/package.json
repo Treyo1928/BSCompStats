@@ -1,0 +1,27 @@
+{
+  "name": "@bscs/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./beatleader": { "types": "./dist/beatleader/index.d.ts", "default": "./dist/beatleader/index.js" },
+    "./stats": { "types": "./dist/stats/index.d.ts", "default": "./dist/stats/index.js" },
+    "./match": { "types": "./dist/match/index.d.ts", "default": "./dist/match/index.js" },
+    "./optimize": { "types": "./dist/optimize/index.d.ts", "default": "./dist/optimize/index.js" }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

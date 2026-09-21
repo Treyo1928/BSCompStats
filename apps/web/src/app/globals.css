@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/*
+ * Dark by default. This gets used next to Beat Saber running full-screen and
+ * on a stream overlay, so a white page is actively unhelpful.
+ */
+@theme {
+  --color-ink: #eceef6;
+  --color-muted: #8f98b3;
+  --color-faint: #5d6580;
+  --color-surface: #0a0c13;
+  --color-panel: #12151f;
+  --color-raised: #191d2b;
+  --color-edge: #242a3c;
+  --color-accent: #8b7bff;
+  --color-accent-2: #38bdf8;
+  --color-win: #4ade80;
+  --color-lose: #f87171;
+  --color-warn: #fbbf24;
+
+  /* The two sabers. Used sparingly - the logo and nothing else. */
+  --color-saber-left: #ff4d5e;
+  --color-saber-right: #3d9bff;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background:
+    radial-gradient(60rem 28rem at 12% -8%, rgb(139 123 255 / 0.10), transparent 60%),
+    radial-gradient(50rem 24rem at 95% -10%, rgb(56 189 248 / 0.07), transparent 60%),
+    var(--color-surface);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Score grids are read by scanning columns, so numbers must line up. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+a { color: inherit; }
+
+::selection { background: rgb(139 123 255 / 0.35); }
+
+/* Thin, quiet scrollbars - the board scrolls sideways on small screens. */
+* { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
+
+/* An abandoned run: hatched, so it reads as "void" rather than "very bad". */
+.cell-void {
+  background:
+    repeating-linear-gradient(135deg, rgb(248 113 113 / 0.16) 0 6px, transparent 6px 12px),
+    rgb(127 29 29 / 0.35);
+  color: #fecaca;
+}

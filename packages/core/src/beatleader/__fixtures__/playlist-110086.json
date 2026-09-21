@@ -1,0 +1,92 @@
+{
+ "playlistTitle": "Fall 2026 Week 1 Song Pool",
+ "playlistAuthor": "BeatLeader",
+ "songs": [
+  {
+   "hash": "1de420e30b629a33bd12899c33de98157287e6aa",
+   "songName": "BREAKME",
+   "difficulties": [
+    {
+     "name": "expertPlus",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "yabje"
+  },
+  {
+   "hash": "7f60329c289bc6d4bb683ab8f52a613ed6a225c1",
+   "songName": "200cc",
+   "difficulties": [
+    {
+     "name": "easy",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "Spoekle & fqrb"
+  },
+  {
+   "hash": "0dd46bfa01acb153ef5ae357fb4968c9ed8e4595",
+   "songName": "Nasty * Nasty * Spell",
+   "difficulties": [
+    {
+     "name": "normal",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "Joshabi"
+  },
+  {
+   "hash": "2d2507a054cb9f59840b5829e08ea5456d5f2e2c",
+   "songName": "PanicPop*FESTIVAL!!!",
+   "difficulties": [
+    {
+     "name": "expert",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "Shan_Man & Nolanimations"
+  },
+  {
+   "hash": "2ce64cbfa03edeb00d1a753bfa6001ff540f6156",
+   "songName": "Body Language",
+   "difficulties": [
+    {
+     "name": "easy",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "Taddus, Kibo, Eckimlon, Oegoe"
+  },
+  {
+   "hash": "159a82ea1f36c632a1cd52d77f4a01e70051e87c",
+   "songName": "Annihilation",
+   "difficulties": [
+    {
+     "name": "expert",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "oegoe & Zokking"
+  },
+  {
+   "hash": "bf1e0637fc2528d791ed1c43ac54fe2205b9ed6b",
+   "songName": "Never Forget Evergreen",
+   "difficulties": [
+    {
+     "name": "expert",
+     "characteristic": "Standard"
+    }
+   ],
+   "levelAuthorName": "Uadyet"
+  }
+ ],
+ "image": "data:image/webp;base64,UklGRuy/GgBXRUJQVlA4WAoAAAASAAAA/wEA/wEAQU5JTQYAAAAJCAgAAABBTk1GCHgAAAAAAAAAAP8BAP8BAB4AAAJWUDgg8",
+ "customData": {
+  "syncURL": "https://api.beatleader.com/playlist/guid/5584c79eb7d6400faf0ac1104c9f4b09",
+  "owner": "76561199059725097",
+  "id": "110086",
+  "hash": "758f412846b3eb5e8536439fc7f3363b55e003bcd95906b756c2a06e2aea6fe6",
+  "shared": true
+ },
+ "playlistDescription": "For MSU Esports Beat Saber teams"
+}

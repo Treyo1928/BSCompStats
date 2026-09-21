@@ -1,0 +1,14 @@
+# Fronts the app with automatic HTTPS. Set SITE_ADDRESS to your domain in .env
+# and bring it up with:  docker compose --profile tls up -d
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Server-sent events must not be buffered, or live score updates arrive in
+	# bursts when the buffer happens to flush instead of as they happen.
+	@sse path /api/events/*
+	reverse_proxy @sse web:3000 {
+		flush_interval -1
+	}
+
+	reverse_proxy web:3000
+}

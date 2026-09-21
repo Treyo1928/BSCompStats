@@ -1,0 +1,38 @@
+{
+  "name": "bscompstats",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted Beat Saber competitive stats and match platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build --workspace @bscs/core && npm run build --workspace @bscs/db && npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspace @bscs/web",
+    "dev:worker": "npm run dev --workspace @bscs/worker",
+    "test": "npm run test --workspace @bscs/core",
+    "test:watch": "npm run test:watch --workspace @bscs/core",
+    "typecheck": "tsc -b --pretty",
+    "db:generate": "npm run generate --workspace @bscs/db",
+    "db:migrate": "npm run migrate --workspace @bscs/db",
+    "db:push": "npm run push --workspace @bscs/db",
+    "db:studio": "npm run studio --workspace @bscs/db",
+    "db:seed": "npm run seed --workspace @bscs/db",
+    "sync": "node scripts/sync-now.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "@prisma/client": true,
+    "prisma": true,
+    "@prisma/engines": true
+  }
+}
