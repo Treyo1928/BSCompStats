@@ -19,12 +19,18 @@ import { loadTrackedPairs, upsertScore } from './sync.js';
  * works when a long-lived connection has been healthy is not a refresh.
  */
 
+/** How long the global feed may go quiet before the connection is presumed dead. */
+const IDLE_MS = 120_000;
+const IDLE_CHECK_MS = 30_000;
+
 export class ScoreSocket {
   private socket: WebSocket | null = null;
   private tracked = new Map<string, { playerId: string; playerName: string }>();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private refreshTimer: NodeJS.Timeout | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
+  private lastMessageAt = 0;
   private stopped = false;
 
   /** Scores seen, matched, and written - reported on the health endpoint. */
@@ -36,6 +42,10 @@ export class ScoreSocket {
     this.refreshTimer = setInterval(() => {
       void this.refreshTracked();
     }, 60_000);
+    // A half-open connection - NAT timeout, upstream restart without a FIN -
+    // never fires onclose. The feed carries every score set anywhere, so a
+    // long silence means the connection is dead, not that nobody is playing.
+    this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
     this.connect();
   }
 
@@ -43,8 +53,29 @@ export class ScoreSocket {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.idleTimer) clearInterval(this.idleTimer);
     this.socket?.close();
     this.socket = null;
+  }
+
+  private checkIdle(): void {
+    const socket = this.socket;
+    if (!socket || !this.stats.connectedAt || this.stopped) return;
+    const silentFor = Date.now() - this.lastMessageAt;
+    if (silentFor < IDLE_MS) return;
+
+    log.warn(`live score feed silent for ${Math.round(silentFor / 1000)}s, reconnecting`);
+    // Its close may never arrive, so do not wait for it to drive the reconnect.
+    socket.onclose = null;
+    socket.onmessage = null;
+    try {
+      socket.close();
+    } catch {
+      // Already gone; that is the point.
+    }
+    this.socket = null;
+    this.stats.connectedAt = 0;
+    this.scheduleReconnect();
   }
 
   /** Rebuild the (playerId, leaderboardId) set we care about. */
@@ -83,10 +114,12 @@ export class ScoreSocket {
     socket.onopen = () => {
       this.reconnectAttempts = 0;
       this.stats.connectedAt = Date.now();
+      this.lastMessageAt = Date.now();
       log.info('live score feed connected');
     };
 
     socket.onmessage = (event) => {
+      this.lastMessageAt = Date.now();
       void this.handleMessage(event.data);
     };
 
@@ -104,15 +137,15 @@ export class ScoreSocket {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.reconnectTimer) return;
     // Exponential backoff with jitter, capped at a minute. BeatLeader is a
     // volunteer-run service and does not need us hammering it after an outage.
     const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000);
     this.reconnectAttempts++;
-    this.reconnectTimer = setTimeout(
-      () => this.connect(),
-      delay + Math.random() * 1000,
-    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay + Math.random() * 1000);
   }
 
   private async handleMessage(raw: unknown): Promise<void> {

@@ -7,6 +7,7 @@ import { ScoreSocket } from './socket.js';
 import { syncHistories } from './history.js';
 import { syncProfiles } from './profiles.js';
 import { syncScoreSaber } from './scoresaber.js';
+import { syncAttempts } from './attempts.js';
 
 /**
  * The ingestion worker.
@@ -19,32 +20,72 @@ import { syncScoreSaber } from './scoresaber.js';
 
 const socket = new ScoreSocket();
 let pollTimer: NodeJS.Timeout | null = null;
-let polling = false;
 
-async function poll(poolId?: string, reason = 'scheduled'): Promise<void> {
-  // Overlapping polls would multiply outbound API calls for no benefit.
-  if (polling) {
-    log.info('skipping poll - one is already running');
-    return;
+/**
+ * The pool sync in flight, and the one request waiting behind it. A refresh
+ * pressed while a sync runs used to be dropped with "skipping poll"; now it
+ * runs next. Two requests waiting collapse into one wide enough for both.
+ */
+let pooling: Promise<void> | null = null;
+let queued: { poolId?: string; reason: string } | null = null;
+
+async function pollPool(poolId?: string, reason = 'scheduled'): Promise<void> {
+  if (pooling) {
+    const covers = queued && (queued.poolId === undefined || queued.poolId === poolId);
+    if (!covers) queued = { poolId: queued ? undefined : poolId, reason };
+    log.info(`${reason} poll queued behind the one running`);
+    return pooling;
   }
-  polling = true;
-  const started = Date.now();
 
-  try {
-    const { checked, written } = await syncAll(poolId);
-    const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    if (checked) {
-      log.info(`${reason} poll: checked ${checked} pairs, wrote ${written} in ${seconds}s`);
+  pooling = (async () => {
+    const started = Date.now();
+    try {
+      const { checked, written } = await syncAll(poolId);
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      if (checked) {
+        log.info(`${reason} poll: checked ${checked} pairs, wrote ${written} in ${seconds}s`);
+      }
+    } catch (err) {
+      log.error('poll failed', err);
+    } finally {
+      pooling = null;
     }
+  })();
+  await pooling;
 
+  if (queued) {
+    const next = queued;
+    queued = null;
+    await pollPool(next.poolId, next.reason);
+  }
+}
+
+/**
+ * The slow syncs: profiles, ScoreSaber and history walks. Run after a
+ * scheduled poll, never a requested one, and never two at once - a first
+ * boot with history on can hold this for many minutes, and a refresh from
+ * the app must not wait behind it.
+ */
+let backgroundRunning = false;
+
+async function pollBackground(): Promise<void> {
+  if (backgroundRunning) return;
+  backgroundRunning = true;
+  try {
     const profiles = await syncProfiles();
     if (profiles) log.info(`profiles: refreshed ${profiles} players`);
 
-    // After the pool, so match-night scores are never waiting behind a backfill.
     const scoreSaber = await syncScoreSaber();
     if (scoreSaber.linked || scoreSaber.written) {
       log.info(
         `scoresaber: ${scoreSaber.linked} newly linked, ${scoreSaber.written} new scores across ${scoreSaber.synced} players`,
+      );
+    }
+
+    const attempts = await syncAttempts();
+    if (attempts.written || attempts.hidden) {
+      log.info(
+        `attempts: ${attempts.written} new runs across ${attempts.players} players, ${attempts.hidden} keep theirs private`,
       );
     }
 
@@ -53,10 +94,15 @@ async function poll(poolId?: string, reason = 'scheduled'): Promise<void> {
       log.info(`history: ${history.written} new scores across ${history.players} players`);
     }
   } catch (err) {
-    log.error('poll failed', err);
+    log.error('background sync failed', err);
   } finally {
-    polling = false;
+    backgroundRunning = false;
   }
+}
+
+async function poll(reason: string): Promise<void> {
+  await pollPool(undefined, reason);
+  await pollBackground();
 }
 
 async function main(): Promise<void> {
@@ -73,10 +119,17 @@ async function main(): Promise<void> {
     if (channel !== CHANNELS.refreshRequest) return;
     try {
       const request = JSON.parse(raw) as RefreshRequest;
+      if (request.attempts && request.playerIds?.length) {
+        log.info(`attempts requested for ${request.playerIds.length} player(s)`);
+        void syncAttempts({ playerIds: request.playerIds, force: true })
+          .then((r) => log.info(`attempts: ${r.written} new runs, ${r.hidden} private`))
+          .catch((err) => log.error('requested attempts sync failed', err));
+        return;
+      }
       log.info(`refresh requested${request.poolId ? ` for pool ${request.poolId}` : ''}`);
-      void poll(request.poolId, 'requested');
+      void pollPool(request.poolId, 'requested');
     } catch {
-      void poll(undefined, 'requested');
+      void pollPool(undefined, 'requested');
     }
   });
   log.info('listening for refresh requests');
@@ -88,9 +141,9 @@ async function main(): Promise<void> {
   }
 
   // One poll at boot so a fresh instance is populated without waiting.
-  void poll(undefined, 'startup');
+  void poll('startup');
   pollTimer = setInterval(
-    () => void poll(),
+    () => void poll('scheduled'),
     config.SCORE_POLL_INTERVAL_SECONDS * 1000,
   );
   log.info(`polling every ${config.SCORE_POLL_INTERVAL_SECONDS}s`);

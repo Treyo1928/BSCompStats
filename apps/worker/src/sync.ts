@@ -5,7 +5,7 @@ import {
   modeName,
   type BLScore,
 } from '@bscs/core/beatleader';
-import { mapLimit } from '@bscs/core';
+import { hasScoreAlteringModifier, mapLimit } from '@bscs/core';
 import { config } from './config.js';
 import { log } from './log.js';
 import { CHANNELS, publish, type ScoreUpdate } from './bus.js';
@@ -109,21 +109,33 @@ export async function loadTrackedPairs(poolId?: string): Promise<TrackedPair[]> 
  *
  * Scores only ever move up - BeatLeader reports a player's best - so a write
  * that would lower a stored score is a sign of a stale read and is ignored.
+ *
+ * A run with a score-altering modifier is not stored at all. The live socket
+ * carries every run a player posts, practice included, and a Slower Song run
+ * can out-score a clean best; once stored, "only ever move up" would then keep
+ * the real best out for good. The history and the ScoreSaber side already
+ * skip such runs, so this is the rule everywhere.
  */
 export async function upsertScore(
   playerId: string,
   leaderboardId: string,
   score: BLScore,
 ): Promise<{ written: boolean; improved: boolean }> {
+  if (hasScoreAlteringModifier(score.modifiers)) {
+    return { written: false, improved: false };
+  }
+
   const existing = await prisma.score.findUnique({
     where: { playerId_leaderboardId: { playerId, leaderboardId } },
-    select: { baseScore: true, beatLeaderScoreId: true },
+    select: { baseScore: true, beatLeaderScoreId: true, modifiers: true },
   });
 
   if (existing && existing.beatLeaderScoreId === score.id) {
     return { written: false, improved: false };
   }
-  if (existing && score.baseScore < existing.baseScore) {
+  // A modified run stored before this rule is replaced by any clean one.
+  const cleanExisting = existing && !hasScoreAlteringModifier(existing.modifiers);
+  if (cleanExisting && score.baseScore < existing.baseScore) {
     return { written: false, improved: false };
   }
 
@@ -183,7 +195,7 @@ export async function upsertScore(
       // both the socket and a poll is expected, not an error.
     });
 
-  return { written: true, improved: !existing || score.baseScore > existing.baseScore };
+  return { written: true, improved: !cleanExisting || score.baseScore > existing.baseScore };
 }
 
 /** Fetch and store one tracked pair. */

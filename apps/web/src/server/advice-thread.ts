@@ -1,7 +1,10 @@
 import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import {
+  answerOpponentCard,
   computeMatchAdvice,
+  type AnswerCardInput,
+  type AnswerCardResult,
   type MatchAdviceInput,
   type MatchAdviceResult,
 } from '@bscs/core/optimize';
@@ -86,6 +89,11 @@ function submit<T>(job: Record<string, unknown>, inline: () => T): Promise<T> {
 
 export function runMatchAdvice(input: MatchAdviceInput): Promise<MatchAdviceResult> {
   return submit({ kind: 'advice', input }, () => computeMatchAdvice(input));
+}
+
+/** The best card against one particular opponent card. */
+export function runAnswerCard(input: AnswerCardInput): Promise<AnswerCardResult> {
+  return submit({ kind: 'answer', input }, () => answerOpponentCard(input));
 }
 
 /** Cross-validate which model complexity fits these scores best. */

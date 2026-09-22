@@ -36,7 +36,7 @@ export type Objective = 'WIN_PROBABILITY' | 'EXPECTED_MARGIN';
  * all - the tiebreaker in a match you expect to win outright - is not being
  * conceded, so it is excluded rather than reported as a surrender.
  */
-function concededFrom(perMap: SimResult['perMap']): string[] {
+export function concededFrom(perMap: SimResult['perMap']): string[] {
   return Object.entries(perMap)
     .filter(([, v]) => v.winProbability < 0.2 && v.playProbability > 0.1)
     .map(([id]) => id);
@@ -63,6 +63,8 @@ export interface OptimizeInput {
   topN?: number;
   /** Safety valve on the search space. */
   maxCandidates?: number;
+  /** Maps whose lineup is already known; only the rest are chosen. */
+  pinned?: LineupMap;
 }
 
 export interface OptimizeResult {
@@ -151,6 +153,7 @@ export function optimizeLineups(input: OptimizeInput): OptimizeResult {
     input.maps,
     input.format,
     maxCandidates,
+    input.pinned,
   );
 
   // Every candidate is a combination of the same small set of per-map player
@@ -199,18 +202,13 @@ export function optimizeLineups(input: OptimizeInput): OptimizeResult {
  */
 export function optimizeLineupsTwoStage(
   setup: SimSetup,
-  input: Omit<OptimizeInput, 'samples'> & { coarseIterations?: number },
+  input: Omit<OptimizeInput, 'samples'> & { coarseIterations?: number; samples?: TwoStageSamples },
 ): OptimizeResult {
-  const coarse = drawSamples({
-    ...setup,
-    iterations: input.coarseIterations ?? 2000,
-    seed: (setup.seed ?? 1337) + 1,
-  });
+  const { coarse, fine } = input.samples ?? drawTwoStage(setup, input.coarseIterations);
 
   const firstPass = optimizeLineups({ ...input, samples: coarse });
   if (!firstPass.best) return firstPass;
 
-  const fine = drawSamples(setup);
   const shortlist = firstPass.ranked.slice(0, Math.max(input.topN ?? 5, 10));
 
   const refined: LineupCandidate[] = shortlist.map((candidate) => {
@@ -262,6 +260,8 @@ export function enumerateLineups(
   maps: readonly SimMap[],
   format: MatchFormat,
   maxCandidates = 50_000,
+  /** Maps whose group is already decided. The walk tries nothing else there. */
+  pinned: LineupMap = {},
 ): EnumerationResult {
   const k = format.playersPerMap;
   const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
@@ -299,8 +299,10 @@ export function enumerateLineups(
 
     const map = maps[index]!;
     const exempt = map.isTiebreaker && rules.tiebreakerExemptFromDuos;
+    const pin = pinned[map.id];
+    const choices = pin ? options.filter((combo) => duoKey(combo) === duoKey(pin)) : options;
 
-    for (const combo of options) {
+    for (const combo of choices) {
       const key = duoKey(combo);
 
       if (!exempt) {
@@ -372,7 +374,6 @@ export function combinations<T>(items: readonly T[], k: number): T[][] {
   return out;
 }
 
-
 // ---------------------------------------------------------------------------
 //  Public entry point
 // ---------------------------------------------------------------------------
@@ -381,6 +382,24 @@ export interface RecommendInput extends Omit<OptimizeInput, 'samples'> {
   /** Coarse pass size for ranking. */
   coarseIterations?: number;
   seed?: number;
+  /**
+   * Samples drawn once by a caller that recommends several times over the
+   * same players and maps - a best-response loop redraws nothing that way.
+   */
+  samples?: TwoStageSamples;
+}
+
+export interface TwoStageSamples {
+  coarse: ScoreSamples;
+  fine: ScoreSamples;
+}
+
+/** The coarse ranking sample and the full one, from one setup. */
+export function drawTwoStage(setup: SimSetup, coarseIterations = 2000): TwoStageSamples {
+  return {
+    coarse: drawSamples({ ...setup, iterations: coarseIterations, seed: (setup.seed ?? 1337) + 1 }),
+    fine: drawSamples(setup),
+  };
 }
 
 export interface Recommendation extends OptimizeResult {
@@ -407,7 +426,7 @@ export function recommendLineups(
   // forty thousand legal cards and took over twenty seconds. The real four-
   // player format has 432, far under this; anything bigger goes to the search.
   const exhaustiveLimit = input.maxCandidates ?? 4_000;
-  const probe = enumerateLineups(input.roster, input.maps, input.format, exhaustiveLimit);
+  const probe = enumerateLineups(input.roster, input.maps, input.format, exhaustiveLimit, input.pinned);
 
   if (!probe.truncated) {
     if (!probe.lineups.length) {
@@ -422,22 +441,14 @@ export function recommendLineups(
           'No legal lineup exists for this roster and format.',
       };
     }
-    const result = optimizeLineupsTwoStage(setup, {
-      ...input,
-      coarseIterations: input.coarseIterations ?? 2000,
-    });
+    const result = optimizeLineupsTwoStage(setup, input);
     return { ...result, strategy: 'EXHAUSTIVE' };
   }
 
   // Search on a coarse sample, then score the winner on the full one - the
   // same two stages as the exhaustive path. Searching on the full sample cost
   // five times as much to choose between lineups a coarse one already ranks.
-  const coarse = drawSamples({
-    ...setup,
-    iterations: input.coarseIterations ?? 2000,
-    seed: (setup.seed ?? 1337) + 1,
-  });
-  const fine = drawSamples(setup);
+  const { coarse, fine } = input.samples ?? drawTwoStage(setup, input.coarseIterations);
   const found = searchLineups({
     maps: input.maps,
     format: input.format,
@@ -446,6 +457,7 @@ export function recommendLineups(
     samples: coarse,
     objective: input.objective,
     seed: input.seed ?? setup.seed,
+    pinned: input.pinned,
   });
 
   if (!found.lineups) {

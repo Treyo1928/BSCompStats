@@ -72,23 +72,38 @@ describe('fail detection on the real qualifiers board', () => {
     const tight = [0.96, 0.965, 0.97, 0.975, 0.98];
     const scattered = [0.92, 0.9, 0.81, 0.71, 0.52];
 
-    // Far below the player's norm and far below a tight column: anomaly.
-    expect(detectDnf(0.71, 0.96, tight)).toBe(true);
+    // Half the player's norm and far below a tight column: anomaly.
+    expect(detectDnf(0.5, 0.96, tight)).toBe(true);
     // The same score in a column that scatters that far: a hard map.
-    expect(detectDnf(0.71, 0.96, scattered)).toBe(false);
-    // The same score from a player who lives at 75%: just their score.
-    expect(detectDnf(0.71, 0.75, tight)).toBe(false);
-    // A rough night - 88% of normal - is not an abandoned map.
+    expect(detectDnf(0.5, 0.96, scattered)).toBe(false);
+    // The same score from a player who lives at 60%: just their score.
+    expect(detectDnf(0.5, 0.6, tight)).toBe(false);
+    // A bad night - three quarters of normal, as PretzelBread's 74.5% on Hush
+    // was - is a real score, however tight the column.
+    expect(detectDnf(0.71, 0.96, tight)).toBe(false);
     expect(detectDnf(0.85, 0.97, tight)).toBe(false);
   });
 
   it('takes a bad score at face value when there is no column to judge by', () => {
-    expect(detectDnf(0.2, 0.96, [0.97, 0.98])).toBe(false);
-    expect(detectDnf(0.2, 0.96, [0.97, 0.98, 0.96])).toBe(true);
+    expect(detectDnf(0.5, 0.96, [0.97, 0.98])).toBe(false);
+    expect(detectDnf(0.5, 0.96, [0.97, 0.98, 0.96])).toBe(true);
+    // Unless it is a fraction of the player's normal - that is abandoned whatever the column.
+    expect(detectDnf(0.2, 0.96, [0.97, 0.98])).toBe(true);
+    expect(detectDnf(0.001, 0.96, [])).toBe(true);
   });
 });
 
 describe('the skill model', () => {
+  it('fits nothing without producing NaN', () => {
+    // A pool with no scores yet still renders bands and draws samples; every
+    // number the model hands out has to be finite.
+    const model = fitSkillModel([]);
+    expect(Number.isFinite(model.globalSigma)).toBe(true);
+    const p = model.predict('nobody', 'nowhere');
+    expect(Number.isFinite(p.acc)).toBe(true);
+    expect(Number.isFinite(p.sigmaLogit)).toBe(true);
+  });
+
   it('ranks players the way the board does', () => {
     const model = fitSkillModel(observations());
 

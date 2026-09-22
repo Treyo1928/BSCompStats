@@ -194,6 +194,8 @@ export interface FailModel {
   globalRate: number;
   playerRate: Record<string, number>;
   mapRate: Record<string, number>;
+  /** Runs seen on a cell, where the player's runs are known: how many, and how many did not finish. */
+  cellRuns: Record<string, { runs: number; unfinished: number }>;
   /** Probability this player fails this map. */
   probability(playerId: string, leaderboardId: string, stretch?: number): number;
 }
@@ -201,8 +203,16 @@ export interface FailModel {
 export interface FailModelInput {
   scores: readonly ScoreDetail[];
   model: SkillModel;
+  /**
+   * Runs BeatLeader recorded, for players who show them: each one a finish or
+   * not. These are real fails rather than classified anomalies, and where a
+   * cell has them they speak for it directly (see `probability`).
+   */
+  outcomes?: ReadonlyArray<{ playerId: string; leaderboardId: string; finished: boolean }>;
   /** Shrinkage strength - how many observations before a rate is trusted. */
   prior?: number;
+  /** How many of a cell's own runs it takes to outweigh the player-and-map rate. */
+  cellPrior?: number;
 }
 
 /**
@@ -220,16 +230,55 @@ export function buildFailModel(input: FailModelInput): FailModel {
   // Anomalies are rare - one in 55 on the MSU board - so a rate needs a good
   // many scores behind it before it is believed over the base rate.
   const prior = input.prior ?? 10;
+  const cellPrior = input.cellPrior ?? 3;
   const all = input.scores;
+  // The base rate is what a score on the leaderboard says about everyone; the
+  // recorded runs are known only for some players, and folding them in here
+  // would make the players who hide theirs look the safest on the board.
   const globalRate = all.length ? all.filter((s) => s.isDnf).length / all.length : 0.02;
 
-  const playerRate = shrunkRates(all, (s) => s.playerId, globalRate, prior);
-  const mapRate = shrunkRates(all, (s) => s.leaderboardId, globalRate, prior);
+  // Leaderboard scores are evidence about every player and every map alike.
+  // Recorded runs are known for some players only, so they are added to those
+  // players' own rates - one entry per map they ran, as the share of runs that
+  // died, so a map ground thirty times is one map's worth of evidence and not
+  // thirty - and never to a map's rate, where they would make everyone else
+  // on the map look riskier for one player's fails.
+  const events: WeightedFail[] = all.map((s) => ({
+    playerId: s.playerId,
+    leaderboardId: s.leaderboardId,
+    failed: s.isDnf ? 1 : 0,
+    weight: 1,
+  }));
+  const perCell = new Map<string, { playerId: string; leaderboardId: string; runs: number; unfinished: number }>();
+  for (const o of input.outcomes ?? []) {
+    const key = `${o.playerId}::${o.leaderboardId}`;
+    const cell = perCell.get(key) ?? { playerId: o.playerId, leaderboardId: o.leaderboardId, runs: 0, unfinished: 0 };
+    cell.runs++;
+    if (!o.finished) cell.unfinished++;
+    perCell.set(key, cell);
+  }
+  const playerEvents = [
+    ...events,
+    ...[...perCell.values()].map((c) => ({
+      playerId: c.playerId,
+      leaderboardId: c.leaderboardId,
+      failed: c.unfinished / c.runs,
+      weight: 1,
+    })),
+  ];
+
+  const playerRate = shrunkRates(playerEvents, (s) => s.playerId, globalRate, prior);
+  const mapRate = shrunkRates(events, (s) => s.leaderboardId, globalRate, prior);
+
+  const cellRuns: FailModel['cellRuns'] = Object.fromEntries(
+    [...perCell.entries()].map(([key, c]) => [key, { runs: c.runs, unfinished: c.unfinished }]),
+  );
 
   return {
     globalRate,
     playerRate,
     mapRate,
+    cellRuns,
     probability(playerId, leaderboardId, stretch) {
       const p = playerRate[playerId] ?? globalRate;
       const m = mapRate[leaderboardId] ?? globalRate;
@@ -254,23 +303,40 @@ export function buildFailModel(input: FailModelInput): FailModel {
       // this is a prior with no data behind it, so it is not allowed to run.
       combined *= Math.pow(2, Math.min(gap, 1.5));
 
+      // Where the player's own runs on this map are known, they speak for it:
+      // three runs that all died say more than any rate crossed with any
+      // stretch, and someone who has cleared it every time is not a risk
+      // because the map is hard for everyone else.
+      const cell = cellRuns[`${playerId}::${leaderboardId}`];
+      if (cell) {
+        combined = (cell.unfinished + cellPrior * combined) / (cell.runs + cellPrior);
+      }
+
       return Math.min(0.9, Math.max(0, combined));
     },
   };
 }
 
-function shrunkRates<T extends ScoreDetail>(
-  scores: readonly T[],
-  key: (s: T) => string,
+interface WeightedFail {
+  playerId: string;
+  leaderboardId: string;
+  /** 0..1: how much of this entry was a fail. */
+  failed: number;
+  weight: number;
+}
+
+function shrunkRates(
+  events: readonly WeightedFail[],
+  key: (s: WeightedFail) => string,
   globalRate: number,
   prior: number,
 ): Record<string, number> {
   const counts = new Map<string, { n: number; fails: number }>();
-  for (const s of scores) {
+  for (const s of events) {
     const k = key(s);
     const entry = counts.get(k) ?? { n: 0, fails: 0 };
-    entry.n++;
-    if (s.isDnf) entry.fails++;
+    entry.n += s.weight;
+    entry.fails += s.weight * s.failed;
     counts.set(k, entry);
   }
 

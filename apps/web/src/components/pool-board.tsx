@@ -80,7 +80,7 @@ export function PoolBoardTable({
       <table className="w-full min-w-[640px] border-separate border-spacing-0 text-sm sm:min-w-[760px]">
         <thead>
           <tr>
-            <th className="sticky left-0 z-20 w-28 bg-panel px-2 pb-3 pt-4 text-left sm:w-44 sm:px-4 align-bottom text-[10px] font-medium uppercase tracking-wider text-faint">
+            <th className="sticky left-0 z-20 w-28 bg-panel px-2 pb-3 pt-4 text-left align-bottom text-[10px] font-medium uppercase tracking-wider text-faint sm:w-44 sm:px-4">
               Player
             </th>
             {board.maps.map((map) => (
@@ -189,7 +189,7 @@ export function PoolBoardTable({
 
         <tfoot>
           <tr>
-            <th className="sticky left-0 z-10 border-t border-edge bg-panel px-2 py-2.5 text-left sm:px-4 text-[10px] font-medium uppercase tracking-wider text-faint">
+            <th className="sticky left-0 z-10 border-t border-edge bg-panel px-2 py-2.5 text-left text-[10px] font-medium uppercase tracking-wider text-faint sm:px-4">
               Field average
             </th>
             {board.maps.map((map) => (
@@ -254,12 +254,26 @@ function Cell({
   range?: { min: number; max: number };
   showPredictions: boolean;
 }) {
+  // Tried, never cleared, and no run hit ten notes: nothing of theirs to show,
+  // so the prediction sits in the middle as on any unplayed map, and the
+  // tries are a mark in the corner. A reviewer reads the number, not a hover.
+  const triesOnly = cell.acc == null && cell.runs != null && cell.runs.fails + cell.runs.falseStarts > 0;
+  const tries = triesOnly ? cell.runs!.fails + cell.runs!.falseStarts : 0;
+
   // No score: show what the model expects, clearly marked as an estimate so it
   // is never mistaken for something somebody actually played.
   if (cell.acc == null) {
+    const triesNote = triesOnly
+      ? ` They have tried it ${tries} ${tries === 1 ? 'time' : 'times'} without hitting ten notes: ${cell.runs!.fails} ${cell.runs!.fails === 1 ? 'fail' : 'fails'}, ${cell.runs!.falseStarts} ${cell.runs!.falseStarts === 1 ? 'false start' : 'false starts'}.`
+      : '';
     return (
-      <td className="p-[3px] text-center align-middle">
-        <div className="flex h-[42px] items-center justify-center rounded-md border border-dashed border-edge">
+      <td className="p-[3px] text-center align-middle" title={triesOnly && !showPredictions ? triesNote.trim() : undefined}>
+        <div className="relative flex h-[42px] items-center justify-center rounded-md border border-dashed border-edge">
+          {triesOnly && (
+            <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300/90" aria-label={`${tries} tries, none hit ten notes`}>
+              ✗{tries}
+            </span>
+          )}
           {showPredictions ? (
             cell.isEstimate ? (
               <span
@@ -271,7 +285,7 @@ function Cell({
             ) : (
               <span
                 className="text-xs italic text-faint"
-                title={`Predicted - no score recorded here. Likely between ${pct(cell.predictedLow, 0)} and ${pct(cell.predictedHigh, 0)}; the fewer comparable maps they have played, the wider that is. Someone who knows better can set their own estimate below the board.`}
+                title={`Predicted - no score recorded here. Likely between ${pct(cell.predictedLow, 0)} and ${pct(cell.predictedHigh, 0)}; the fewer comparable maps they have played, the wider that is.${cell.cappedBy ? ' Held down by their real score on an easier map: they cannot be expected to do better here than that implies.' : ''}${triesNote} Someone who knows better can set their own estimate below the board.`}
               >
                 ~{pct(cell.predictedAcc, 1)}
               </span>
@@ -290,7 +304,14 @@ function Cell({
   const inner = (
     <span className="relative flex h-[42px] flex-col items-center justify-center leading-tight">
       <span className="text-[13px] font-semibold tabular">{pct(cell.acc)}</span>
-      <span className="text-[10px] tabular opacity-75">{num(cell.score ?? 0)}</span>
+      <span className="text-[10px] tabular opacity-75">
+        {cell.isRun ? `≈${num(cell.projectedScore ?? 0)}` : num(cell.score ?? 0)}
+      </span>
+      {cell.isRun && (
+        <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300" aria-label="Best run, never cleared">
+          ✗
+        </span>
+      )}
       {cell.rank === 1 && !cell.isDnf && (
         <span className="absolute right-1 top-0.5 text-[9px] opacity-80" aria-label="Best on this map">
           ★
@@ -306,6 +327,14 @@ function Cell({
           FC
         </span>
       )}
+      {cell.runs && cell.runs.total > 1 && (
+        <span
+          className="absolute bottom-0.5 left-1 text-[8px] font-bold tracking-wide opacity-70"
+          aria-label={`${cell.runs.total} runs recorded`}
+        >
+          ↻{cell.runs.total}
+        </span>
+      )}
     </span>
   );
 
@@ -314,11 +343,18 @@ function Cell({
       className="p-[3px] text-center align-middle"
       title={
         [
+          cell.isRun && cell.runs?.bestTry
+            ? `Never cleared. Their longest run was scoring ${pct(cell.runs.bestTry.acc)} over ${cell.runs.bestTry.notesHit} notes when it ended ${Math.round(cell.runs.bestTry.seconds)} s in (${Math.round(cell.runs.bestTry.progress * 100)}% of the song) - about ${num(cell.projectedScore ?? 0)} over the whole map. That is their score here, and what predictions rest on, until they clear it.`
+            : null,
           cell.rank ? `#${cell.rank} in this pool` : null,
           cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
           cell.isDnf
             ? 'Abandoned or anomalous run - far below this player’s normal and everyone else on this map. Not counted.'
+            : null,
+          cell.runs && cell.runs.total > 0
+            ? `${cell.runs.total} ${cell.runs.total === 1 ? 'run' : 'runs'} recorded: ${cell.runs.finished} cleared, ${cell.runs.fails} failed` +
+              (cell.runs.falseStarts ? `, ${cell.runs.falseStarts} false starts` : '')
             : null,
         ]
           .filter(Boolean)
@@ -326,7 +362,7 @@ function Cell({
       }
     >
       <div
-        className={`rounded-md transition hover:brightness-125 ${cell.isDnf ? 'cell-void' : ''}`}
+        className={`rounded-md transition hover:brightness-125 ${cell.isDnf ? 'cell-void' : ''} ${cell.isRun ? 'outline outline-1 outline-dashed outline-white/25' : ''}`}
         style={cell.isDnf ? undefined : heat(t)}
       >
         {cell.replayUrl ? (

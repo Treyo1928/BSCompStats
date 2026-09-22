@@ -67,7 +67,8 @@ export default async function StatsPage({
 
   const stats = await buildTournamentStats(tournament.id, query.view, query.src);
   const by: RankKey = stats.rankKeys.find((key) => key === query.by) ?? OVERALL;
-  const shown = stats.teams.filter((t) => !query.team || t.teamId === query.team);
+  // With no team picked, the tournament's own. A match-only side is shown when it is asked for by name.
+  const shown = stats.teams.filter((t) => (query.team ? t.teamId === query.team : !t.adHoc));
   const group = stats.playersPerMap === 2 ? 'duo' : 'group';
 
   // Every control is a link that changes one thing and keeps the rest.
@@ -131,11 +132,24 @@ export default async function StatsPage({
             <Pill href={href({ team: null })} active={!query.team}>
               All
             </Pill>
-            {stats.teams.map((t) => (
-              <Pill key={t.teamId} href={href({ team: t.teamId })} active={t.teamId === query.team} color={t.color}>
-                {t.name}
-              </Pill>
-            ))}
+            {stats.teams
+              .filter((t) => !t.adHoc)
+              .map((t) => (
+                <Pill key={t.teamId} href={href({ team: t.teamId })} active={t.teamId === query.team} color={t.color}>
+                  {t.name}
+                </Pill>
+              ))}
+          </Pills>
+        )}
+        {stats.teams.some((t) => t.adHoc) && (
+          <Pills label="Match-only">
+            {stats.teams
+              .filter((t) => t.adHoc)
+              .map((t) => (
+                <Pill key={t.teamId} href={href({ team: t.teamId })} active={t.teamId === query.team} color={t.color}>
+                  {t.name}
+                </Pill>
+              ))}
           </Pills>
         )}
       </div>
@@ -222,6 +236,8 @@ export default async function StatsPage({
           )}
         </Panel>
       ))}
+
+      <RunsVisibilityPanel slug={slug} tournamentId={tournament.id} />
 
       <p className="text-xs text-faint">
         A rank here is a rank by the number beside it: the average gap to teammates, in accuracy points,
@@ -523,5 +539,75 @@ function RankTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Who shows their runs on BeatLeader. The leaderboard keeps a best clear per
+ * map; the fails, restarts and quits behind it are served only for players
+ * with "Show my stats publicly" on. This is the one place to see who does,
+ * so a captain knows whose bad maps the board can and cannot see.
+ */
+async function RunsVisibilityPanel({ slug, tournamentId }: { slug: string; tournamentId: string }) {
+  const members = await prisma.teamMember.findMany({
+    where: { team: { division: { tournamentId }, adHoc: false } },
+    select: {
+      team: { select: { id: true, name: true } },
+      player: { select: { id: true, name: true, avatar: true, attemptsPublic: true, attemptsSyncedAt: true } },
+    },
+    orderBy: [{ team: { name: 'asc' } }, { player: { name: 'asc' } }],
+  });
+  if (members.length === 0) return null;
+  const seen = new Set<string>();
+  const players = members.filter((m) => !seen.has(m.player.id) && seen.add(m.player.id));
+  const groups: Array<{ key: boolean | null; title: string; note: string }> = [
+    { key: true, title: 'Runs public', note: 'every fail, restart and quit on the pool maps is on the board and in the predictions' },
+    { key: false, title: 'Runs private', note: 'only their clears are known; a map they have tried and never finished looks unplayed' },
+    { key: null, title: 'Not asked yet', note: 'the worker asks within a few minutes of a player joining a roster' },
+  ];
+  return (
+    <section id="runs" className="scroll-mt-20">
+      <Panel
+        title="Recorded runs on BeatLeader"
+        subtitle="Who shows the runs behind their scores. It is a switch in each player's own BeatLeader profile settings: Show my stats publicly."
+      >
+        <div className="grid gap-4 sm:grid-cols-3">
+          {groups.map((g) => {
+            const list = players.filter((m) => m.player.attemptsPublic === g.key);
+            return (
+              <div key={String(g.key)}>
+                <p className="text-[10px] font-medium uppercase tracking-wider text-faint">
+                  {g.title} <span className="text-muted">· {list.length}</span>
+                </p>
+                <p className="mt-0.5 text-xs text-faint">{g.note}</p>
+                {list.length === 0 ? (
+                  <p className="mt-2 text-xs text-faint">nobody</p>
+                ) : (
+                  <ul className="mt-2 space-y-1">
+                    {list.map((m) => (
+                      <li key={m.player.id}>
+                        <Link
+                          href={`/t/${slug}/stats/${m.player.id}?team=${m.team.id}`}
+                          className="inline-flex items-center gap-2 text-sm hover:underline"
+                        >
+                          <Avatar src={m.player.avatar} name={m.player.name} size={20} />
+                          <span>{m.player.name}</span>
+                          <span className="text-xs text-faint">{m.team.name}</span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-3 text-xs text-faint">
+          Signing in here does not unlock anyone&apos;s runs: BeatLeader answers that request from its own
+          session only. Once a player flips the switch, their runs are pulled within two hours, or at once
+          from the button on their page.
+        </p>
+      </Panel>
+    </section>
   );
 }

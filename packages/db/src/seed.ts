@@ -231,17 +231,19 @@ async function main(): Promise<void> {
       update: { maxScore: n('maxScore'), stars: n('stars') },
     });
 
+    // Once, not in both branches: both are evaluated when the argument is built.
+    const position = order++;
     await prisma.poolMap.upsert({
       where: { poolId_leaderboardId: { poolId: pool.id, leaderboardId: entry.id } },
       create: {
         poolId: pool.id,
         leaderboardId: entry.id,
-        order: order++,
+        order: position,
         category: entry.category,
         // Girls' Night was the decider in the real scrim.
         isTiebreaker: entry.id === '3cafbxx91',
       },
-      update: { category: entry.category, order: order++ },
+      update: { category: entry.category, order: position },
     });
 
     console.log(`  map: ${song.name} [${d.difficultyName}] max ${n('maxScore').toLocaleString()} — ${entry.category}`);

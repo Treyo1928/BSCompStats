@@ -138,6 +138,14 @@ model Player {
   /// Someone chose to unlink. Stops the automatic lookup putting it straight back.
   ssOptOut          Boolean   @default(false)
 
+  // BeatLeader records every run the mod uploads - fails, restarts and quits
+  // included - but serves them only where the player has turned on "show my
+  // stats publicly". Null until asked; false is re-asked daily, since the
+  // setting is theirs to flip.
+  attemptsPublic    Boolean?
+  attemptsCheckedAt DateTime?
+  attemptsSyncedAt  DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -148,6 +156,7 @@ model Player {
   attempts     MatchMapAttempt[]
   draftSpots   DraftPlayer[]
   scoreSaberScores ScoreSaberScore[]
+  runs         Attempt[]
   profile      PlayerProfile?
 
   @@index([userId])
@@ -260,6 +269,7 @@ model Leaderboard {
   scores      Score[]
   scoreEvents ScoreEvent[]
   poolMaps    PoolMap[]
+  runs        Attempt[]
 
   @@unique([mapId, difficultyValue, mode])
   @@index([mapId])
@@ -313,6 +323,51 @@ model Score {
   @@unique([playerId, leaderboardId])
   @@index([leaderboardId])
   @@index([playerId])
+}
+
+/// How a recorded run ended, as BeatLeader classifies it.
+enum AttemptEnd {
+  UNKNOWN
+  CLEAR
+  FAIL
+  RESTART
+  QUIT
+  PRACTICE
+}
+
+/// One run BeatLeader recorded, whether or not it finished. A Score is the
+/// player's best clear on a map; this is every run behind it - the fails,
+/// restarts and quits the leaderboard never shows, and the earlier clears.
+/// Only players who show their stats publicly on BeatLeader have any.
+model Attempt {
+  id String @id @default(cuid())
+
+  playerId      String
+  player        Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  leaderboardId String
+  leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
+
+  /// BeatLeader's own id for the record.
+  beatLeaderAttemptId Int @unique
+
+  endType AttemptEnd
+  /// Seconds into the song when the run ended. A clear runs the full length.
+  time     Float
+  /// Accuracy up to that point, 0..1.
+  accuracy Float
+  baseScore Int
+  modifiers String @default("")
+  missedNotes Int @default(0)
+  badCuts     Int @default(0)
+  /// BeatLeader keeps the replay for a failed run too.
+  replayUrl String?
+
+  /// Unix seconds.
+  timeset   Int
+  fetchedAt DateTime @default(now())
+
+  @@index([playerId, leaderboardId])
+  @@index([leaderboardId])
 }
 
 /// A player's best on one ScoreSaber leaderboard. Kept apart from Score, which

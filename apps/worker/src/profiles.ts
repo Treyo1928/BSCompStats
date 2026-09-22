@@ -17,12 +17,13 @@ export async function syncProfiles(): Promise<number> {
   const stale = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const players = await prisma.player.findMany({
     where: {
+      // A player with no picture on BeatLeader is not re-fetched every poll:
+      // never-synced covers the first look, stale the daily one.
       OR: [
         { lastSyncedAt: null },
         { lastSyncedAt: { lt: stale } },
-        { avatar: null },
         // Ranked, but synced before the skill triangle was kept: fetch it now rather than tomorrow.
-        { pp: { gt: 0 }, accPp: 0, techPp: 0, passPp: 0 },
+        { pp: { gt: 0 }, accPp: 0, techPp: 0, passPp: 0, lastSyncedAt: { lt: new Date(Date.now() - 60 * 60 * 1000) } },
       ],
     },
     select: { id: true, beatLeaderId: true },
@@ -33,7 +34,12 @@ export async function syncProfiles(): Promise<number> {
   for (const player of players) {
     try {
       const profile = await client.getPlayer(player.beatLeaderId);
-      if (!profile) continue;
+      if (!profile) {
+        // Gone from BeatLeader (deleted or banned). Still a sync, or this row
+        // sits at the front of the queue for ever, costing a request a poll.
+        await prisma.player.update({ where: { id: player.id }, data: { lastSyncedAt: new Date() } });
+        continue;
+      }
       await prisma.player.update({
         where: { id: player.id },
         data: {

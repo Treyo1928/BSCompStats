@@ -6,6 +6,7 @@ import {
   resolvePlaylistEntries,
   type ResolvedMap,
 } from '@bscs/core/beatleader';
+import { ScoreSaberClient } from '@bscs/core/scoresaber';
 import { env } from '@/lib/env';
 import { fetchPublicJson } from './safe-fetch';
 
@@ -13,6 +14,9 @@ export const beatLeader = new BeatLeaderClient({
   baseUrl: env.BEATLEADER_API_URL,
   concurrency: 4,
 });
+
+/** One client, so the gap between ScoreSaber requests holds across actions rather than per call. */
+export const scoreSaber = new ScoreSaberClient();
 
 export interface ImportResult {
   poolId: string;
@@ -115,6 +119,8 @@ export async function importPool(options: {
 
   let order = 0;
   for (const item of resolved) {
+    // Once, not in both branches: both are evaluated when the argument is built.
+    const position = order++;
     await prisma.poolMap.upsert({
       where: {
         poolId_leaderboardId: { poolId: pool.id, leaderboardId: item.leaderboard.id },
@@ -122,9 +128,9 @@ export async function importPool(options: {
       create: {
         poolId: pool.id,
         leaderboardId: item.leaderboard.id,
-        order: order++,
+        order: position,
       },
-      update: { order: order++ },
+      update: { order: position },
     });
   }
 

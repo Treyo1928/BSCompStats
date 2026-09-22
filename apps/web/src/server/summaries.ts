@@ -1,8 +1,10 @@
 import { cache } from 'react';
 import { prisma } from '@bscs/db';
 import { nextDraftSlot, parseDraftSettings } from '@bscs/core/match';
+import { classifyFails } from '@bscs/core/stats';
 import { tallyMaps } from './match-summary';
 import { buildTournamentStats, OVERALL } from './player-stats';
+import { loadScores } from './score-sources';
 
 /**
  * What a page says about itself in a link preview.
@@ -36,7 +38,7 @@ export const getTournamentSummary = cache(async (slug: string) => {
               id: true,
               name: true,
               color: true,
-              members: { orderBy: { order: 'asc' }, select: { role: true, player: { select: { name: true } } } },
+              members: { orderBy: { order: 'asc' }, select: { role: true, player: { select: { id: true, name: true } } } },
             },
           },
         },
@@ -60,7 +62,7 @@ export const getTournamentSummary = cache(async (slug: string) => {
   if (!t || !t.isPublic) return null;
 
   const teams = t.divisions.flatMap((d) => d.teams);
-  const players = new Set(teams.flatMap((team) => team.members.map((m) => m.player.name))).size;
+  const players = new Set(teams.flatMap((team) => team.members.map((m) => m.player.id))).size;
   const live = t.matches.filter((m) => m.state !== 'COMPLETE');
   const finished = t.matches.filter((m) => m.state === 'COMPLETE');
 
@@ -118,16 +120,19 @@ export const getPoolSummary = cache(async (slug: string, poolId: string) => {
   const teamOf = new Map(members.map((m) => [m.player.id, m.team]));
   const nameOf = new Map(members.map((m) => [m.player.id, m.player.name]));
 
-  const scores = await prisma.score.findMany({
-    where: {
-      playerId: { in: [...nameOf.keys()] },
-      leaderboardId: { in: pool.maps.map((m) => m.leaderboardId) },
-    },
-    select: { playerId: true, accuracy: true },
+  // Through score-sources like the board, so a ScoreSaber-only leader is a
+  // leader here too; and with abandoned runs set aside the way the board does.
+  const scores = await loadScores([...nameOf.keys()], {
+    source: 'both',
+    leaderboardIds: pool.maps.map((m) => m.leaderboardId),
   });
+  const fails = classifyFails(scores.map((s) => ({ playerId: s.playerId, leaderboardId: s.leaderboardId, acc: s.accuracy })));
 
   const byPlayer = new Map<string, number[]>();
-  for (const s of scores) byPlayer.set(s.playerId, [...(byPlayer.get(s.playerId) ?? []), s.accuracy]);
+  scores.forEach((s, i) => {
+    if (fails[i]) return;
+    byPlayer.set(s.playerId, [...(byPlayer.get(s.playerId) ?? []), s.accuracy]);
+  });
 
   // Only people who have played most of the pool: one 99% on the easy map is
   // not the top of a leaderboard.

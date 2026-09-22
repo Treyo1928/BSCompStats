@@ -304,18 +304,18 @@ export default async function DraftPage({
                 return (
                   <li key={player.id} className="flex items-center gap-3 px-4 py-2">
                     <PlayerLink playerId={player.id} name={player.name} className="flex min-w-0 flex-1 items-center gap-3">
-                    <Avatar src={player.avatar} name={player.name} size={34} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium hover:underline">{player.name}</span>
-                      <span className="block truncate text-xs text-faint">
-                        {[
-                          profile?.meanAcc ? `${pct(profile.meanAcc)} avg` : 'no scores yet',
-                          player.pp > 0 ? `${Math.round(player.pp).toLocaleString('en-US')}pp` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
+                      <Avatar src={player.avatar} name={player.name} size={34} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium hover:underline">{player.name}</span>
+                        <span className="block truncate text-xs text-faint">
+                          {[
+                            profile?.meanAcc ? `${pct(profile.meanAcc)} avg` : 'no scores yet',
+                            player.pp > 0 ? `${Math.round(player.pp).toLocaleString('en-US')}pp` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
                       </span>
-                    </span>
                     </PlayerLink>
                     {canPick && onTheClock && (
                       <form action={draftPick}>

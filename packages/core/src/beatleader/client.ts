@@ -4,6 +4,7 @@ import type {
   BLScore,
   BLSong,
   BPList,
+  BLAttempt,
 } from './types.js';
 import { normalizeHash } from './ids.js';
 import { createLimiter, sleep } from '../util/limit.js';
@@ -78,11 +79,13 @@ export class BeatLeaderClient {
           if (attempt === this.maxRetries) {
             throw new BeatLeaderError(`HTTP ${res.status}`, res.status, url);
           }
-          // Honour Retry-After when the server sends one.
+          // Honour Retry-After when the server sends one, within reason: this
+          // holds a concurrency slot, and an hour's wait would stall every
+          // outbound call behind it.
           const retryAfter = Number(res.headers.get('retry-after'));
           await sleep(
             Number.isFinite(retryAfter) && retryAfter > 0
-              ? retryAfter * 1000
+              ? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
               : backoffMs(attempt),
           );
           continue;
@@ -131,6 +134,27 @@ export class BeatLeaderClient {
       `/score/${encodeURIComponent(playerId)}/${normalizeHash(hash)}/` +
         `${encodeURIComponent(difficultyName)}/${encodeURIComponent(modeName)}`,
     );
+  }
+
+  /**
+   * Every run a player has uploaded on one map, or `'private'` where they have
+   * not turned on "show my stats publicly". 401 is the answer there, and it is
+   * an ordinary one: most players have not. A map they have never started
+   * comes back as an empty list.
+   */
+  async getPlayerMapAttempts(
+    playerId: string,
+    leaderboardId: string,
+  ): Promise<BLAttempt[] | 'private'> {
+    try {
+      const attempts = await this.get<BLAttempt[]>(
+        `/map/scorestats?playerId=${encodeURIComponent(playerId)}&leaderboardId=${encodeURIComponent(leaderboardId)}`,
+      );
+      return attempts ?? [];
+    } catch (err) {
+      if (err instanceof BeatLeaderError && (err.status === 401 || err.status === 403)) return 'private';
+      throw err;
+    }
   }
 
   async getPlayer(playerId: string): Promise<BLPlayer | null> {
@@ -193,6 +217,9 @@ export class BeatLeaderClient {
     return rest as BPList;
   }
 }
+
+/** The longest a Retry-After is obeyed for. Past this the request fails and the caller decides. */
+const MAX_RETRY_AFTER_MS = 30_000;
 
 function backoffMs(attempt: number): number {
   // 500ms, 1s, 2s, 4s ... with jitter so a burst of workers does not resynchronise.

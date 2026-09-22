@@ -97,14 +97,27 @@ export function computeAcc(score: RawScore, maxScore: number): number | null {
  * Sentiment is nearly 6 deviations below a very tight column, and is simply
  * what Kaiden scores.
  *
+ * "Far below" means far. The floor used to be 85% of the player's median,
+ * and on the fall 2026 board that wrote off PretzelBread's 74.5% on Hush and
+ * 70.4% on Pedi (median 89%) as abandoned when they are simply what he gets
+ * on those maps - the kind of score that is a very real possibility in a
+ * match and had never been predicted. An abandoned run is dramatic: zolism's
+ * 0.08% on Pedi and 0.01% on buggin', Alex's 20% on Madeleine. So the floor
+ * is 60%, and below `outrightFloor` (35% of the player's median) a run is an
+ * anomaly whatever the column says - nobody's real level is a third of their
+ * normal, and a 0.01% on a map two people have played would otherwise stand
+ * for want of a column to judge it by.
+ *
  * With fewer than `minColumnOthers` other scores there is no column to judge
- * against, and the score is taken at face value. A bad score is a real score
- * until there is evidence otherwise; the model's robust fitting still stops it
- * bending anyone else's numbers in the meantime.
+ * against, and a score above the outright floor is taken at face value. A
+ * bad score is a real score until there is evidence otherwise; the model's
+ * robust fitting still stops it bending anyone else's numbers in the meantime.
  */
 export interface DnfOptions {
   /** Fraction of the player's own median accuracy below which a run is suspect. */
   relativeFloor?: number;
+  /** Fraction of the player's own median below which a run is an anomaly outright, column or no column. */
+  outrightFloor?: number;
   /** Robust deviations below the rest of the map's column before it is an anomaly. */
   columnDeviations?: number;
   /** Other players' scores needed on the map before the column can be judged. */
@@ -114,7 +127,8 @@ export interface DnfOptions {
 }
 
 const DNF_DEFAULTS: Required<DnfOptions> = {
-  relativeFloor: 0.85,
+  relativeFloor: 0.6,
+  outrightFloor: 0.35,
   columnDeviations: 4,
   minColumnOthers: 3,
   columnSpreadFloor: 0.1,
@@ -140,6 +154,7 @@ export function detectDnf(
   const opts = { ...DNF_DEFAULTS, ...options };
 
   if (playerMedianAcc == null || playerMedianAcc <= 0) return false;
+  if (acc < playerMedianAcc * opts.outrightFloor) return true;
   if (acc >= playerMedianAcc * opts.relativeFloor) return false;
   if (otherAccsOnMap.length < opts.minColumnOthers) return false;
 

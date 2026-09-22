@@ -9,6 +9,7 @@ import {
   Empty,
   Button,
   Badge,
+  FormError,
   inputClass,
   AvatarStack,
   DifficultyChip,
@@ -38,6 +39,7 @@ import {
   reopenMatch,
 } from '@/server/match-actions';
 import { LineupEditor } from '@/components/lineup-editor';
+import { AnswerCard } from '@/components/answer-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,10 +69,10 @@ export default async function MatchPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; matchId: string }>;
-  searchParams: Promise<{ as?: string }>;
+  searchParams: Promise<{ as?: string; error?: string }>;
 }) {
   const { slug, matchId } = await params;
-  const { as: requestedSide } = await searchParams;
+  const { as: requestedSide, error: formError } = await searchParams;
 
   const match = await loadMatch(matchId);
   if (!match || match.tournament.slug !== slug) notFound();
@@ -188,6 +190,9 @@ export default async function MatchPage({
           </>
         }
       />
+
+      {/* Score and replay actions report back here; without this the page just reloaded and the message was lost. */}
+      <FormError message={formError} />
 
       {/* Scoreboard */}
       <section
@@ -358,9 +363,9 @@ export default async function MatchPage({
                               <span className="w-14 shrink-0 text-right">
                                 <span
                                   className="block text-base font-semibold tabular"
-                                  style={{ color: chanceColor(value.expected) }}
+                                  style={{ color: chanceColor(value.likely) }}
                                 >
-                                  {pct(value.expected, 0)}
+                                  {pct(value.likely, 0)}
                                 </span>
                                 <span className="block text-[9px] uppercase tracking-wider text-faint">
                                   {rank === 0
@@ -512,8 +517,14 @@ export default async function MatchPage({
                           <LineupEditor
                             // Keyed on the saved lineup too: the editor keeps its own
                             // selection, and must drop it when someone else saves or
-                            // an undo clears the map.
-                            key={`${team.id}:${(planned.lineups[team.id] ?? []).join(',')}`}
+                            // an undo clears the map. Only what this viewer may see
+                            // goes in the key - it is serialised to the client, so
+                            // the raw lineup here would hand the hidden card over.
+                            key={`${team.id}:${
+                              canSeeLineup(team.id)
+                                ? (planned.lineups[team.id] ?? []).join(',')
+                                : `hidden:${(planned.lineups[team.id] ?? []).length}`
+                            }`}
                             matchId={match.id}
                             matchMapId={planned.matchMapId}
                             team={team}
@@ -693,7 +704,7 @@ export default async function MatchPage({
 
           <Panel
             title="Win chance by map"
-            subtitle={`From ${myTeam.name}'s side, averaged over every lineup either team could field`}
+            subtitle={`From ${myTeam.name}'s side, with each team fielding its strongest lineup for that map`}
             actions={
               <div className="flex items-center gap-1 text-xs">
                 {[match.teamA, match.teamB].map((team) => (
@@ -724,7 +735,7 @@ export default async function MatchPage({
             ) : (
               <ul className="space-y-2.5 text-sm">
                 {[...advice.mapValues]
-                  .sort((a, b) => b.expected - a.expected)
+                  .sort((a, b) => b.likely - a.likely)
                   .map((value) => {
                     const map = match.pool.maps.find((m) => m.poolMapId === value.mapId);
                     const used = usedPoolMapIds.has(value.mapId);
@@ -740,14 +751,14 @@ export default async function MatchPage({
                             <span className="truncate">{map?.name ?? value.mapId}</span>
                             <span
                               className="shrink-0 font-semibold tabular"
-                              style={{ color: chanceColor(value.expected) }}
+                              style={{ color: chanceColor(value.likely) }}
                             >
-                              {pct(value.expected, 0)}
+                              {pct(value.likely, 0)}
                             </span>
                           </span>
                           <Meter
-                            value={value.expected}
-                            color={chanceColor(value.expected)}
+                            value={value.likely}
+                            color={chanceColor(value.likely)}
                             className="mt-1"
                           />
                         </span>
@@ -777,6 +788,25 @@ export default async function MatchPage({
             </Panel>
           )}
 
+          {!match.pending && match.plannedMaps.length > 0 && (
+            <AnswerCard
+              matchId={match.id}
+              us={myTeam}
+              them={myTeamId === match.teamA.id ? match.teamB : match.teamA}
+              playersPerMap={match.format.playersPerMap}
+              maps={match.plannedMaps.map((pm) => {
+                const theirId = myTeamId === match.teamA.id ? match.teamB.id : match.teamA.id;
+                const known = canSeeLineup(theirId) ? (pm.lineups[theirId] ?? []) : [];
+                return {
+                  poolMapId: pm.poolMapId,
+                  name: pm.map.name,
+                  isTiebreaker: pm.isTiebreaker,
+                  known: known.length === match.format.playersPerMap ? known : undefined,
+                };
+              })}
+            />
+          )}
+
           {advice.lineupsInfeasible && (
             <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
               <p className="text-sm text-amber-300">No legal lineup is possible.</p>
@@ -785,13 +815,17 @@ export default async function MatchPage({
           )}
 
           {(advice.lineups.winProbability || advice.lineups.expectedMargin) && (
-            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
+            <Panel
+              title="Lineup strategy"
+              subtitle={`For ${myTeam.name}, assuming the other captain answers your card with their best`}
+            >
               <div className="space-y-4 text-sm">
                 {advice.lineups.winProbability && (
                   <Strategy
                     label="Maximise win chance"
                     result={advice.lineups.winProbability}
                     match={match}
+                    myTeamId={myTeamId}
                     highlight
                   />
                 )}
@@ -800,6 +834,7 @@ export default async function MatchPage({
                     label="Maximise total score"
                     result={advice.lineups.expectedMargin}
                     match={match}
+                    myTeamId={myTeamId}
                   />
                 )}
                 {advice.lineups.winProbability &&
@@ -886,6 +921,7 @@ function Strategy({
   label,
   result,
   match,
+  myTeamId,
   highlight = false,
 }: {
   label: string;
@@ -894,33 +930,75 @@ function Strategy({
     winProbability: number;
     expectedMargin: number;
     conceded: string[];
+    opponentLineups?: Record<string, readonly string[]>;
+    perMap?: Record<string, { winProbability: number; expectedMargin: number }>;
   };
   match: Awaited<ReturnType<typeof loadMatch>>;
+  myTeamId: string;
   highlight?: boolean;
 }) {
   if (!match) return null;
   const nameOf = new Map(
     [...match.teamA.players, ...match.teamB.players].map((p) => [p.id, p.name]),
   );
+  const names = (ids: readonly string[] | undefined) => (ids ?? []).map((id) => nameOf.get(id) ?? id).join(' + ');
+  const them = myTeamId === match.teamA.id ? match.teamB : match.teamA;
+  const mapsWon = match.plannedMaps.filter((pm) => !pm.isTiebreaker && (result.perMap?.[pm.poolMapId]?.winProbability ?? 0) >= 0.5).length;
+  const regular = match.plannedMaps.filter((pm) => !pm.isTiebreaker).length;
 
   return (
     <div className={highlight ? 'rounded-lg border border-accent/30 bg-accent/5 p-2.5' : 'px-2.5 opacity-85'}>
       <div className="mb-1 flex items-center justify-between">
         <span className="font-medium">{label}</span>
-        <span className="tabular">{pct(result.winProbability, 1)}</span>
+        <span className="tabular" title="Chance of winning the match with this card, against the best card the other captain can answer it with">
+          {pct(result.winProbability, 1)}
+        </span>
       </div>
-      <ul className="space-y-0.5 text-xs text-muted">
+      {result.perMap && (
+        <p className="mb-2 text-[11px] text-muted">
+          Expected to take {mapsWon} of {regular} maps
+          {result.expectedMargin !== 0 && (
+            <>
+              {' '}
+              · {result.expectedMargin > 0 ? '+' : '−'}
+              {num(Math.round(Math.abs(result.expectedMargin)))} points over the match
+            </>
+          )}
+          . Against {them.name}&apos;s best answer, shown under each map.
+        </p>
+      )}
+      <ul className="space-y-1.5 text-xs">
         {match.plannedMaps.map((planned) => {
           const group = result.lineups[planned.poolMapId];
           if (!group) return null;
+          const outcome = result.perMap?.[planned.poolMapId];
           const conceded = result.conceded.includes(planned.poolMapId);
+          const theirs = result.opponentLineups?.[planned.poolMapId];
           return (
-            <li key={planned.poolMapId} className="flex justify-between gap-2">
-              <span className="truncate">{planned.map.name}</span>
-              <span className={conceded ? 'text-amber-300' : ''}>
-                {group.map((id) => nameOf.get(id) ?? id).join(' + ')}
-                {conceded && ' ·  conceding'}
-              </span>
+            <li key={planned.poolMapId} className="border-t border-edge/60 pt-1.5 first:border-0 first:pt-0">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate font-medium text-ink">
+                  {planned.map.name}
+                  {planned.isTiebreaker && <span className="ml-1 text-[10px] text-faint">TB</span>}
+                </span>
+                {outcome && (
+                  <span
+                    className={`shrink-0 tabular ${conceded ? 'text-amber-300' : outcome.winProbability >= 0.5 ? 'text-win' : 'text-lose'}`}
+                    title={`Chance of taking this map with these two lineups, and the expected score difference`}
+                  >
+                    {pct(outcome.winProbability, 0)}
+                    <span className="ml-1 text-faint">
+                      {outcome.expectedMargin >= 0 ? '+' : '−'}
+                      {num(Math.round(Math.abs(outcome.expectedMargin)))}
+                    </span>
+                    {conceded && <span className="ml-1 font-medium">conceding</span>}
+                  </span>
+                )}
+              </div>
+              <div className="flex justify-between gap-2 text-muted">
+                <span className={conceded ? 'text-amber-300/90' : ''}>{names(group)}</span>
+                {theirs && <span className="truncate text-right text-faint">vs {names(theirs)}</span>}
+              </div>
             </li>
           );
         })}

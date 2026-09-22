@@ -112,3 +112,15 @@ export async function requestRefresh(poolId?: string, requestedBy?: string): Pro
     // The scheduled poll will pick it up regardless.
   }
 }
+
+/** Ask the worker to pull these players' recorded runs from BeatLeader now. */
+export async function requestAttempts(playerIds: string[], requestedBy?: string): Promise<void> {
+  try {
+    await getPublisher().publish(
+      CHANNELS.refreshRequest,
+      JSON.stringify({ playerIds, requestedBy, attempts: true }),
+    );
+  } catch {
+    // The two-hourly sync will get there regardless.
+  }
+}

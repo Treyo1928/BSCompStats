@@ -88,15 +88,24 @@ export async function createCustomMatch(formData: FormData): Promise<void> {
     return [a, b];
   });
 
-  const opened = await openMatch({
-    tournamentId,
-    poolId: String(formData.get('poolId')),
-    teamAId: teamA.id,
-    teamBId: teamB.id,
-    coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
-    blindLineups: formData.get('blindLineups') === 'on',
-    name: String(formData.get('name') ?? ''),
-  });
+  // The sides are committed before the match is; if opening it fails in any
+  // way - a returned error or a throw for a pool that has gone - they must not
+  // be left behind as empty match-only teams with nothing to remove them.
+  let opened: Awaited<ReturnType<typeof openMatch>>;
+  try {
+    opened = await openMatch({
+      tournamentId,
+      poolId: String(formData.get('poolId')),
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+      blindLineups: formData.get('blindLineups') === 'on',
+      name: String(formData.get('name') ?? ''),
+    });
+  } catch (err) {
+    await cleanUpAdHocTeams([teamA.id, teamB.id]);
+    throw err;
+  }
   if ('error' in opened) {
     await cleanUpAdHocTeams([teamA.id, teamB.id]);
     failBack(back, opened.error);

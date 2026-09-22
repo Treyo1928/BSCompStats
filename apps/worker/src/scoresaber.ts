@@ -89,6 +89,9 @@ export async function syncScoreSaber(): Promise<{ linked: number; synced: number
       if (!player.ssBackfilledAt) {
         log.info(`scoresaber: backfilled ${player.name} - ${result.written} scores over ${result.pages} pages`);
       }
+      if (result.hitPageLimit) {
+        log.warn(`scoresaber: ${player.name} has more than ${MAX_PAGES * 100} scores; anything older was not fetched`);
+      }
     } catch (err) {
       log.warn(`scoresaber sync failed for ${player.name}`, err);
     }
@@ -102,7 +105,7 @@ async function syncScores(
   scoreSaberId: string,
   /** Every page has been walked before, so only what is new needs fetching. */
   complete: boolean,
-): Promise<{ written: number; pages: number; finished: boolean }> {
+): Promise<{ written: number; pages: number; finished: boolean; hitPageLimit?: boolean }> {
   let written = 0;
 
   for (let page = 1; page <= MAX_PAGES; page++) {
@@ -119,7 +122,11 @@ async function syncScores(
     // Nothing new on a page means the rest is stored - once, and only once, a walk has reached the end.
     if (complete && pageWrites === 0) return { written, pages: page, finished: true };
   }
-  return { written, pages: MAX_PAGES, finished: true };
+  // Ran out of pages rather than history. Recorded as complete all the same,
+  // as the BeatLeader walk does, or every poll would re-walk ten thousand
+  // scores from page one; but said out loud, because from here on anything
+  // older is never fetched.
+  return { written, pages: MAX_PAGES, finished: true, hitPageLimit: true };
 }
 
 /** True when something was stored or changed. */

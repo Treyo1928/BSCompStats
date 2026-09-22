@@ -58,9 +58,21 @@ export interface FitOptions {
   latentFactors?: number;
   /** Ridge strength for the additive biases. */
   biasRegularization?: number;
-  /** Ridge strength for the latent factors - higher, they overfit easily. */
+  /**
+   * Ridge strength for the latent factors. Higher than the bias ridge, because
+   * a factor is fitted from one player's residuals alone and the ridge is all
+   * that keeps a thin, one-sided sample from becoming a strong opinion about
+   * maps they have never played (see `fitSkillModel`).
+   */
   factorRegularization?: number;
+  /** Cap on alternating sweeps; the fit stops earlier once `tolerance` is met. */
   iterations?: number;
+  /**
+   * Largest change in any parameter (logit units) at which a sweep counts as
+   * converged. 1e-4 logit is a hundredth of an accuracy point. Tighter buys
+   * nothing: the Huber reweighting leaves the fit cycling by about that much.
+   */
+  tolerance?: number;
   /** Huber cutoff in logit units. Residuals beyond this are down-weighted. */
   huberDelta?: number;
   /** Initial weight given to a run flagged as an anomaly (abandoned, disaster). */
@@ -105,6 +117,11 @@ export interface Prediction {
   confidence: number;
   /** True when the player has never played this map. */
   extrapolated: boolean;
+  /**
+   * Set when the prediction was held down by the player's real score on an
+   * easier map - the leaderboard id of that map. See `predictWith`.
+   */
+  cappedBy: string | null;
 }
 
 export interface SkillModel {
@@ -152,8 +169,9 @@ export interface SkillModel {
 const DEFAULTS: Required<FitOptions> = {
   latentFactors: 0,
   biasRegularization: 0.5,
-  factorRegularization: 0.3,
-  iterations: 40,
+  factorRegularization: 1,
+  iterations: 1000,
+  tolerance: 1e-4,
   huberDelta: 1.2,
   dnfWeight: 0.1,
   fitMapVariance: true,
@@ -213,18 +231,31 @@ export function fitSkillModel(
   const fitted = (o: Observation): number =>
     mu + playerBias[o.playerId]! + mapBias[o.leaderboardId]! + interaction(o);
 
+  // Alternating least squares, run until nothing moves. A fixed number of
+  // sweeps is not enough with factors in play: on the MSU fall board, forty
+  // sweeps left a player's factor at -0.37 where the converged value was +0.33
+  // - the fit was still drifting, cross-validation was comparing half-finished
+  // fits, and the number shown depended on where the drift had got to. Each
+  // parameter update is exact given the others, so the sweeps converge
+  // geometrically and a cap of a thousand is never reached in practice.
   for (let iter = 0; iter < opts.iterations; iter++) {
+    let moved = 0;
+    const settle = (before: number, after: number): number => {
+      moved = Math.max(moved, Math.abs(after - before));
+      return after;
+    };
+
     // --- additive biases ----------------------------------------------------
-    mu = weightedMean(
+    mu = settle(mu, weightedMean(
       observations.map(
         (o, i) =>
           y[i]! - playerBias[o.playerId]! - mapBias[o.leaderboardId]! - interaction(o),
       ),
       weights,
-    );
+    ));
 
     for (const [playerId, idx] of byPlayer) {
-      playerBias[playerId] = ridgeMean(
+      playerBias[playerId] = settle(playerBias[playerId]!, ridgeMean(
         idx.map(
           (i) =>
             y[i]! -
@@ -234,11 +265,11 @@ export function fitSkillModel(
         ),
         idx.map((i) => weights[i]!),
         opts.biasRegularization,
-      );
+      ));
     }
 
     for (const [mapId, idx] of byMap) {
-      mapBias[mapId] = ridgeMean(
+      mapBias[mapId] = settle(mapBias[mapId]!, ridgeMean(
         idx.map(
           (i) =>
             y[i]! -
@@ -248,14 +279,14 @@ export function fitSkillModel(
         ),
         idx.map((i) => robust[i]!),
         opts.biasRegularization,
-      );
+      ));
     }
 
     // --- latent factors -----------------------------------------------------
     if (opts.latentFactors > 0) {
       for (let f = 0; f < opts.latentFactors; f++) {
         for (const [playerId, idx] of byPlayer) {
-          playerFactors[playerId]![f] = solveFactor(
+          playerFactors[playerId]![f] = settle(playerFactors[playerId]![f]!, solveFactor(
             idx,
             observations,
             y,
@@ -269,10 +300,10 @@ export function fitSkillModel(
             'player',
             playerId,
             opts.factorRegularization,
-          );
+          ));
         }
         for (const [mapId, idx] of byMap) {
-          mapFactors[mapId]![f] = solveFactor(
+          mapFactors[mapId]![f] = settle(mapFactors[mapId]![f]!, solveFactor(
             idx,
             observations,
             y,
@@ -286,7 +317,7 @@ export function fitSkillModel(
             'map',
             mapId,
             opts.factorRegularization,
-          );
+          ));
         }
       }
     }
@@ -317,6 +348,8 @@ export function fitSkillModel(
       robust[i] = baseWeights[i]! * huber;
       weights[i] = robust[i]! / (mapScale * mapScale);
     });
+
+    if (moved < opts.tolerance) break;
   }
 
   // --- residual spread per player -------------------------------------------
@@ -340,9 +373,12 @@ export function fitSkillModel(
   // per player and per map fitting them. The usual degrees-of-freedom
   // correction widens the spread to what a genuinely unseen score will show.
   // Capped, because ridge shrinkage means the parameters are not fully free.
+  // With nothing to fit there is nothing to correct: 0/0 here made every
+  // sigma NaN for a pool with no scores yet, and NaN never comes back out of
+  // Math.max.
   const parameters = playerIds.length + leaderboardIds.length;
   const n = cleanStandardized.length;
-  const dof = Math.min(1.5, Math.sqrt(n / Math.max(n - parameters, n / 2.25)));
+  const dof = n === 0 ? 1 : Math.min(1.5, Math.sqrt(n / Math.max(n - parameters, n / 2.25)));
   for (const rs of residualsByPlayer.values()) rs.forEach((r, i) => (rs[i] = r * dof));
 
   const globalSigma = Math.max(mad(cleanStandardized) * dof, 0.05);
@@ -477,6 +513,31 @@ function predictWith(
     sigma = Math.max(cellSigma * Math.sqrt(1 - anchorWeight * anchorWeight), 0.02);
   }
 
+  // A player cannot be expected to do better on a harder map than their real
+  // score on an easier one implies. The additive fit cannot say it: one
+  // number per player is their level, and a player who is fine on acc maps
+  // and collapses on hard ones - gayalex5's 38% on Konpeito Extremists against
+  // 96% everywhere easy - moves that number a little and is otherwise treated
+  // as an outlier, so Spin Eternally, harder still, read 81%. Every score of
+  // theirs on an easier map now sets a ceiling: that score, less the gap in
+  // difficulty between the two maps. The lowest ceiling holds. Anomalies
+  // never anchor, so never cap either.
+  let cappedBy: string | null = null;
+  if (extrapolated) {
+    const easier = mb;
+    for (const [key, other] of observed) {
+      if (other.weightSum <= 0 || !key.startsWith(`${playerId}::`)) continue;
+      const otherId = key.slice(playerId.length + 2);
+      const otherBias = model.mapBias[otherId];
+      if (otherBias == null || otherBias < easier - 0.05) continue;
+      const ceiling = other.logitSum / other.weightSum + (easier - otherBias);
+      if (ceiling < logit) {
+        logit = ceiling;
+        cappedBy = otherId;
+      }
+    }
+  }
+
   const nPlayer = model.playerCount[playerId] ?? 0;
   const nMap = model.mapCount[leaderboardId] ?? 0;
 
@@ -496,6 +557,7 @@ function predictWith(
     accHigh: fromLogit(logit + sigma),
     confidence,
     extrapolated,
+    cappedBy,
   };
 }
 

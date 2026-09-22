@@ -4,15 +4,16 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { assertCan, can, isCaptainOf, ForbiddenError } from '@bscs/core/match';
-import { getActor } from './session';
+import { getActor, getActorOrAnonymous } from './session';
 import { importPool } from './pools';
-import { requestRefresh } from '@/lib/redis';
-import { beatLeader } from './pools';
+import { requestAttempts, requestRefresh } from '@/lib/redis';
+import { beatLeader, scoreSaber } from './pools';
 import { cookies } from 'next/headers';
 import { failBack } from './form-errors';
 import { ESTIMATES_COOKIE, failKey, parseEstimateCookie } from './stats';
 import { SCOPE_PRESETS } from '@bscs/core/stats';
-import { looksLikeSteamId, parseScoreSaberId, ScoreSaberClient } from '@bscs/core/scoresaber';
+import { looksLikeSteamId, parseScoreSaberId } from '@bscs/core/scoresaber';
+import { hexColor } from './custom-teams';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
 
@@ -32,10 +33,11 @@ export async function createTournament(formData: FormData): Promise<void> {
   const name = String(formData.get('name') ?? '').trim();
   if (!name) throw new Error('A tournament needs a name.');
 
-  let slug = slugify(name) || 'tournament';
+  const base = slugify(name) || 'tournament';
+  let slug = base;
   // Slugs are the URL, so collisions have to be resolved rather than rejected.
   for (let suffix = 2; await prisma.tournament.findUnique({ where: { slug } }); suffix++) {
-    slug = `${slugify(name)}-${suffix}`;
+    slug = `${base}-${suffix}`;
   }
 
   const tournament = await prisma.tournament.create({
@@ -314,11 +316,7 @@ export async function setPredictionEstimate(formData: FormData): Promise<void> {
   });
   if (!pool || pool.maps.length === 0) throw new Error('That map is not in this pool.');
 
-  const actor = (await getActor(pool.tournamentId)) ?? {
-    userId: '',
-    globalRole: 'USER' as const,
-    tournamentRole: null,
-  };
+  const actor = await getActorOrAnonymous(pool.tournamentId);
   assertCan(actor, 'VIEW', { isPublic: pool.tournament.isPublic });
 
   const onRoster = await prisma.teamMember.findFirst({
@@ -757,12 +755,9 @@ export async function updateTeam(formData: FormData): Promise<void> {
   });
   if (taken) failBack(back, `There is already a team called "${name}" in this tournament.`);
 
-  const hex = (value: FormDataEntryValue | null) =>
-    typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
-
   await prisma.team.update({
     where: { id: teamId },
-    data: { name, color: hex(formData.get('color')), colorSecondary: hex(formData.get('colorSecondary')) },
+    data: { name, color: hexColor(formData.get('color')), colorSecondary: hexColor(formData.get('colorSecondary')) },
   });
   revalidatePath('/t', 'layout');
 }
@@ -907,8 +902,10 @@ export async function createTeam(formData: FormData): Promise<void> {
     data: {
       divisionId: division.id,
       name,
-      color: String(formData.get('color') ?? '#4F46E5'),
-      colorSecondary: String(formData.get('colorSecondary') ?? '#A5B4FC'),
+      // Validated like updateTeam: these go straight into inline styles and
+      // the link-preview images, where Satori has no fallback for junk.
+      color: hexColor(formData.get('color')) ?? '#4F46E5',
+      colorSecondary: hexColor(formData.get('colorSecondary')) ?? '#A5B4FC',
     },
   });
 
@@ -958,6 +955,40 @@ export async function triggerRefresh(formData: FormData): Promise<void> {
  * scores count toward someone's stats, and it shows on their page for anyone
  * to correct.
  */
+/**
+ * Pull a player's recorded runs from BeatLeader now. Their own call, or a
+ * team manager's. BeatLeader serves the runs only where the player has turned
+ * on "show my stats publicly" - a 401 otherwise, whoever asks, our sign-in
+ * included - so this is also how someone who has just flipped that switch
+ * gets their fails onto the board without waiting for the next sweep.
+ */
+export async function pullRuns(formData: FormData): Promise<void> {
+  const playerId = String(formData.get('playerId'));
+  const slug = String(formData.get('slug'));
+
+  const [player, tournament] = await Promise.all([
+    prisma.player.findUnique({ where: { id: playerId }, select: { id: true, userId: true } }),
+    prisma.tournament.findUnique({ where: { slug }, select: { id: true } }),
+  ]);
+  if (!player || !tournament) throw new Error('No such player.');
+
+  const actor = await getActor(tournament.id);
+  if (!actor) throw new Error('Sign in first.');
+  const rostered = await prisma.teamMember.findFirst({
+    where: { playerId, team: { division: { tournamentId: tournament.id } } },
+    select: { id: true },
+  });
+  const allowed = player.userId === actor.userId || (rostered != null && can(actor, 'MANAGE_TEAMS'));
+  if (!allowed) throw new ForbiddenError('MANAGE_TEAMS');
+
+  const now = Date.now();
+  if (now - (lastRefreshAt.get(`runs:${actor.userId}`) ?? 0) < REFRESH_COOLDOWN_MS) return;
+  lastRefreshAt.set(`runs:${actor.userId}`, now);
+
+  await requestAttempts([playerId], actor.userId);
+  revalidatePath(`/t/${slug}/stats/${playerId}`);
+}
+
 export async function linkScoreSaber(formData: FormData): Promise<void> {
   const playerId = String(formData.get('playerId'));
   const slug = String(formData.get('slug'));
@@ -1012,7 +1043,7 @@ export async function linkScoreSaber(formData: FormData): Promise<void> {
 
   let profile;
   try {
-    profile = await new ScoreSaberClient().getPlayer(scoreSaberId);
+    profile = await scoreSaber.getPlayer(scoreSaberId);
   } catch {
     failBack(back, 'ScoreSaber could not be reached. Try again in a moment.');
   }
@@ -1049,17 +1080,16 @@ export async function searchScoreSaberCandidates(
   const query = rawQuery.trim();
   if (!query) return { candidates: [], error: 'Enter a ScoreSaber profile link, id, or name.' };
 
-  const client = new ScoreSaberClient();
   const id = parseScoreSaberId(query);
   let found: Array<{ id: string; name: string; profilePicture?: string; country?: string; pp?: number; rank?: number }> = [];
   try {
     if (id) {
-      const exact = await client.getPlayer(id);
+      const exact = await scoreSaber.getPlayer(id);
       found = exact ? [{ ...exact, profilePicture: (exact as { profilePicture?: string }).profilePicture }] : [];
     } else if (query.length < 4) {
       return { candidates: [], error: 'ScoreSaber needs at least four letters to search by name.' };
     } else {
-      found = await client.searchPlayers(query);
+      found = await scoreSaber.searchPlayers(query);
     }
   } catch {
     return { candidates: [], error: 'ScoreSaber could not be reached. Try again in a moment.' };
@@ -1103,14 +1133,20 @@ export async function searchScoreSaberCandidates(
 export async function addPlayerFromScoreSaber(teamId: string, scoreSaberId: string): Promise<{ error?: string }> {
   const actor = await requireTeamManager(teamId);
 
-  let player = await prisma.player.findFirst({
-    where: { OR: [{ scoreSaberId }, { beatLeaderId: scoreSaberId }] },
-  });
+  // The row already linked to this ScoreSaber id wins over one that merely
+  // shares the number as a BeatLeader id; picking the latter and linking it
+  // too would collide on the unique scoreSaberId.
+  let player =
+    (await prisma.player.findUnique({ where: { scoreSaberId } })) ??
+    (await prisma.player.findFirst({ where: { beatLeaderId: scoreSaberId } }));
+  if (player && player.scoreSaberId && player.scoreSaberId !== scoreSaberId) {
+    return { error: `${player.name} is already linked to a different ScoreSaber profile.` };
+  }
   if (!player) {
     let ss;
     let bl = null;
     try {
-      ss = await new ScoreSaberClient().getPlayer(scoreSaberId);
+      ss = await scoreSaber.getPlayer(scoreSaberId);
       bl = looksLikeSteamId(scoreSaberId) ? await beatLeader.getPlayer(scoreSaberId).catch(() => null) : null;
     } catch {
       return { error: 'ScoreSaber could not be reached. Try again in a moment.' };
@@ -1158,7 +1194,7 @@ export async function linkScoreSaberToMember(memberId: string, scoreSaberId: str
 
   let profile;
   try {
-    profile = await new ScoreSaberClient().getPlayer(scoreSaberId);
+    profile = await scoreSaber.getPlayer(scoreSaberId);
   } catch {
     return { error: 'ScoreSaber could not be reached. Try again in a moment.' };
   }

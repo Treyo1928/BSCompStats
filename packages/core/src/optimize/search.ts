@@ -27,6 +27,8 @@ export interface SearchInput {
   restarts?: number;
   stepsPerRestart?: number;
   seed?: number;
+  /** Maps whose group is already decided. The start honours them and no move touches them. */
+  pinned?: LineupMap;
 }
 
 export interface SearchResult {
@@ -40,6 +42,7 @@ export function searchLineups(input: SearchInput): SearchResult {
   const restarts = input.restarts ?? 6;
   const steps = input.stepsPerRestart ?? 600;
   const random = mulberry32(input.seed ?? 99);
+  const pinned = input.pinned ?? {};
 
   const margins: ComboMargins = makeComboMargins(
     new Map(),
@@ -59,7 +62,7 @@ export function searchLineups(input: SearchInput): SearchResult {
   let evaluated = 0;
 
   for (let restart = 0; restart < restarts; restart++) {
-    const start = randomLegalLineup(input.roster, input.maps, input.format, random);
+    const start = randomLegalLineup(input.roster, input.maps, input.format, random, pinned);
     if (!start) break;
 
     let current = start;
@@ -71,7 +74,7 @@ export function searchLineups(input: SearchInput): SearchResult {
 
     for (let step = 0; step < steps; step++) {
       const temperature = 0.08 * (1 - step / steps) + 1e-4;
-      const next = mutate(current, input.roster, input.maps, input.format, random);
+      const next = mutate(current, input.roster, input.maps, input.format, random, pinned);
       if (!next) continue;
 
       const nextScore = score(next);
@@ -103,6 +106,7 @@ function randomLegalLineup(
   maps: readonly SimMap[],
   format: MatchFormat,
   random: () => number,
+  pinned: LineupMap = {},
 ): LineupMap | null {
   const options = shuffle(combinations(roster, format.playersPerMap), random);
   const rules = rulesForRoster(format, roster.length, maps.filter((m) => !m.isTiebreaker).length).rules;
@@ -119,8 +123,10 @@ function randomLegalLineup(
 
     const map = maps[index]!;
     const exempt = map.isTiebreaker && rules.tiebreakerExemptFromDuos;
+    const pin = pinned[map.id];
+    const choices = pin ? options.filter((combo) => duoKey(combo) === duoKey(pin)) : options;
 
-    for (const combo of options) {
+    for (const combo of choices) {
       const key = duoKey(combo);
       const tracked = !exempt && rules.uniqueDuos && format.playersPerMap > 1;
       const isRepeat = tracked && (usedDuos.get(key) ?? 0) > 0;
@@ -171,12 +177,14 @@ function mutate(
   maps: readonly SimMap[],
   format: MatchFormat,
   random: () => number,
+  pinned: LineupMap = {},
 ): LineupMap | null {
-  const mapIds = maps.map((m) => m.id);
+  // Pinned maps are fixed: moves only pick among the rest.
+  const mapIds = maps.map((m) => m.id).filter((id) => !pinned[id]);
   if (mapIds.length < 1) return null;
 
   const next: Record<string, string[]> = {};
-  for (const id of mapIds) next[id] = [...(lineups[id] ?? [])];
+  for (const map of maps) next[map.id] = [...(lineups[map.id] ?? [])];
 
   if (random() < 0.5 && mapIds.length >= 2) {
     // Swap one player between two maps.
