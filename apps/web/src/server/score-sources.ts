@@ -1,4 +1,5 @@
 import { prisma } from '@bscs/db';
+import { hasScoreAlteringModifier } from '@bscs/core';
 
 /**
  * Scores from both ranked platforms, on one set of map keys.
@@ -86,7 +87,11 @@ export async function loadScores(
           },
         });
 
-  const out: UnifiedScore[] = beatLeader.map((s) => ({ ...s, platform: 'BL' as const }));
+  // The worker no longer stores modified runs; rows from before it did are
+  // dropped here, the same as the ScoreSaber filter below.
+  const out: UnifiedScore[] = beatLeader
+    .filter((s) => !hasScoreAlteringModifier(s.modifiers))
+    .map((s) => ({ ...s, platform: 'BL' as const }));
   if (options.source === 'beatleader') return out;
 
   // The charts a ScoreSaber score could be matched to: for a pool, the pool's; otherwise any we know.
@@ -191,4 +196,90 @@ export async function scoreSaberPulse(playerIds: readonly string[]): Promise<str
     _sum: { baseScore: true },
   });
   return `${pulse._count}:${pulse._max.timeset ?? 0}:${pulse._sum.baseScore ?? 0}`;
+}
+
+/** One recorded run, as the stats model and the board read it. */
+export interface StoredRun {
+  playerId: string;
+  leaderboardId: string;
+  endType: 'UNKNOWN' | 'CLEAR' | 'FAIL' | 'RESTART' | 'QUIT' | 'PRACTICE';
+  time: number;
+  accuracy: number;
+  timeset: number;
+  replayUrl: string | null;
+  ranked: boolean;
+  baseScore: number;
+  missedNotes: number;
+  badCuts: number;
+}
+
+/**
+ * The runs BeatLeader recorded for these players - every clear, fail, restart
+ * and quit - on these maps, or on every map known. Only players who show their
+ * stats publicly on BeatLeader have any; `attemptsVisible` says who, so a blank
+ * can be told from a hidden one.
+ */
+export async function loadRuns(
+  playerIds: readonly string[],
+  leaderboardIds?: readonly string[],
+): Promise<{ runs: StoredRun[]; durations: Record<string, number>; visible: Map<string, boolean | null> }> {
+  if (playerIds.length === 0) return { runs: [], durations: {}, visible: new Map() };
+  const [rows, players] = await Promise.all([
+    prisma.attempt.findMany({
+      where: {
+        playerId: { in: [...playerIds] },
+        ...(leaderboardIds ? { leaderboardId: { in: [...leaderboardIds] } } : {}),
+      },
+      select: {
+        playerId: true,
+        leaderboardId: true,
+        endType: true,
+        time: true,
+        accuracy: true,
+        timeset: true,
+        replayUrl: true,
+        modifiers: true,
+        baseScore: true,
+        missedNotes: true,
+        badCuts: true,
+        leaderboard: { select: { duration: true, ranked: true } },
+      },
+      orderBy: { timeset: 'asc' },
+    }),
+    prisma.player.findMany({
+      where: { id: { in: [...playerIds] } },
+      select: { id: true, attemptsPublic: true },
+    }),
+  ]);
+  const durations: Record<string, number> = {};
+  const runs: StoredRun[] = [];
+  for (const r of rows) {
+    // A modified run is not evidence of a match score, as with scores.
+    if (hasScoreAlteringModifier(r.modifiers)) continue;
+    if (r.leaderboard.duration > 0) durations[r.leaderboardId] = r.leaderboard.duration;
+    runs.push({
+      playerId: r.playerId,
+      leaderboardId: r.leaderboardId,
+      endType: r.endType,
+      time: r.time,
+      accuracy: r.accuracy,
+      timeset: r.timeset,
+      replayUrl: r.replayUrl,
+      ranked: r.leaderboard.ranked,
+      baseScore: r.baseScore,
+      missedNotes: r.missedNotes,
+      badCuts: r.badCuts,
+    });
+  }
+  return { runs, durations, visible: new Map(players.map((p) => [p.id, p.attemptsPublic])) };
+}
+
+/** Something that changes whenever the recorded runs for these players do - for cache versions. */
+export async function runsPulse(playerIds: readonly string[]): Promise<string> {
+  const pulse = await prisma.attempt.aggregate({
+    where: { playerId: { in: [...playerIds] } },
+    _count: true,
+    _max: { timeset: true },
+  });
+  return `${pulse._count}:${pulse._max.timeset ?? 0}`;
 }

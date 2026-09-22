@@ -16,6 +16,7 @@ import {
 } from './match-helpers';
 import { buildTournamentModel, predictorFor, type TournamentModel } from './stats';
 import { runMatchAdvice } from './advice-thread';
+import { tallyMaps } from './match-summary';
 import { announceMatchChange } from '@/lib/redis';
 import type { MatchAdviceInput, MatchAdviceResult, SimMap } from '@bscs/core/optimize';
 
@@ -237,25 +238,15 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     };
   });
 
-  // Map wins, excluding the tiebreaker unless the regular maps finished level.
-  let a = 0;
-  let b = 0;
-  for (const planned of plannedMaps.filter((m) => !m.isTiebreaker)) {
-    const totalA = planned.totals[match.teamAId];
-    const totalB = planned.totals[match.teamBId];
-    if (totalA == null || totalB == null) continue;
-    if (totalA > totalB) a++;
-    else if (totalB > totalA) b++;
-  }
-  if (a === b) {
-    const tb = plannedMaps.find((m) => m.isTiebreaker);
-    const totalA = tb?.totals[match.teamAId];
-    const totalB = tb?.totals[match.teamBId];
-    if (totalA != null && totalB != null) {
-      if (totalA > totalB) a++;
-      else if (totalB > totalA) b++;
-    }
-  }
+  // Map wins, the same count completeMatch and the previews use.
+  const { a, b } = tallyMaps(
+    plannedMaps.map((planned) => ({
+      isTiebreaker: planned.isTiebreaker,
+      attempts: matchMapByPoolMap.get(planned.poolMapId)?.attempts ?? [],
+    })),
+    match.teamAId,
+    match.teamBId,
+  );
 
   return {
     id: match.id,
@@ -307,10 +298,10 @@ function toTeamView(team: {
     players: team.members
       .filter((m) => everyone || m.available)
       .map((m) => ({
-      id: m.player.id,
-      name: m.player.name,
-      avatar: m.player.avatar,
-    })),
+        id: m.player.id,
+        name: m.player.name,
+        avatar: m.player.avatar,
+      })),
   };
 }
 

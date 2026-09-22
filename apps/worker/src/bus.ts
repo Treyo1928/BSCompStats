@@ -38,6 +38,8 @@ export interface RefreshRequest {
   poolId?: string;
   playerIds?: string[];
   requestedBy?: string;
+  /** Pull these players' recorded runs from BeatLeader now, rather than their scores. */
+  attempts?: boolean;
 }
 
 let publisher: Redis | null = null;

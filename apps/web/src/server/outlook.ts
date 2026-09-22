@@ -33,6 +33,8 @@ export interface OutlookMap {
     /** Averaged over every group either side could field instead. */
     anyPairing: number;
     opponentLineup: OutlookPlayer[];
+    /** Mean accuracy the opponent's group is expected to post. */
+    opponentLineupAcc: number | null;
   } | null;
 }
 
@@ -146,16 +148,20 @@ export async function buildPoolOutlook(
     note(team.teamName, first?.groups.length ?? 0);
     if (opponent) note(opponent.teamName, first?.opponentGroups.length ?? 0);
 
-    // Theirs first: the groups that hold us down most.
+    // Theirs first: the groups that hold us down most - judged by our best
+    // answer to each, as a captain would, not by its average over our bench
+    // (which rates a pair that beats our passengers above the pair that beats
+    // our stars).
     const theirIndex = new Map<string, number>();
     const theirs = assignSpread(
-      constrained.map((m) =>
-        values.get(m.poolMapId)!.opponentGroups.map((g, index) => ({
+      constrained.map((m) => {
+        const value = values.get(m.poolMapId)!;
+        return value.opponentGroups.map((g, index) => ({
           playerIds: g.playerIds,
-          value: 1 - g.average,
+          value: 1 - Math.max(0, ...value.groups.map((ours) => ours.vs[index]!)),
           index,
-        })),
-      ),
+        }));
+      }),
     );
     constrained.forEach((m, i) => {
       const pick = theirs[i];
@@ -192,18 +198,24 @@ export async function buildPoolOutlook(
       [...roster]
         .sort((a, b) => predict(b, map.leaderboardId).acc - predict(a, map.leaderboardId).acc)
         .slice(0, k);
+    const opponentIds = value
+      ? (opponentAssigned.get(map.poolMapId) ?? value.opponentBestGroup)
+      : null;
 
     return {
       poolMapId: map.poolMapId,
       lineup: toPlayers(lineupIds),
       lineupAcc: meanAcc(lineupIds, map.leaderboardId),
-      versus: value
-        ? {
-            winProbability: forced?.winProbability ?? value.bestVsBest,
-            anyPairing: value.expected,
-            opponentLineup: toPlayers(opponentAssigned.get(map.poolMapId) ?? value.opponentBestGroup),
-          }
-        : null,
+      versus:
+        value && opponentIds
+          ? {
+              // The same figure the match page headlines, so the two agree about a map.
+              winProbability: forced?.winProbability ?? value.likely,
+              anyPairing: value.expected,
+              opponentLineup: toPlayers(opponentIds),
+              opponentLineupAcc: meanAcc(opponentIds, map.leaderboardId),
+            }
+          : null,
     };
   });
 

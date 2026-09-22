@@ -156,3 +156,44 @@ export interface BPListDifficulty {
   /** e.g. "Standard" */
   characteristic: string;
 }
+
+/**
+ * How a recorded run ended. BeatLeader's `EndType`; the numbers are its own.
+ */
+export const BL_END_TYPES = {
+  0: 'UNKNOWN',
+  1: 'CLEAR',
+  2: 'FAIL',
+  3: 'RESTART',
+  4: 'QUIT',
+  5: 'PRACTICE',
+} as const;
+export type BLEndType = (typeof BL_END_TYPES)[keyof typeof BL_END_TYPES];
+
+/**
+ * One run a player uploaded on one map, from `/map/scorestats`. Every run is
+ * here - the clears that became scores, and the fails, restarts and quits that
+ * never reach a leaderboard. Served only where the player shows their stats
+ * publicly; otherwise the endpoint answers 401.
+ */
+export interface BLAttempt {
+  id: number;
+  playerId: string;
+  leaderboardId: string;
+  /** Key of BL_END_TYPES. */
+  type: number;
+  /** Seconds into the song when it ended. */
+  time: number;
+  /** 0..1, up to that point. */
+  accuracy: number;
+  baseScore: number;
+  modifiedScore: number;
+  modifiers?: string | null;
+  missedNotes?: number;
+  badCuts?: number;
+  /** The .bsor of the run, kept even for a fail. */
+  replay?: string | null;
+  /** Unix seconds. */
+  timeset: number;
+  timepost?: number;
+}

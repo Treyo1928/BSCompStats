@@ -16,6 +16,7 @@ import {
   Badge,
   teamInk,
   teamWash,
+  TeamScopeTabs,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
@@ -49,10 +50,10 @@ export default async function TeamsPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; show?: string }>;
 }) {
   const { slug } = await params;
-  const { error } = await searchParams;
+  const { error, show } = await searchParams;
 
   const tournament = await prisma.tournament.findUnique({
     where: { slug },
@@ -110,6 +111,10 @@ export default async function TeamsPage({
   const canManage = can(actor, 'MANAGE_TEAMS');
   const teams = tournament.divisions.flatMap((d) => d.teams);
   const entered = teams.filter((t) => !t.adHoc);
+  const matchOnly = teams.filter((t) => t.adHoc);
+  // Match-only sides have a tab of their own, and only when there are any.
+  const showing = show === 'match-only' && matchOnly.length > 0 ? 'adHoc' : 'entered';
+  const listed = showing === 'adHoc' ? matchOnly : entered;
 
   return (
     <div className="space-y-6">
@@ -121,8 +126,20 @@ export default async function TeamsPage({
 
       <FormError message={error} />
 
+      <TeamScopeTabs
+        hrefs={{ entered: `/t/${slug}/teams`, adHoc: `/t/${slug}/teams?show=match-only` }}
+        showing={showing}
+        counts={{ entered: entered.length, adHoc: matchOnly.length }}
+      />
+      {showing === 'adHoc' && (
+        <p className="text-sm text-muted">
+          Sides put together for a custom match or a captains&apos; draft. They are not entered in the tournament,
+          and each is removed when its last match is deleted.
+        </p>
+      )}
+
       <div className="grid gap-6 md:grid-cols-2">
-        {teams.map((team) => (
+        {listed.map((team) => (
           <Panel key={team.id} flush>
             <div
               className="flex items-center justify-between gap-3 border-b border-edge px-4 py-3"
@@ -156,125 +173,125 @@ export default async function TeamsPage({
             </div>
 
             <div className="p-4">
-            {team.members.length === 0 ? (
-              <Empty>No players yet.</Empty>
-            ) : (
-              <ul className="-my-1.5 text-sm">
-                {team.members.map((member) => (
-                  // On a phone the controls drop to their own line rather than squeezing the name out.
-                  <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
-                    <PlayerLink
-                      playerId={member.player.id}
-                      name={member.player.name}
-                      className="-ml-2 flex min-w-0 flex-1 basis-full items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised sm:basis-0"
-                    >
-                      <Avatar
-                        src={member.player.avatar}
+              {team.members.length === 0 ? (
+                <Empty>No players yet.</Empty>
+              ) : (
+                <ul className="-my-1.5 text-sm">
+                  {team.members.map((member) => (
+                    // On a phone the controls drop to their own line rather than squeezing the name out.
+                    <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
+                      <PlayerLink
+                        playerId={member.player.id}
                         name={member.player.name}
-                        size={32}
-                        ring={team.color}
-                      />
-                      <span
-                        className={`min-w-0 flex-1 truncate font-medium ${member.available ? '' : 'text-muted line-through decoration-faint'}`}
+                        className="-ml-2 flex min-w-0 flex-1 basis-full items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised sm:basis-0"
                       >
-                        {member.player.name}
-                      </span>
-                      {member.isSub && (
-                        <Badge title="Substitute - only counted when switched in">
-                          {member.available ? 'Sub · in' : 'Sub'}
-                        </Badge>
-                      )}
-                      {!member.isSub && !member.available && (
-                        <Badge tone="warn" title="Left out of lineups and predictions">
-                          Absent
-                        </Badge>
-                      )}
-                      {member.role === 'CAPTAIN' &&
-                        (member.player.userId ? (
-                          <Badge tone="accent">Captain</Badge>
-                        ) : (
-                          <Badge
-                            tone="warn"
-                            title="Has not signed in yet. They get control of picks, bans and lineups once they sign in with BeatLeader."
-                          >
-                            Captain · no account
+                        <Avatar
+                          src={member.player.avatar}
+                          name={member.player.name}
+                          size={32}
+                          ring={team.color}
+                        />
+                        <span
+                          className={`min-w-0 flex-1 truncate font-medium ${member.available ? '' : 'text-muted line-through decoration-faint'}`}
+                        >
+                          {member.player.name}
+                        </span>
+                        {member.isSub && (
+                          <Badge title="Substitute - only counted when switched in">
+                            {member.available ? 'Sub · in' : 'Sub'}
                           </Badge>
-                        ))}
-                      <span className="w-14 shrink-0 text-right text-xs tabular text-muted sm:w-16">
-                        {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
-                      </span>
-                    </PlayerLink>
-                    {member.player.scoreSaberId ? (
-                      <Badge title="ScoreSaber is linked, so their scores and pp there count too">SS</Badge>
-                    ) : (
-                      canManage && <LinkScoreSaber memberId={member.id} playerName={member.player.name} />
-                    )}
-                    {(canManage || isCaptainOf(actor, team.id)) && (
-                      <MemberControls
-                        memberId={member.id}
-                        playerName={member.player.name}
-                        teamName={team.name}
-                        isCaptain={member.role === 'CAPTAIN'}
-                        isSub={member.isSub}
-                        available={member.available}
-                        canManage={canManage}
+                        )}
+                        {!member.isSub && !member.available && (
+                          <Badge tone="warn" title="Left out of lineups and predictions">
+                            Absent
+                          </Badge>
+                        )}
+                        {member.role === 'CAPTAIN' &&
+                          (member.player.userId ? (
+                            <Badge tone="accent">Captain</Badge>
+                          ) : (
+                            <Badge
+                              tone="warn"
+                              title="Has not signed in yet. They get control of picks, bans and lineups once they sign in with BeatLeader."
+                            >
+                              Captain · no account
+                            </Badge>
+                          ))}
+                        <span className="w-14 shrink-0 text-right text-xs tabular text-muted sm:w-16">
+                          {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
+                        </span>
+                      </PlayerLink>
+                      {member.player.scoreSaberId ? (
+                        <Badge title="ScoreSaber is linked, so their scores and pp there count too">SS</Badge>
+                      ) : (
+                        canManage && <LinkScoreSaber memberId={member.id} playerName={member.player.name} />
+                      )}
+                      {(canManage || isCaptainOf(actor, team.id)) && (
+                        <MemberControls
+                          memberId={member.id}
+                          playerName={member.player.name}
+                          teamName={team.name}
+                          isCaptain={member.role === 'CAPTAIN'}
+                          isSub={member.isSub}
+                          available={member.available}
+                          canManage={canManage}
+                        />
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {canManage && <AddPlayerForm teamId={team.id} teamName={team.name} />}
+
+              {canManage && (
+                <details className="mt-3 border-t border-edge pt-3 text-sm">
+                  <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">
+                    Edit team
+                  </summary>
+                  <form action={updateTeam} className="mt-3 flex flex-wrap items-start gap-3">
+                    <input type="hidden" name="teamId" value={team.id} />
+                    <div className="min-w-[10rem] flex-1">
+                      <Field label="Name">
+                        <input name="name" defaultValue={team.name} className={inputClass} required />
+                      </Field>
+                    </div>
+                    <Field label="Colour">
+                      <input
+                        type="color"
+                        name="color"
+                        defaultValue={team.color}
+                        className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
                       />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {canManage && <AddPlayerForm teamId={team.id} teamName={team.name} />}
-
-            {canManage && (
-              <details className="mt-3 border-t border-edge pt-3 text-sm">
-                <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">
-                  Edit team
-                </summary>
-                <form action={updateTeam} className="mt-3 flex flex-wrap items-start gap-3">
-                  <input type="hidden" name="teamId" value={team.id} />
-                  <div className="min-w-[10rem] flex-1">
-                    <Field label="Name">
-                      <input name="name" defaultValue={team.name} className={inputClass} required />
                     </Field>
-                  </div>
-                  <Field label="Colour">
-                    <input
-                      type="color"
-                      name="color"
-                      defaultValue={team.color}
-                      className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
-                    />
-                  </Field>
-                  <Field label="Second colour">
-                    <input
-                      type="color"
-                      name="colorSecondary"
-                      defaultValue={team.colorSecondary}
-                      className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
-                    />
-                  </Field>
-                  <FieldAction>
-                    <Button type="submit">Save</Button>
-                  </FieldAction>
-                </form>
-                <form action={deleteTeam} className="mt-3">
-                  <input type="hidden" name="teamId" value={team.id} />
-                  <ConfirmSubmit
-                    question={`Delete ${team.name} and its roster? This cannot be undone.`}
-                  >
-                    Delete team
-                  </ConfirmSubmit>
-                </form>
-              </details>
-            )}
+                    <Field label="Second colour">
+                      <input
+                        type="color"
+                        name="colorSecondary"
+                        defaultValue={team.colorSecondary}
+                        className="h-9 w-14 rounded-lg border border-edge-strong bg-transparent"
+                      />
+                    </Field>
+                    <FieldAction>
+                      <Button type="submit">Save</Button>
+                    </FieldAction>
+                  </form>
+                  <form action={deleteTeam} className="mt-3">
+                    <input type="hidden" name="teamId" value={team.id} />
+                    <ConfirmSubmit
+                      question={`Delete ${team.name} and its roster? This cannot be undone.`}
+                    >
+                      Delete team
+                    </ConfirmSubmit>
+                  </form>
+                </details>
+              )}
             </div>
           </Panel>
         ))}
       </div>
 
-      {canManage && (
+      {canManage && showing === 'entered' && (
         <div className="grid gap-6 md:grid-cols-2">
           <Panel title="New team">
             <form action={createTeam} className="flex flex-wrap items-start gap-3">

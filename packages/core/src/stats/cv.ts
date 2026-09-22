@@ -32,13 +32,24 @@ export interface CvOptions {
   seed?: number;
 }
 
+/**
+ * The factor ridge starts at 1, not the 0.3 it used to. A factor is fitted
+ * from one player's own residuals, and at 0.3 ten scores on acc maps were
+ * enough to hand a player a confident "does well on tech" factor - which put
+ * them at 93% on Spin Eternally, above people who beat them on every map they
+ * had in common, and called a map lost that was a 96%:83% mismatch the other
+ * way. Held-out error could not see it: it is dominated by the players with
+ * thirty scores, whose factors are well determined. At 1 and 3 the factor
+ * has to earn its size from more than a handful of residuals.
+ */
 const DEFAULT_GRID: FitOptions[] = [
   { latentFactors: 0, biasRegularization: 0.25 },
   { latentFactors: 0, biasRegularization: 0.5 },
   { latentFactors: 0, biasRegularization: 1 },
-  { latentFactors: 1, biasRegularization: 0.5, factorRegularization: 0.3 },
-  { latentFactors: 1, biasRegularization: 1, factorRegularization: 0.3 },
-  { latentFactors: 2, biasRegularization: 0.5, factorRegularization: 0.3 },
+  { latentFactors: 1, biasRegularization: 0.25, factorRegularization: 1 },
+  { latentFactors: 1, biasRegularization: 0.5, factorRegularization: 1 },
+  { latentFactors: 1, biasRegularization: 0.5, factorRegularization: 3 },
+  { latentFactors: 2, biasRegularization: 0.5, factorRegularization: 1 },
 ];
 
 /** Deterministic shuffle, so a recommendation is reproducible. */
@@ -149,9 +160,20 @@ export function chooseFitOptions(
     .sort((a, b) => a.maeAccPoints - b.maeAccPoints);
 
   const best = comparison[0]!;
-  const chosen = Number.isFinite(best.maeAccPoints)
-    ? best.options
-    : { latentFactors: 0, biasRegularization: 1 };
+  if (!Number.isFinite(best.maeAccPoints)) {
+    return { chosen: { latentFactors: 0, biasRegularization: 1 }, comparison };
+  }
+
+  // A more complex model has to win by a margin. With the factor ridge doing
+  // its job, factors on a small board shrink to nothing and the fit *is* the
+  // additive one, to the third decimal - and a plain sort then picks whichever
+  // of the tied settings happens to come first, which was the two-factor one.
+  // Within a percent of the best error, the fewest factors win; that is inside
+  // the noise between fold seeds, which moves the error by far more.
+  const margin = best.maeAccPoints * 1.01;
+  const chosen = comparison
+    .filter((c) => c.maeAccPoints <= margin)
+    .sort((a, b) => (a.options.latentFactors ?? 0) - (b.options.latentFactors ?? 0))[0]!.options;
 
   return { chosen, comparison };
 }

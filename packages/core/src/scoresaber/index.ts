@@ -4,6 +4,16 @@
  * well under by pausing between calls.
  */
 
+import { sleep } from '../util/limit.js';
+
+const MAX_RETRIES = 4;
+/** The longest a Retry-After is obeyed for, as in the BeatLeader client. */
+const MAX_RETRY_AFTER_MS = 30_000;
+
+function backoffMs(attempt: number): number {
+  return Math.min(500 * 2 ** attempt, 8000) + Math.random() * 250;
+}
+
 export interface SSPlayer {
   id: string;
   name: string;
@@ -78,18 +88,38 @@ export class ScoreSaberClient {
   ) {}
 
   private async get<T>(path: string): Promise<T | null> {
-    const wait = this.last + this.gapMs - Date.now();
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.last = Date.now();
+    // Retried like the BeatLeader client: one 429 used to abort a player's
+    // whole sync, and an unfinished backfill then restarted from page one on
+    // the next poll, so a flaky hour kept a player at "never backfilled".
+    for (let attempt = 0; ; attempt++) {
+      const wait = this.last + this.gapMs - Date.now();
+      if (wait > 0) await sleep(wait);
+      this.last = Date.now();
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      headers: { 'user-agent': 'BSCompStats', accept: 'application/json' },
-      signal: AbortSignal.timeout(20_000),
-    });
-    // Not on ScoreSaber is an answer, not a failure.
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`ScoreSaber ${response.status} for ${path}`);
-    return (await response.json()) as T;
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}${path}`, {
+          headers: { 'user-agent': 'BSCompStats', accept: 'application/json' },
+          signal: AbortSignal.timeout(20_000),
+        });
+      } catch (err) {
+        if (attempt === MAX_RETRIES) throw new Error(`ScoreSaber request failed for ${path}: ${(err as Error).message}`);
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      // Not on ScoreSaber is an answer, not a failure.
+      if (response.status === 404) return null;
+      if (response.status === 429 || response.status >= 500) {
+        if (attempt === MAX_RETRIES) throw new Error(`ScoreSaber ${response.status} for ${path}`);
+        const retryAfter = Number(response.headers.get('retry-after'));
+        await sleep(
+          Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS) : backoffMs(attempt),
+        );
+        continue;
+      }
+      if (!response.ok) throw new Error(`ScoreSaber ${response.status} for ${path}`);
+      return (await response.json()) as T;
+    }
   }
 
   /** Players by name. ScoreSaber wants at least four characters and answers 404 for no matches. */

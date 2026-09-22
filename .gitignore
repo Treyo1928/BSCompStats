@@ -12,3 +12,11 @@ coverage/
 npm-debug.log*
 .turbo/
 packages/db/generated/
+
+# Claude Code: per-machine settings and session state. CLAUDE.md and
+# .claude/launch.json are deliberately tracked - they are project context.
+.claude/settings.local.json
+.claude/*.local.*
+.claude/scratch/
+.claude/sessions/
+.claude/cache/

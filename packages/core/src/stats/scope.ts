@@ -112,6 +112,12 @@ export interface ScopedScore {
   /** Whether the map is in a pool belonging to this tournament. */
   inPool: boolean;
   ranked: boolean;
+  /**
+   * Prior weight in (0,1], for evidence that is less than a whole score - a
+   * failed run carries the share of the song it covered. Multiplies the
+   * recency weight. Omitted, a score counts in full.
+   */
+  weight?: number;
 }
 
 export interface WeightedObservation {
@@ -244,7 +250,7 @@ export function applyScope(
     leaderboardId: s.leaderboardId,
     acc: s.acc,
     isDnf: s.isDnf,
-    weight: recencyWeight(s.timeset, now, scope.halfLifeDays),
+    weight: recencyWeight(s.timeset, now, scope.halfLifeDays) * (s.weight ?? 1),
   }));
 
   return {

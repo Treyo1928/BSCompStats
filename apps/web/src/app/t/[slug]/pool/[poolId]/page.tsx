@@ -22,6 +22,7 @@ import {
   AvatarStack,
   chanceColor,
   pct,
+  TeamScopeTabs,
 } from '@/components/ui';
 import { PoolBoardTable } from '@/components/pool-board';
 import { LiveBadge } from '@/components/live-badge';
@@ -58,7 +59,7 @@ export default async function PoolPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; poolId: string }>;
-  searchParams: Promise<{ team?: string; vs?: string; once?: string; error?: string }>;
+  searchParams: Promise<{ team?: string; vs?: string; once?: string; error?: string; show?: string }>;
 }) {
   const { slug, poolId } = await params;
   const query = await searchParams;
@@ -77,7 +78,11 @@ export default async function PoolPage({
 
   // The outlook is the pool from one team's side. Which side is a plain query
   // parameter, so any pairing can be linked to and none of it needs signing in.
-  const realTeams = board.teams.filter(
+  // The board is the tournament's teams. Match-only sides still playing are behind a tab, not in among them.
+  const matchOnlyCount = board.teams.filter((t) => t.adHoc).length;
+  const showing = query.show === 'match-only' && matchOnlyCount > 0 ? ('adHoc' as const) : ('entered' as const);
+  const boardTeams = board.teams.filter((t) => t.adHoc === (showing === 'adHoc'));
+  const realTeams = boardTeams.filter(
     (t): t is typeof t & { teamId: string } => t.teamId !== null,
   );
   const outlookTeam = realTeams.find((t) => t.teamId === query.team) ?? realTeams[0] ?? null;
@@ -96,7 +101,7 @@ export default async function PoolPage({
       )
     : null;
   const outlookHref = (team: string, vs?: string | null, once = eachGroupOnce) =>
-    `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}${once ? '&once=1' : ''}#outlook`;
+    `/t/${slug}/pool/${poolId}?team=${team}${vs ? `&vs=${vs}` : ''}${once ? '&once=1' : ''}${showing === 'adHoc' ? '&show=match-only' : ''}#outlook`;
   const mapById = new Map(board.maps.map((m) => [m.poolMapId, m]));
 
   // Which teams the viewer plays for - they stay open when a big board starts collapsed.
@@ -186,7 +191,16 @@ export default async function PoolPage({
         </Panel>
       ) : (
         <Panel flush>
-          <PoolBoardTable maps={board.maps} teams={board.teams} myTeamIds={myTeamIds} />
+          {matchOnlyCount > 0 && (
+            <div className="border-b border-edge p-2">
+              <TeamScopeTabs
+                hrefs={{ entered: `/t/${slug}/pool/${poolId}`, adHoc: `/t/${slug}/pool/${poolId}?show=match-only` }}
+                showing={showing}
+                counts={{ entered: board.teams.length - matchOnlyCount, adHoc: matchOnlyCount }}
+              />
+            </div>
+          )}
+          <PoolBoardTable maps={board.maps} teams={boardTeams} myTeamIds={myTeamIds} />
           <Legend />
         </Panel>
       )}
@@ -272,7 +286,6 @@ export default async function PoolPage({
         </Panel>
       )}
 
-
       {outlook && outlookTeam && (
         <section id="outlook" className="scroll-mt-20">
           <Panel
@@ -345,26 +358,35 @@ export default async function PoolPage({
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[40rem] text-sm">
+                <table className="w-full min-w-[48rem] text-sm">
                   <thead>
                     <tr className="border-b border-edge text-left text-[10px] uppercase tracking-wider text-faint">
                       <th className="px-4 py-2 font-medium">Map</th>
                       <th className="px-3 py-2 font-medium">{outlookTeam.teamName} should field</th>
-                      <th className="px-3 py-2 text-right font-medium">Expected acc</th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Expected acc
+                        <OutlookHeaderNote>{outlookTeam.teamName}</OutlookHeaderNote>
+                      </th>
                       {outlookOpponent && (
                         <>
                           <th className="px-3 py-2 font-medium">{outlookOpponent.teamName}&apos;s best</th>
+                          <th className="px-3 py-2 text-right font-medium">
+                            Expected acc
+                            <OutlookHeaderNote>{outlookOpponent.teamName}</OutlookHeaderNote>
+                          </th>
                           <th
                             className="px-3 py-2 text-right font-medium"
-                            title="Chance of taking the map when both teams field the groups shown."
+                            title={`Chance of ${outlookTeam.teamName} taking the map when both teams field the groups shown.`}
                           >
                             Win chance
+                            <OutlookHeaderNote>these groups</OutlookHeaderNote>
                           </th>
                           <th
                             className="px-4 py-2 text-right font-medium"
-                            title="Chance of taking the map averaged over every group either team could field - how the map leans before anyone picks a lineup."
+                            title={`Chance of ${outlookTeam.teamName} taking the map averaged over every group either team could field - how the map leans before anyone picks a lineup.`}
                           >
                             Any lineups
+                            <OutlookHeaderNote>all groups averaged</OutlookHeaderNote>
                           </th>
                         </>
                       )}
@@ -404,6 +426,9 @@ export default async function PoolPage({
                                   <span className="text-xs text-faint">roster too small</span>
                                 )}
                               </td>
+                              <td className="px-3 py-2 text-right tabular">
+                                {row.versus?.opponentLineupAcc != null ? pct(row.versus.opponentLineupAcc) : '—'}
+                              </td>
                               <td
                                 className="px-3 py-2 text-right font-semibold tabular"
                                 style={row.versus ? { color: chanceColor(row.versus.winProbability) } : undefined}
@@ -433,6 +458,8 @@ export default async function PoolPage({
                       )
                       .join(' ')} A real match plays fewer maps than the whole pool, so this rarely bites there.`
                 : 'Each map is judged on its own: the group shown is the strongest for that map alone. Turn on the rule above to see the best set when no pairing can be used twice.'}{' '}
+              {outlookOpponent &&
+                `Win chance is ${outlookTeam.teamName}'s chance of taking the map with the two groups shown head to head. Any lineups averages that over every group either team could field, which is how the map leans before anyone commits to a lineup. `}
               A match also limits how many maps one player can play, which the lineup advice on a
               match page accounts for.
             </p>
@@ -517,6 +544,18 @@ export default async function PoolPage({
             </Stat>
             <Stat label="Typical spread" hint="Run-to-run scatter on a map of ordinary volatility">
               ±{spreadInAccPoints(board).toFixed(2)} pts
+            </Stat>
+            <Stat
+              label="Runs as scores"
+              hint="Maps a player has never cleared but has hit ten notes on: their longest run's accuracy counts as their score there. Every recorded run also feeds the fail chance. Only players who show their stats publicly on BeatLeader have any."
+            >
+              {board.model.runObservationCount}
+              <span className="ml-1 text-xs font-normal text-muted">
+                ·{' '}
+                <Link href={`/t/${slug}/stats#runs`} className="underline decoration-faint underline-offset-2 hover:text-ink">
+                  runs known for {board.model.runsKnownFor} of {board.model.playerCount}
+                </Link>
+              </span>
             </Stat>
           </dl>
           <p className="mt-3 text-xs text-muted">
@@ -623,6 +662,17 @@ function Legend() {
       </span>
       <span>★ best on map</span>
       <span>FC full combo</span>
+      <span
+        className="flex items-center gap-1.5"
+        title="Never cleared, but BeatLeader saw them try: the accuracy of their longest run of ten notes or more (or the most accurate within a tenth of the song of it) counts as their score here, in the averages and in the predictions, until they clear it. The small number is what that accuracy comes to over the whole map. Shown only for players who show their stats publicly on BeatLeader."
+      >
+        <span className="relative rounded px-1.5 font-semibold outline outline-1 outline-dashed outline-white/25" style={{ background: 'rgba(127,29,29,0.5)' }}>
+          <span className="absolute left-0.5 top-0 text-[8px] text-red-300">✗</span>85%
+        </span>
+        best run, never cleared - counts as their score
+      </span>
+      <span title="How many runs BeatLeader has recorded on the map, clears and fails together.">↻3 runs recorded</span>
+      <span title="Tried, never cleared, and no run hit ten notes. The prediction stands.">✗3 tries, none hit 10 notes</span>
     </div>
   );
 }
@@ -666,6 +716,15 @@ function TeamPill({
       <span className="h-2 w-2 rounded-full ring-1 ring-white/25" style={{ background: color }} />
       {name}
     </Link>
+  );
+}
+
+/** A second line under a column heading, saying whose number or which figure it is. */
+function OutlookHeaderNote({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="block whitespace-nowrap font-normal normal-case tracking-normal text-faint/80">
+      {children}
+    </span>
   );
 }
 

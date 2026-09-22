@@ -496,3 +496,38 @@ export function pct(value: number, digits = 2): string {
 export function num(value: number): string {
   return value.toLocaleString('en-US');
 }
+
+/**
+ * Tournament teams / match-only teams. Sides made up for a scrim or a draft are
+ * real teams underneath, but they are not the tournament's, and listed together
+ * they bury the ones that are. Renders nothing when there are none to split off.
+ */
+export function TeamScopeTabs({
+  hrefs,
+  showing,
+  counts,
+}: {
+  hrefs: { entered: string; adHoc: string };
+  showing: 'entered' | 'adHoc';
+  counts: { entered: number; adHoc: number };
+}) {
+  if (counts.adHoc === 0) return null;
+  const tab = (key: 'entered' | 'adHoc', label: string) => (
+    <a
+      href={hrefs[key]}
+      aria-current={showing === key ? 'page' : undefined}
+      className={`inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition ${
+        showing === key ? 'bg-accent/20 text-ink ring-1 ring-inset ring-accent/40' : 'text-muted hover:bg-raised hover:text-ink'
+      }`}
+    >
+      {label}
+      <span className="text-xs tabular text-faint">{counts[key]}</span>
+    </a>
+  );
+  return (
+    <nav aria-label="Which teams" className="flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl border border-edge bg-panel/90 p-1">
+      {tab('entered', 'Tournament teams')}
+      {tab('adHoc', 'Match-only teams')}
+    </nav>
+  );
+}

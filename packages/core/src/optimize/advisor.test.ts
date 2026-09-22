@@ -4,6 +4,7 @@ import { normalizeScores } from '../stats/normalize.js';
 import { buildFailModel } from '../stats/profile.js';
 import { qualsObservations } from '../stats/__fixtures__/quals.js';
 import { evaluateMaps, recommendAction } from './advisor.js';
+import { answerOpponentCard, computeMatchAdvice } from './match-advice.js';
 import { recommendLineups } from './lineup.js';
 import { drawSamples, simulate, type SimMap } from './simulate.js';
 import { MSU_DUOS_FORMAT } from '../match/format.js';
@@ -242,5 +243,171 @@ describe('the engine end to end', () => {
 
     // Maroon swept the real scrim; the model should make them heavy favourites.
     expect(rec.best!.winProbability).toBeGreaterThan(0.8);
+  });
+});
+
+describe('the headline win chance is about lineups a captain would field', () => {
+  // The real match, 2026-09-21: on the speed map Team corn's two speed players
+  // beat anything Team Wynttter has, but their bench scores in the 30s - so
+  // averaged over every possible duo the map read 54% for Team Wynttter, and
+  // was their "suggested pick". With best lineups it was 29%.
+  const speed: Record<string, number> = {
+    wynttter: 0.887, treyo: 0.68, ohmydazed: 0.624, pretzel: 0.368, alexA: 0.264, zolism: 0.6,
+    corn: 0.855, ls: 0.81, mia: 0.545, wat: 0.593, layz: 0.301, alexB: 0.264,
+  };
+  const ours = ['wynttter', 'treyo', 'ohmydazed', 'pretzel', 'alexA', 'zolism'];
+  const theirs = ['corn', 'ls', 'mia', 'wat', 'layz', 'alexB'];
+  const maps: SimMap[] = [{ id: 'buggin', leaderboardId: 'buggin', maxScore: 1_000_000, isTiebreaker: false }];
+  const [value] = evaluateMaps({
+    maps,
+    format: MSU_DUOS_FORMAT,
+    ourRoster: ours,
+    theirRoster: theirs,
+    setup: {
+      maps,
+      format: MSU_DUOS_FORMAT,
+      playerIds: [...ours, ...theirs],
+      predict: (playerId) => ({ acc: speed[playerId]!, sigmaLogit: 0.15, failProbability: 0 }),
+      iterations: 4000,
+      seed: 7,
+    },
+  });
+
+  it('does not call a map ours because their bench is weak', () => {
+    expect(value!.opponentBestGroup.sort()).toEqual(['corn', 'ls']);
+    expect(value!.bestVsBest).toBeLessThan(0.35);
+    expect(value!.likely).toBeLessThan(0.35);
+    // The old headline, for the record: it leaned our way, or near it.
+    expect(value!.expected).toBeGreaterThan(value!.likely + 0.05);
+  });
+});
+
+describe('best against best means the best answer to their best', () => {
+  // The real match again, on the true-acc map. Wynttter + zolism beat corn + LS
+  // by over a point, but zolism has abandoned two maps in this pool, so there is
+  // a real chance he throws one away - which made Wynttter + Treyo the "best"
+  // duo on average over everything Team corn could field, and the map read 23%.
+  const acc: Record<string, number> = { wynttter: 0.9913, zolism: 0.9813, treyo: 0.963, corn: 0.9811, ls: 0.9777, mia: 0.9683 };
+  const fail: Record<string, number> = { zolism: 0.2 };
+  const ours = ['wynttter', 'zolism', 'treyo'];
+  const theirs = ['corn', 'ls', 'mia'];
+  const maps: SimMap[] = [{ id: 'ride', leaderboardId: 'ride', maxScore: 1_000_000, isTiebreaker: false }];
+  const [value] = evaluateMaps({
+    maps,
+    format: MSU_DUOS_FORMAT,
+    ourRoster: ours,
+    theirRoster: theirs,
+    setup: {
+      maps,
+      format: MSU_DUOS_FORMAT,
+      playerIds: [...ours, ...theirs],
+      predict: (playerId) => ({ acc: acc[playerId]!, sigmaLogit: 0.12, failProbability: fail[playerId] ?? 0 }),
+      iterations: 6000,
+      seed: 11,
+    },
+  });
+
+  it('answers their best lineup with whoever does best against it', () => {
+    expect([...value!.opponentBestGroup].sort()).toEqual(['corn', 'ls']);
+    expect([...value!.bestGroup].sort()).toEqual(['wynttter', 'zolism']);
+    expect(value!.likely).toBeGreaterThan(0.5);
+  });
+});
+
+describe('the opponent has a captain too', () => {
+  // Two stars and two passengers against six even players. With a duo usable
+  // once and everyone playing twice, the stars carry two maps at most; the
+  // passengers must play two together or split - and a real captain on the
+  // other side meets them with strength. This card read 97% to win when the
+  // opponent was assumed to rotate their roster blindly.
+  const acc: Record<string, number> = {
+    wyn: 0.985, corn: 0.975, wat: 0.9, alex: 0.88,
+    ls: 0.965, treyo: 0.96, ohmy: 0.955, zol: 0.955, mia: 0.955, pretzel: 0.95,
+  };
+  const ours = ['wyn', 'corn', 'wat', 'alex'];
+  const theirs = ['ls', 'treyo', 'ohmy', 'zol', 'mia', 'pretzel'];
+  const maps: SimMap[] = ['m1', 'm2', 'm3', 'm4', 'tb'].map((id) => ({ id, leaderboardId: id, maxScore: 1_000_000, isTiebreaker: id === 'tb' }));
+  const advice = computeMatchAdvice({
+    format: MSU_DUOS_FORMAT,
+    poolMaps: maps,
+    playedMaps: maps,
+    ourRoster: ours,
+    theirRoster: theirs,
+    pending: null,
+    predictions: Object.fromEntries(
+      [...ours, ...theirs].map((p) => [p, Object.fromEntries(maps.map((m) => [m.id, { acc: acc[p]!, sigmaLogit: 0.12, failProbability: 0 }]))]),
+    ),
+    iterations: 3000,
+    seed: 5,
+  });
+
+  it('does not hand a top-heavy side the match on the strength of a blind opponent', () => {
+    const win = advice.lineups.winProbability!;
+    expect(win.winProbability).toBeLessThan(0.75);
+    // Every map has a verdict, and a map the passengers play together is expected to be lost.
+    expect(Object.keys(win.perMap).sort()).toEqual(['m1', 'm2', 'm3', 'm4', 'tb']);
+    const passengers = Object.entries(win.lineups).find(([, g]) => [...g].sort().join() === 'alex,wat');
+    if (passengers) expect(win.perMap[passengers[0]]!.winProbability).toBeLessThan(0.2);
+    expect(Object.keys(win.opponentLineups).length).toBe(5);
+  });
+});
+
+describe('answering a partial opponent card', () => {
+  const acc: Record<string, number> = {
+    wyn: 0.985, corn: 0.975, wat: 0.9, alex: 0.88,
+    ls: 0.965, treyo: 0.96, ohmy: 0.955, zol: 0.955, mia: 0.955, pretzel: 0.95,
+  };
+  const ours = ['wyn', 'corn', 'wat', 'alex'];
+  const theirs = ['ls', 'treyo', 'ohmy', 'zol', 'mia', 'pretzel'];
+  const maps: SimMap[] = ['m1', 'm2', 'm3', 'm4', 'tb'].map((id) => ({ id, leaderboardId: id, maxScore: 1_000_000, isTiebreaker: id === 'tb' }));
+  const input = {
+    format: MSU_DUOS_FORMAT,
+    playedMaps: maps,
+    ourRoster: ours,
+    theirRoster: theirs,
+    predictions: Object.fromEntries(
+      [...ours, ...theirs].map((p) => [p, Object.fromEntries(maps.map((m) => [m.id, { acc: acc[p]!, sigmaLogit: 0.12, failProbability: 0 }]))]),
+    ),
+    iterations: 2000,
+    seed: 3,
+  };
+
+  it('holds what was set and infers the rest as a captain would, not as a rotation', () => {
+    const result = answerOpponentCard({ ...input, opponentLineups: { m1: ['pretzel', 'mia'] } });
+    const card = result.winProbability!.opponentLineups;
+    expect([...card.m1!].sort()).toEqual(['mia', 'pretzel']);
+    expect(result.pinnedMapIds).toEqual(['m1']);
+    // Every map filled, legally: nobody more than twice on the four regular
+    // maps, and no pairing used twice - the pinned one included.
+    const regular = ['m1', 'm2', 'm3', 'm4'];
+    const counts = new Map<string, number>();
+    for (const id of regular) for (const p of card[id]!) counts.set(p, (counts.get(p) ?? 0) + 1);
+    expect(Math.max(...counts.values())).toBeLessThanOrEqual(2);
+    const duos = regular.map((id) => [...card[id]!].sort().join());
+    expect(new Set(duos).size).toBe(regular.length);
+    // The inferred maps are not the blind rotation, which around a pinned m1
+    // would read ohmy+zol, mia+pretzel, ls+treyo on m2-m4 (and repeat the pin).
+    const rotation = ['ohmy,zol', 'mia,pretzel', 'ls,treyo'];
+    const inferred = ['m2', 'm3', 'm4'].map((id) => [...card[id]!].sort().join());
+    expect(inferred).not.toEqual(rotation);
+  });
+
+  it('says so when a side cannot fill a map, instead of a 0% built from nothing', () => {
+    const result = answerOpponentCard({ ...input, theirRoster: ['ls'], opponentLineups: {} });
+    expect(result.winProbability).toBeNull();
+    expect(result.infeasible).toMatch(/Their team has 1 available player/);
+  });
+
+  it('refuses pins no legal card fits around rather than scoring a rotation', () => {
+    // Two pins that repeat a pairing: no card for their roster honours both.
+    const result = answerOpponentCard({ ...input, opponentLineups: { m1: ['ls', 'treyo'], m2: ['treyo', 'ls'] } });
+    expect(result.winProbability).toBeNull();
+    expect(result.infeasible).toBeTruthy();
+  });
+
+  it('with nothing set, gives the same kind of answer the lineup panel does', () => {
+    const result = answerOpponentCard({ ...input, opponentLineups: {} });
+    expect(result.pinnedMapIds).toEqual([]);
+    expect(result.winProbability!.winProbability).toBeLessThan(0.8);
   });
 });

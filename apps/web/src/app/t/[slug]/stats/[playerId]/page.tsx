@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { can } from '@/server/match-helpers';
-import { linkScoreSaber } from '@/server/actions';
+import { linkScoreSaber, pullRuns } from '@/server/actions';
 import { SCORE_SOURCES, type ScoreSource } from '@/server/score-sources';
 import {
   Avatar,
@@ -119,14 +119,14 @@ export default async function PlayerStatsPage({
       pp: overall.pp,
     },
     ...player.kinds.map((k): KindRow => ({
-    kind: k.kind,
-    maps: k.maps,
-    team: { gap: points(k.vsTeam.gap), rank: k.teamRank, ranked: k.teamRanked, comparisons: k.vsTeam.comparisons },
-    field: { gap: points(k.vsField.gap), rank: k.fieldRank, ranked: k.fieldRanked, comparisons: k.vsField.comparisons },
-    pp: k.pp,
-    predicted: k.predicted
-      ? { gap: k.predicted.accPoints, rank: k.predicted.fieldRank, ranked: k.predicted.fieldSize }
-      : null,
+      kind: k.kind,
+      maps: k.maps,
+      team: { gap: points(k.vsTeam.gap), rank: k.teamRank, ranked: k.teamRanked, comparisons: k.vsTeam.comparisons },
+      field: { gap: points(k.vsField.gap), rank: k.fieldRank, ranked: k.fieldRanked, comparisons: k.vsField.comparisons },
+      pp: k.pp,
+      predicted: k.predicted
+        ? { gap: k.predicted.accPoints, rank: k.predicted.fieldRank, ranked: k.predicted.fieldSize }
+        : null,
     })),
   ];
 
@@ -153,24 +153,24 @@ export default async function PlayerStatsPage({
         }
         actions={
           <>
-          <a
-            href={`https://beatleader.com/u/${player.beatLeaderId}`}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="inline-flex h-9 items-center rounded-lg border border-edge bg-raised/60 px-3 text-sm font-medium hover:border-faint"
-          >
-            BeatLeader profile
-          </a>
-          {player.scoreSaber && (
             <a
-              href={`https://scoresaber.com/u/${player.scoreSaber.id}`}
+              href={`https://beatleader.com/u/${player.beatLeaderId}`}
               target="_blank"
               rel="noreferrer noopener"
               className="inline-flex h-9 items-center rounded-lg border border-edge bg-raised/60 px-3 text-sm font-medium hover:border-faint"
             >
-              ScoreSaber profile
+              BeatLeader profile
             </a>
-          )}
+            {player.scoreSaber && (
+              <a
+                href={`https://scoresaber.com/u/${player.scoreSaber.id}`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="inline-flex h-9 items-center rounded-lg border border-edge bg-raised/60 px-3 text-sm font-medium hover:border-faint"
+              >
+                ScoreSaber profile
+              </a>
+            )}
           </>
         }
       />
@@ -506,6 +506,16 @@ export default async function PlayerStatsPage({
         error={error}
       />
 
+      <RunsPanel
+        slug={slug}
+        playerId={playerId}
+        name={player.name}
+        beatLeaderId={player.beatLeaderId}
+        runs={await loadRunsSummary(playerId)}
+        isOwn={actor.userId !== '' && actor.userId === player.userId}
+        mayPull={(actor.userId !== '' && actor.userId === player.userId) || can(actor, 'MANAGE_TEAMS')}
+      />
+
       <Panel title="Map by map" subtitle={`Ranked within ${team.name}`} flush>
         {player.lines.length === 0 ? (
           <div className="p-4">
@@ -709,6 +719,106 @@ function ScoreSaberPanel({
           </FieldAction>
         </form>
       )}
+    </Panel>
+  );
+}
+
+async function loadRunsSummary(playerId: string) {
+  const [player, byEnd] = await Promise.all([
+    prisma.player.findUnique({
+      where: { id: playerId },
+      select: { attemptsPublic: true, attemptsCheckedAt: true, attemptsSyncedAt: true },
+    }),
+    prisma.attempt.groupBy({ by: ['endType'], where: { playerId }, _count: { _all: true } }),
+  ]);
+  const count = (end: string) => byEnd.find((r) => r.endType === end)?._count._all ?? 0;
+  return {
+    visible: player?.attemptsPublic ?? null,
+    checkedAt: player?.attemptsCheckedAt ?? null,
+    syncedAt: player?.attemptsSyncedAt ?? null,
+    clears: count('CLEAR'),
+    fails: count('FAIL'),
+    falseStarts: count('RESTART') + count('QUIT'),
+  };
+}
+
+/**
+ * The runs behind the leaderboard. BeatLeader records every run the mod
+ * uploads, but shows them only where the player has turned on "show my stats
+ * publicly" - and to anyone then, so there is nothing to link and no sign-in
+ * that unlocks them. The panel says which it is, and lets the player (or a
+ * team manager) have them pulled the moment the switch is flipped.
+ */
+function RunsPanel({
+  slug,
+  playerId,
+  name,
+  beatLeaderId,
+  runs,
+  isOwn,
+  mayPull,
+}: {
+  slug: string;
+  playerId: string;
+  name: string;
+  beatLeaderId: string;
+  runs: Awaited<ReturnType<typeof loadRunsSummary>>;
+  isOwn: boolean;
+  mayPull: boolean;
+}) {
+  const when = (d: Date | null) => (d ? d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : null);
+  const subtitle =
+    runs.visible === true
+      ? 'Every run BeatLeader recorded on the pool maps - fails included, as they should be'
+      : runs.visible === false
+        ? `BeatLeader keeps ${isOwn ? 'your' : 'their'} runs private, so only clears are known here`
+        : 'Not asked BeatLeader yet';
+  return (
+    <Panel
+      title="Recorded runs"
+      subtitle={subtitle}
+      actions={
+        <a
+          href={`https://beatleader.com/u/${beatLeaderId}`}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="inline-flex h-8 items-center rounded-lg border border-edge bg-raised/60 px-2.5 text-xs font-medium hover:border-faint"
+        >
+          BeatLeader profile
+        </a>
+      }
+    >
+      {runs.visible === true ? (
+        <dl className="grid grid-cols-3 gap-2">
+          <Stat label="Clears">{runs.clears.toLocaleString('en-US')}</Stat>
+          <Stat label="Fails" hint="Runs that ended before the song did. On a map never cleared, the longest run of ten notes or more stands in for a score on the board.">
+            {runs.fails.toLocaleString('en-US')}
+          </Stat>
+          <Stat label="False starts" hint="Restarts, and quits in the first seconds. Counted as tries, not as fails.">
+            {runs.falseStarts.toLocaleString('en-US')}
+          </Stat>
+        </dl>
+      ) : (
+        <p className="text-sm text-muted">
+          A leaderboard shows only a best clear, so a map {isOwn ? 'you have' : `${name} has`} tried and never
+          finished looks like one never opened. BeatLeader records every run, and shows them to anyone once{' '}
+          <span className="text-ink">Show my stats publicly</span> is on in{' '}
+          {isOwn ? 'your' : 'their'} BeatLeader profile settings. Signing in here does not unlock them: BeatLeader
+          answers that request from its own session only.
+        </p>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-faint">
+        {runs.syncedAt ? <span>Last pulled {when(runs.syncedAt)}</span> : runs.checkedAt ? <span>Last asked {when(runs.checkedAt)}</span> : null}
+        {mayPull && (
+          <form action={pullRuns}>
+            <input type="hidden" name="slug" value={slug} />
+            <input type="hidden" name="playerId" value={playerId} />
+            <Button type="submit" variant="ghost">
+              {runs.visible === true ? 'Pull runs now' : 'Check again now'}
+            </Button>
+          </form>
+        )}
+      </div>
     </Panel>
   );
 }

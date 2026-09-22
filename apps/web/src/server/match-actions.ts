@@ -20,6 +20,7 @@ import { getActor, realUser } from './session';
 import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
 import { cleanUpAdHocTeams, openMatch } from './custom-teams';
+import { tallyMaps } from './match-summary';
 
 /**
  * Match mutations.
@@ -113,21 +114,21 @@ export async function submitPickBan(formData: FormData): Promise<void> {
 
   try {
     await prisma.$transaction([
-    prisma.matchAction.deleteMany({
-      where: { matchId, seq: action.seq, undoneAt: { not: null } },
-    }),
-    prisma.matchAction.create({
-      data: {
-        matchId,
-        seq: action.seq,
-        type: action.type,
-        teamId: action.teamId,
-        poolMapId: action.poolMapId,
-        actingUserId: operator,
-        // Recorded so the timeline reads honestly when an organiser stands in.
-        onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
-      },
-    }),
+      prisma.matchAction.deleteMany({
+        where: { matchId, seq: action.seq, undoneAt: { not: null } },
+      }),
+      prisma.matchAction.create({
+        data: {
+          matchId,
+          seq: action.seq,
+          type: action.type,
+          teamId: action.teamId,
+          poolMapId: action.poolMapId,
+          actingUserId: operator,
+          // Recorded so the timeline reads honestly when an organiser stands in.
+          onBehalfOfUserId: captainSeat?.player.userId ?? actor.userId,
+        },
+      }),
     ]);
   } catch (err) {
     // The unique (matchId, seq) did its job: someone else took this step a
@@ -189,6 +190,15 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
   if (!can(actor, 'SET_LINEUP', { teamId })) {
     throw new Error('You cannot set this team\'s lineup.');
   }
+  // The scores are frozen against the lineups that earned them. Every other
+  // change to a finished match is refused; this one was not, and rewrote who
+  // "played" under a final result.
+  if (match.state === 'COMPLETE') {
+    return { error: 'This match is complete, so its lineups are frozen. Reopen it to change them.' };
+  }
+  if (teamId !== match.teamAId && teamId !== match.teamBId) {
+    throw new Error('That team is not in this match.');
+  }
 
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
 
@@ -199,7 +209,7 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
     orderBy: { order: 'asc' },
     include: {
       poolMap: { include: { leaderboard: { include: { map: true } } } },
-      lineups: { where: { teamId }, include: { slots: true } },
+      lineups: { include: { slots: true } },
     },
   });
 
@@ -209,8 +219,30 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
   if (!existing.some((mm) => mm.id === matchMapId)) {
     throw new Error('That map is not part of this match.');
   }
-  if (teamId !== match.teamAId && teamId !== match.teamBId) {
-    throw new Error('That team is not in this match.');
+
+  // Hidden lineups: while either side has maps unset, someone on a team in
+  // this match may only touch their own card - the same rule the page draws,
+  // held here too, so an organiser who captains one side cannot post the
+  // action for the other.
+  if (match.blindLineups) {
+    const everySet = existing.every((mm) =>
+      [match.teamAId, match.teamBId].every(
+        (id) => (mm.lineups.find((l) => l.teamId === id)?.slots.length ?? 0) >= format.playersPerMap,
+      ),
+    );
+    if (!everySet && actor.userId) {
+      const spots = await prisma.teamMember.findMany({
+        where: { teamId: { in: [match.teamAId, match.teamBId] }, player: { userId: actor.userId } },
+        select: { teamId: true },
+      });
+      const mySides = new Set([
+        ...spots.map((s) => s.teamId),
+        ...[match.teamAId, match.teamBId].filter((id) => isCaptainOf(actor, id)),
+      ]);
+      if (mySides.size > 0 && !mySides.has(teamId)) {
+        return { error: 'Lineups are hidden until both teams have set every map. You can only set your own team\'s.' };
+      }
+    }
   }
 
   const lineups: LineupInput[] = existing.map((mm) => ({
@@ -220,7 +252,7 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
     playerIds:
       mm.id === matchMapId
         ? playerIds
-        : (mm.lineups[0]?.slots ?? []).map((s) => s.playerId),
+        : (mm.lineups.find((l) => l.teamId === teamId)?.slots ?? []).map((s) => s.playerId),
   }));
 
   // Only players who can actually be fielded: not an absent one, not a sub who
@@ -483,7 +515,6 @@ async function loadForMutation(matchId: string) {
   return match;
 }
 
-
 /**
  * Freeze a match. Its recorded attempts become the final result and stop
  * tracking whatever the players do on those maps afterwards.
@@ -500,41 +531,20 @@ export async function completeMatch(formData: FormData): Promise<void> {
     include: { attempts: true },
   });
 
-  let a = 0;
-  let b = 0;
-  const regular = maps.filter((m) => !m.isTiebreaker);
-
-  const totalFor = (attempts: Array<{ teamId: string; playerId: string; score: number }>, teamId: string) => {
-    // Best attempt per player, so a replayed map counts the higher run.
-    const best = new Map<string, number>();
-    for (const attempt of attempts.filter((x) => x.teamId === teamId)) {
-      best.set(attempt.playerId, Math.max(best.get(attempt.playerId) ?? 0, attempt.score));
-    }
-    return [...best.values()].reduce((acc, v) => acc + v, 0);
-  };
-
-  for (const matchMap of regular) {
-    const totalA = totalFor(matchMap.attempts, match.teamAId);
-    const totalB = totalFor(matchMap.attempts, match.teamBId);
-    if (!totalA && !totalB) continue;
-    if (totalA > totalB) a++;
-    else if (totalB > totalA) b++;
-  }
-
-  if (a === b) {
-    const tb = maps.find((m) => m.isTiebreaker);
-    if (tb) {
-      const totalA = totalFor(tb.attempts, match.teamAId);
-      const totalB = totalFor(tb.attempts, match.teamBId);
-      if (totalA > totalB) a++;
-      else if (totalB > totalA) b++;
-    }
-  }
+  let { a, b } = tallyMaps(maps, match.teamAId, match.teamBId);
 
   // A format decided on aggregate counts points, not maps: winning three maps
   // narrowly and losing one badly can lose the match.
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
   if (format.winCondition === 'AGGREGATE_MARGIN') {
+    // Best attempt per player, so a replayed map counts the higher run.
+    const totalFor = (attempts: Array<{ teamId: string; playerId: string; score: number }>, teamId: string) => {
+      const best = new Map<string, number>();
+      for (const attempt of attempts.filter((x) => x.teamId === teamId)) {
+        best.set(attempt.playerId, Math.max(best.get(attempt.playerId) ?? 0, attempt.score));
+      }
+      return [...best.values()].reduce((acc, v) => acc + v, 0);
+    };
     a = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamAId), 0);
     b = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamBId), 0);
   }

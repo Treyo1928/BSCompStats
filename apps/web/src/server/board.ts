@@ -1,9 +1,10 @@
+import { isBestRunCandidate, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
 import { categorizeMap } from '@bscs/core/beatleader';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
 import { buildTournamentModel, failKey, type TournamentModel } from './stats';
-import { loadScores, type ScoreSource } from './score-sources';
+import { loadRuns, loadScores, type ScoreSource, type StoredRun } from './score-sources';
 
 /**
  * The pool board: every tracked player against every map in a pool.
@@ -36,6 +37,37 @@ export interface BoardCell {
   predictedHigh: number;
   /** Rank within the column, 1-based. Null when unplayed. */
   rank: number | null;
+  /**
+   * The runs BeatLeader recorded here, where the player shows them. Null when
+   * they do not, or have never started the map.
+   */
+  runs: CellRuns | null;
+  /**
+   * True when `acc` is not a clear but the player's best run of ten notes or more
+   * seconds on a map they have never cleared - their score here all the same.
+   */
+  isRun: boolean;
+  /** For a run: the score that accuracy comes to over the whole map. */
+  projectedScore: number | null;
+  /** The easier map whose real score holds this prediction down, when one does. */
+  cappedBy: string | null;
+}
+
+export interface CellRuns {
+  /** Every run that was a real go at the map: clears, fails, and quits well under way. */
+  total: number;
+  finished: number;
+  fails: number;
+  /** Restarts, and quits in the first seconds. */
+  falseStarts: number;
+  /**
+   * The best run that hit ten notes or more without clearing: the highest
+   * accuracy, which is the player's number on the map while they have no
+   * clear. Null when none got that far.
+   */
+  bestTry: { acc: number; progress: number; seconds: number; notesHit: number; replayUrl: string | null } | null;
+  /** Runs that hit fewer than ten notes, whose accuracy says nothing. */
+  shortTries: number;
 }
 
 export interface BoardRow {
@@ -47,8 +79,12 @@ export interface BoardRow {
   teamName: string | null;
   teamColor: string | null;
   teamColorSecondary: string | null;
+  /** Their team here is a match-only side, not one entered in the tournament. */
+  teamAdHoc: boolean;
   /** False for an absent player or a sub who is not switched in. */
   available: boolean;
+  /** Whether BeatLeader shows this player's runs: true, false, or null for not yet asked. */
+  runsVisible: boolean | null;
   cells: BoardCell[];
   /** Mean accuracy over the maps they have played in this pool. */
   meanAcc: number | null;
@@ -93,6 +129,8 @@ export interface PoolBoard {
     teamId: string | null;
     teamName: string;
     color: string;
+    /** A side put together for a match. Listed apart from the tournament's own teams. */
+    adHoc: boolean;
     rows: BoardRow[];
   }>;
   model: TournamentModel;
@@ -204,6 +242,9 @@ export async function buildPoolBoard(
   const scores = await loadScores(playerIds, { source, leaderboardIds });
 
   const scoreBy = new Map(scores.map((s) => [`${s.playerId}::${s.leaderboardId}`, s]));
+  const known = source === 'scoresaber' ? null : await loadRuns(playerIds, leaderboardIds);
+  const runsBy = summariseRuns(known?.runs ?? [], known?.durations ?? {});
+  const maxScoreOf = new Map(pool.maps.map((pm) => [pm.leaderboardId, pm.leaderboard.maxScore]));
 
   const model = await buildTournamentModel(pool.tournamentId, overrideScope, source);
 
@@ -275,11 +316,16 @@ export async function buildPoolBoard(
           : undefined;
       const column = columnStats.get(leaderboardId);
       const rank = score ? (column?.ranked.indexOf(member.player.id) ?? -1) + 1 : null;
+      const runs = runsBy.get(`${member.player.id}::${leaderboardId}`) ?? null;
+      // No clear, but a run of ten notes or more: its accuracy is their score
+      // here, shown and counted like one.
+      const bestTry = !score && runs?.bestTry ? runs.bestTry : null;
+      const maxScore = maxScoreOf.get(leaderboardId) ?? 0;
 
       return {
         leaderboardId,
         score: score?.baseScore ?? null,
-        acc: score?.accuracy ?? null,
+        acc: score?.accuracy ?? bestTry?.acc ?? null,
         // The classifier's verdict, not a second opinion.
         isDnf: model.failKeys.has(failKey(member.player.id, leaderboardId)),
         fullCombo: score?.fullCombo ?? false,
@@ -289,13 +335,19 @@ export async function buildPoolBoard(
         // The viewer takes the score id and plays it.
         replayUrl: score?.beatLeaderScoreId
           ? `https://replay.beatleader.com/?scoreId=${score.beatLeaderScoreId}`
-          : null,
+          : bestTry?.replayUrl
+            ? `https://replay.beatleader.com/?link=${encodeURIComponent(bestTry.replayUrl)}`
+            : null,
         predictedAcc: estimate ?? prediction.acc,
         predictionConfidence: prediction.confidence,
         isEstimate: estimate != null,
         predictedLow: prediction.accLow,
         predictedHigh: prediction.accHigh,
         rank: rank && rank > 0 ? rank : null,
+        runs,
+        isRun: bestTry != null,
+        projectedScore: bestTry && maxScore > 0 ? Math.round(bestTry.acc * maxScore) : null,
+        cappedBy: prediction.cappedBy,
       };
     });
 
@@ -311,7 +363,9 @@ export async function buildPoolBoard(
       teamName: member.team.name,
       teamColor: member.team.color,
       teamColorSecondary: member.team.colorSecondary,
+      teamAdHoc: member.team.adHoc,
       available: member.available,
+      runsVisible: known?.visible.get(member.player.id) ?? null,
       cells,
       // Abandoned runs are left out, as the legend under the board promises.
       meanAcc: counted.length
@@ -343,9 +397,71 @@ export async function buildPoolBoard(
         teamId: key === 'unassigned' ? null : key,
         teamName: teamRows[0]?.teamName ?? 'Unassigned',
         color: teamRows[0]?.teamColor ?? '#4F46E5',
+        adHoc: teamRows[0]?.teamAdHoc ?? false,
         rows: teamRows,
       };
     }),
     model,
   };
 }
+
+/** The least of a song a run must cover to be a real go at it rather than a false start. */
+const REAL_RUN_PROGRESS = 0.2;
+
+function summariseRuns(runs: StoredRun[], durations: Record<string, number>): Map<string, CellRuns> {
+  const out = new Map<string, CellRuns>();
+  const candidates = new Map<string, StoredRun[]>();
+  for (const run of runs) {
+    const key = `${run.playerId}::${run.leaderboardId}`;
+    const cell = out.get(key) ?? { total: 0, finished: 0, fails: 0, falseStarts: 0, bestTry: null, shortTries: 0 };
+    const progress = runProgress(run, durations[run.leaderboardId]);
+    switch (run.endType) {
+      case 'CLEAR':
+        cell.total++;
+        cell.finished++;
+        break;
+      case 'FAIL':
+        cell.total++;
+        cell.fails++;
+        break;
+      case 'QUIT':
+        if (progress >= REAL_RUN_PROGRESS) {
+          cell.total++;
+          cell.fails++;
+        } else {
+          cell.falseStarts++;
+        }
+        break;
+      case 'RESTART':
+        cell.falseStarts++;
+        break;
+      default:
+        break;
+    }
+    if (run.endType === 'FAIL' || run.endType === 'RESTART' || run.endType === 'QUIT') {
+      if (isBestRunCandidate(run)) {
+        const list = candidates.get(key) ?? [];
+        list.push(run);
+        candidates.set(key, list);
+      } else {
+        cell.shortTries++;
+      }
+    }
+    out.set(key, cell);
+  }
+  // The same choice the model makes: the longest run, or the most accurate
+  // within a tenth of the song of it.
+  for (const [key, list] of candidates) {
+    const run = pickBestRun(list, durations[run0(list).leaderboardId]);
+    out.get(key)!.bestTry = {
+      acc: run.accuracy,
+      progress: runProgress(run, durations[run.leaderboardId]),
+      seconds: run.time,
+      notesHit: notesHit(run),
+      replayUrl: run.replayUrl,
+    };
+  }
+  return out;
+}
+
+const run0 = (list: StoredRun[]): StoredRun => list[0]!;

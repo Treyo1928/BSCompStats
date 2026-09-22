@@ -1,5 +1,12 @@
 import { parentPort } from 'node:worker_threads';
-import { computeMatchAdvice, type MatchAdviceInput, type MatchAdviceResult } from './match-advice.js';
+import {
+  answerOpponentCard,
+  computeMatchAdvice,
+  type AnswerCardInput,
+  type AnswerCardResult,
+  type MatchAdviceInput,
+  type MatchAdviceResult,
+} from './match-advice.js';
 import { chooseFitOptions } from '../stats/cv.js';
 import type { FitOptions, Observation } from '../stats/model.js';
 
@@ -17,16 +24,19 @@ import type { FitOptions, Observation } from '../stats/model.js';
 
 export type ThreadJob =
   | { id: number; kind: 'advice'; input: MatchAdviceInput }
+  | { id: number; kind: 'answer'; input: AnswerCardInput }
   | { id: number; kind: 'chooseModel'; observations: Observation[] };
 
-export type ThreadResult = MatchAdviceResult | FitOptions;
+export type ThreadResult = MatchAdviceResult | AnswerCardResult | FitOptions;
 
 parentPort?.on('message', (job: ThreadJob) => {
   try {
     const result: ThreadResult =
       job.kind === 'advice'
         ? computeMatchAdvice(job.input)
-        : chooseFitOptions(job.observations).chosen;
+        : job.kind === 'answer'
+          ? answerOpponentCard(job.input)
+          : chooseFitOptions(job.observations).chosen;
     parentPort!.postMessage({ id: job.id, result });
   } catch (err) {
     parentPort!.postMessage({ id: job.id, error: err instanceof Error ? err.message : String(err) });

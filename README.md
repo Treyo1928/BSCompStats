@@ -143,6 +143,17 @@ genuinely weaker player for being weaker. With fewer than three other scores on
 a map there is no column to judge by, and a bad score is taken at face value
 until there is.
 
+"Far below" means far. The floor used to be 85% of the player's median, and
+on the fall 2026 board that wrote off PretzelBread's 74.5% on Hush and 70.4%
+on Pedi (median 89%) as abandoned when they are simply what he gets on those
+maps - scores like that are a very real possibility in a match, and were
+exactly what the model had never managed to predict. An abandoned run is
+dramatic: zolism's 0.08% on Pedi and 0.01% on buggin', Alex's 20%. So the
+floor is now 60% of the player's median, and below 35% a run is an anomaly
+outright, column or no column - nobody's real level is a third of their
+normal, and a 0.01% on a map two people have played would otherwise stand
+for want of a column to judge it by.
+
 Anomalies are down-weighted in the fit, shown dark red on the board, left out
 of field means and player averages, never anchor a prediction, and feed a small
 separate probability of throwing a run away. Everything else is a score.
@@ -191,25 +202,89 @@ nominal 68%.
 ### The latent-factor result
 
 The model supports low-rank "style" factors — the data-driven version of the
-spreadsheet's hand-written *Acc / Tech / Speed* column labels. On the real MSU
-board they make things **worse**:
+spreadsheet's hand-written *Acc / Tech / Speed* column labels. Whether to use
+them is decided by cross-validation on the data actually given (`fitBestModel`),
+and on a board the size of a pool the answer is no: the factors shrink to
+nothing and the fit is the additive one. A more complex setting has to beat the
+simpler one by a margin (1% of held-out error) to be chosen at all, because
+between fold seeds the error moves by far more than that.
 
-| Model | Training R² | Held-out error, typical | Held-out error, mean |
-|---|---|---|---|
-| Additive only | 0.822 | **0.68 accuracy points** | **2.82** |
-| + 1 latent factor | 0.823 | 0.95 | 2.91 |
-| + 2 latent factors | 0.824 | 0.90 | 3.00 |
+Two things about the factors were learnt the hard way on the fall 2026 board
+(twelve players, four pools, 207 scores), where cross-validation did pick one
+factor:
 
-One latent dimension adds 17 parameters to a 55-score matrix and buys nothing.
-So the default is the plain additive model, which predicts a typical held-out
-score to within about **0.7 accuracy points**. The mean is four times the median
-because it includes the Spin Eternally scores, which nothing predicts blind -
-see above.
+- **The fit has to run to convergence.** It used to stop after forty sweeps of
+  alternating least squares. With factors in play that was mid-drift: one
+  player's factor read -0.37 at sweep forty and +0.33 once settled, and the
+  number shown depended on the starting point, which is seeded from the ids.
+  Cross-validation was comparing half-finished fits. It now sweeps until no
+  parameter moves by more than 1e-4 logit (a hundredth of an accuracy point).
+- **A factor needs a strong ridge.** It is fitted from one player's own
+  residuals. At the old ridge of 0.3, ten scores on acc maps were enough to give
+  a player a confident "does well on tech maps" factor: it put them at 93% on
+  Spin Eternally, above people who beat them on every map the three had in
+  common, and the outlook called a map lost 84:16 that those people would win
+  easily. Held-out error could not see it - it is dominated by the players with
+  thirty scores. The grid now tries ridges of 1 and 3, and at those the factor
+  has to earn its size from more than a handful of residuals.
 
-The machinery is kept, because a player's full BeatLeader history is hundreds of
-scores rather than seven, and `fitBestModel` re-runs that comparison by
-cross-validation on whatever data it is actually given. If factors start earning
-their keep on your data, it will use them.
+What this does not fix: a player who has **not** played a high-scatter map still
+gets a prediction from their general level, with a wide band. See above.
+
+### The runs behind the leaderboard
+
+A leaderboard keeps one number per player and map: their best clear. A map a
+player has tried ten times and never finished looks exactly like one they have
+never opened, and the model can only guess at it from their other maps. On the
+fall 2026 board that guess was the whole problem on Spin Eternally.
+
+BeatLeader does record every run the mod uploads - clears, fails, restarts and
+quits, with the accuracy and how far in each one ended - and serves them for
+any player who has turned on **Show my stats publicly** in their profile
+settings. It answers 401 for everyone else, whoever asks: those endpoints read
+BeatLeader's own session, and an OAuth sign-in (ours included) is not one. So
+there is nothing to link and nothing to authorise; a player flips the switch,
+and the worker pulls their runs on the pool maps within two hours, or at once
+from the "Pull runs now" button on their stats page. ScoreSaber has nothing
+comparable: it only ever receives passed scores.
+
+What a run says, in `stats/attempts.ts`:
+
+- Where the player has **never cleared** the map, their best run is their
+  number on it: the longest run in which they hit ten notes or more, whether
+  it ended in a fail, a restart or a quit - or, among runs within a tenth of
+  the song of that one, the most accurate. Length before accuracy, because a
+  high accuracy is easy to hold for the opening and hard to keep. It is what they
+  were scoring while they played, which is what the leaderboard would show had
+  they finished, and it counts as their score in full - on the board and in
+  the model. That includes a 17-second quit at 38%: that is what the player
+  would have scored had they kept going, and scores like it were never
+  predicted before because nothing on a leaderboard shows them. Runs of
+  fewer than ten notes are shown as tries and nothing more. BeatLeader does
+  not say how many notes a run reached, but its accuracy is the score over
+  the most that could have been scored by then, and that most is a fixed
+  function of the notes passed (`notesPassed`), so the count follows. Where they do have a clear, that is their score, as it is on
+  the leaderboard.
+- A real score on an **easier map is a ceiling** for every harder map the
+  player has not run. The additive model has one number per player for their
+  level; someone who is fine on acc maps and collapses on hard ones moves it a
+  little and is otherwise treated as an outlier, so gayalex5 still read 81% on
+  Spin Eternally with a 38% on Konpeito Extremists in hand. Now an unplayed
+  map is predicted no higher than any easier map's real score less the gap in
+  difficulty between the two, and the lowest ceiling holds: 32% there. Only
+  cells the player has never played are capped, anomalies never cap, and a
+  ceiling only ever lowers.
+- **Whether runs finish** feeds the fail model. A fail did not; a quit well
+  under way counts the same; a restart, or a quit in the first seconds, is a
+  false start and says only that the map was opened. Where a player's own runs
+  on a map are known they speak for it directly - four runs that all died are
+  a fail chance above 60% whatever the rates say, and five clears are a low one
+  whatever the map does to everyone else.
+- Recorded runs go into a player's **own** fail rate, one entry per map as the
+  share of runs that died, and never into a map's rate: one player's twenty
+  fails must not make everyone else on the map look riskier, and the base rate
+  stays what the leaderboard says about everyone, or the players who hide
+  their runs would look the safest on the board.
 
 ### Choosing what the model sees
 

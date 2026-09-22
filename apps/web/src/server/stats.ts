@@ -3,7 +3,7 @@ import { runChooseModel } from './advice-thread';
 import { announceMatchChange } from '@/lib/redis';
 import { prisma } from '@bscs/db';
 import { categorizeMap } from '@bscs/core/beatleader';
-import { loadScores, scoreSaberPulse, type ScoreSource } from './score-sources';
+import { loadRuns, loadScores, runsPulse, scoreSaberPulse, type ScoreSource } from './score-sources';
 import {
   applyScope,
   buildFailModel,
@@ -12,6 +12,7 @@ import {
   canonicalKind,
   classifyFails,
   fitSkillModel,
+  runEvidence,
   type FitOptions,
   statsScopeSchema,
   DEFAULT_STATS_SCOPE,
@@ -49,6 +50,10 @@ export interface TournamentModel {
   /** Why scores were left out, for the "what is this looking at" panel. */
   excluded: Record<string, number>;
   observationCount: number;
+  /** Of which best runs standing in for a score on a map the player has never cleared. */
+  runObservationCount: number;
+  /** Players whose recorded runs BeatLeader shows, out of those on rosters. */
+  runsKnownFor: number;
   playerCount: number;
   mapCount: number;
   /** leaderboardId -> maxScore, so callers can turn accuracy back into points. */
@@ -145,6 +150,7 @@ export async function buildTournamentModel(
     pulse._sum.baseScore,
     source,
     source === 'beatleader' ? '' : await scoreSaberPulse(playerIds),
+    await runsPulse(playerIds),
   ]);
   // Per scope, not per tournament: the stats pages can look at the same
   // tournament over ranked or all maps, and must not evict the pool-only model
@@ -157,142 +163,173 @@ export async function buildTournamentModel(
   if (underWay?.version === version) return withViewerEstimates(await underWay.model, tournamentId);
 
   const fit = (async (): Promise<TournamentModel> => {
-  const fitStarted = performance.now();
+    const fitStarted = performance.now();
 
-  const scores = await loadScores(playerIds, {
-    source,
-    leaderboardIds: scope.source === 'POOL_ONLY' ? [...poolLeaderboardIds] : undefined,
-  });
+    const scores = await loadScores(playerIds, {
+      source,
+      leaderboardIds: scope.source === 'POOL_ONLY' ? [...poolLeaderboardIds] : undefined,
+    });
 
-  const maxScores: Record<string, number> = {};
-  for (const s of scores) maxScores[s.leaderboardId] = s.leaderboard.maxScore;
+    const maxScores: Record<string, number> = {};
+    for (const s of scores) maxScores[s.leaderboardId] = s.leaderboard.maxScore;
 
-  // Anomalies are classified over everything fetched, before scoping: the
-  // test compares a score with the player's own norm and with the rest of its
-  // map's column, and trimming either first would move the yardstick.
-  const flags = classifyFails(
-    scores.map((s) => ({
-      playerId: s.playerId,
-      leaderboardId: s.leaderboardId,
-      acc: s.accuracy,
-    })),
-  );
-  const failKeys = new Set<string>();
-  scores.forEach((s, i) => {
-    if (flags[i]) failKeys.add(failKey(s.playerId, s.leaderboardId));
-  });
+    // Anomalies are classified over everything fetched, before scoping: the
+    // test compares a score with the player's own norm and with the rest of its
+    // map's column, and trimming either first would move the yardstick.
+    const flags = classifyFails(
+      scores.map((s) => ({
+        playerId: s.playerId,
+        leaderboardId: s.leaderboardId,
+        acc: s.accuracy,
+      })),
+    );
+    const failKeys = new Set<string>();
+    scores.forEach((s, i) => {
+      if (flags[i]) failKeys.add(failKey(s.playerId, s.leaderboardId));
+    });
 
-  const scoped: ScopedScore[] = scores.map((s) => ({
-    playerId: s.playerId,
-    leaderboardId: s.leaderboardId,
-    acc: s.accuracy,
-    isDnf: failKeys.has(failKey(s.playerId, s.leaderboardId)),
-    timeset: s.timeset,
-    inPool: poolLeaderboardIds.has(s.leaderboardId),
-    ranked: s.leaderboard.ranked,
-  }));
-
-  const { observations, excluded, playerCount, mapCount } = applyScope(scoped, scope);
-
-  // Which complexity to fit is decided by cross-validation - a grid of fits
-  // over many folds, seconds of work - on the advice thread. The model itself
-  // is one fit, done here with the best settings known so far: the ones last
-  // chosen for this tournament, or the plain additive model, which is what
-  // cross-validation picks on a pool-sized board anyway. If the thread comes
-  // back with something different, the next render refits with it.
-  const dataKey = JSON.stringify(observations.map((o) => [o.playerId, o.leaderboardId, o.acc]));
-  const settled = fitChoice.get(cacheKey);
-  const chosen: FitOptions = settled?.chosen ?? { latentFactors: 0, biasRegularization: 0.5 };
-  const model = fitSkillModel(observations, chosen);
-
-  if (settled?.dataKey !== dataKey && fitChoosing.get(cacheKey) !== dataKey) {
-    fitChoosing.set(cacheKey, dataKey);
-    void runChooseModel([...observations])
-      .then(async (better) => {
-        if (fitChoosing.get(cacheKey) !== dataKey) return;
-        fitChoosing.delete(cacheKey);
-        fitChoice.set(cacheKey, { dataKey, chosen: better });
-        if (JSON.stringify(better) === JSON.stringify(chosen)) return;
-
-        // A different model means different predictions: drop the cached one
-        // and bring open match pages up to date. Pool pages pick it up on
-        // their next refresh.
-        modelCache.delete(cacheKey);
-        const live = await prisma.match.findMany({
-          where: { tournamentId, state: { not: 'COMPLETE' } },
-          select: { id: true },
-        });
-        await Promise.all(live.map((m) => announceMatchChange(m.id)));
-      })
-      .catch((err) => {
-        if (fitChoosing.get(cacheKey) === dataKey) fitChoosing.delete(cacheKey);
-        console.error('[model] choosing fit options failed:', err);
-      });
-  }
-
-  const observed = new Set(observations.map((o) => failKey(o.playerId, o.leaderboardId)));
-  const detailed = scores
-    .filter((s) => observed.has(failKey(s.playerId, s.leaderboardId)))
-    .map((s) => ({
+    const scoped: ScopedScore[] = scores.map((s) => ({
       playerId: s.playerId,
       leaderboardId: s.leaderboardId,
       acc: s.accuracy,
       isDnf: failKeys.has(failKey(s.playerId, s.leaderboardId)),
-      missedNotes: s.missedNotes,
-      badCuts: s.badCuts,
-      fullCombo: s.fullCombo,
-      pauses: s.pauses,
-      accLeft: s.accLeft,
-      accRight: s.accRight,
       timeset: s.timeset,
+      inPool: poolLeaderboardIds.has(s.leaderboardId),
+      ranked: s.leaderboard.ranked,
     }));
 
-  // One spelling per kind: an organiser's "Tech" and the ratings guess "tech"
-  // are the same kind of map, and have to rank as one.
-  const categories: Record<string, string | null> = Object.fromEntries(
-    poolMaps.map((pm) => [pm.leaderboardId, canonicalKind(pm.category)]),
-  );
-
-  // Where no organiser has tagged a map - which is every map outside the
-  // pools - a ranked one still has BeatLeader's ratings to guess from. That is what makes a wider scope worth
-  // having for play styles: hundreds of scores per kind of map instead of one.
-  for (const s of scores) {
-    categories[s.leaderboardId] ??= canonicalKind(
-      categorizeMap({
-        acc: s.leaderboard.accRating,
-        pass: s.leaderboard.passRating,
-        tech: s.leaderboard.techRating,
-      }),
+    // The runs behind the leaderboard, for players who show them. On a map the
+    // player has never cleared, their best run of ten notes or more is their
+    // score there; every run says whether they finish the map, for the fail
+    // model. ScoreSaber alone is a different question - its scores are clears only.
+    const known = source === 'scoresaber' ? { runs: [], durations: {}, visible: new Map<string, boolean | null>() } : await loadRuns(
+      playerIds,
+      scope.source === 'POOL_ONLY' ? [...poolLeaderboardIds] : undefined,
     );
-  }
+    const evidence = runEvidence({
+      runs: known.runs,
+      durations: known.durations,
+      cleared: new Set(scores.map((s) => failKey(s.playerId, s.leaderboardId))),
+    });
+    const rankedOf = new Map(known.runs.map((r) => [r.leaderboardId, r.ranked]));
+    for (const o of evidence.observations) {
+      scoped.push({
+        playerId: o.playerId,
+        leaderboardId: o.leaderboardId,
+        acc: o.acc,
+        isDnf: false,
+        timeset: o.timeset,
+        inPool: poolLeaderboardIds.has(o.leaderboardId),
+        ranked: rankedOf.get(o.leaderboardId) ?? false,
+        weight: o.weight,
+      });
+    }
+    const runObservationCount = evidence.observations.length;
+    const runsKnownFor = [...known.visible.values()].filter((v) => v === true).length;
 
-  const profiles = buildPlayerProfiles({ scores: detailed, model, categories });
+    const { observations, excluded, playerCount, mapCount } = applyScope(scoped, scope);
 
-  const built: TournamentModel = {
-    model,
-    failModel: buildFailModel({ scores: detailed, model }),
-    profiles,
-    styles: buildPlayStyles({ profiles, scores: detailed, categories }),
-    scope,
-    failKeys,
-    excluded,
-    observationCount: observations.length,
-    playerCount,
-    mapCount,
-    maxScores,
-    chosenLatentFactors: chosen.latentFactors ?? 0,
-    estimates: new Map(),
-    scores: detailed,
-    categories,
-    version,
-  };
-  modelCache.set(cacheKey, built);
-  // This runs on the request thread, so how long it takes is how long the site
-  // stalls when scores change. Worth being able to see.
-  console.info(
-    `[model] fitted ${observations.length} scores for ${playerCount} players in ${Math.round(performance.now() - fitStarted)}ms`,
-  );
-  return built;
+    // Which complexity to fit is decided by cross-validation - a grid of fits
+    // over many folds, seconds of work - on the advice thread. The model itself
+    // is one fit, done here with the best settings known so far: the ones last
+    // chosen for this tournament, or the plain additive model, which is what
+    // cross-validation picks on a pool-sized board anyway. If the thread comes
+    // back with something different, the next render refits with it.
+    const dataKey = JSON.stringify(observations.map((o) => [o.playerId, o.leaderboardId, o.acc]));
+    const settled = fitChoice.get(cacheKey);
+    const chosen: FitOptions = settled?.chosen ?? { latentFactors: 0, biasRegularization: 0.5 };
+    const model = fitSkillModel(observations, chosen);
+
+    if (settled?.dataKey !== dataKey && fitChoosing.get(cacheKey) !== dataKey) {
+      fitChoosing.set(cacheKey, dataKey);
+      void runChooseModel([...observations])
+        .then(async (better) => {
+          if (fitChoosing.get(cacheKey) !== dataKey) return;
+          fitChoosing.delete(cacheKey);
+          fitChoice.set(cacheKey, { dataKey, chosen: better });
+          if (JSON.stringify(better) === JSON.stringify(chosen)) return;
+
+          // A different model means different predictions: drop the cached one
+          // and bring open match pages up to date. Pool pages pick it up on
+          // their next refresh.
+          modelCache.delete(cacheKey);
+          const live = await prisma.match.findMany({
+            where: { tournamentId, state: { not: 'COMPLETE' } },
+            select: { id: true },
+          });
+          await Promise.all(live.map((m) => announceMatchChange(m.id)));
+        })
+        .catch((err) => {
+          if (fitChoosing.get(cacheKey) === dataKey) fitChoosing.delete(cacheKey);
+          console.error('[model] choosing fit options failed:', err);
+        });
+    }
+
+    const observed = new Set(observations.map((o) => failKey(o.playerId, o.leaderboardId)));
+    const detailed = scores
+      .filter((s) => observed.has(failKey(s.playerId, s.leaderboardId)))
+      .map((s) => ({
+        playerId: s.playerId,
+        leaderboardId: s.leaderboardId,
+        acc: s.accuracy,
+        isDnf: failKeys.has(failKey(s.playerId, s.leaderboardId)),
+        missedNotes: s.missedNotes,
+        badCuts: s.badCuts,
+        fullCombo: s.fullCombo,
+        pauses: s.pauses,
+        accLeft: s.accLeft,
+        accRight: s.accRight,
+        timeset: s.timeset,
+      }));
+
+    // One spelling per kind: an organiser's "Tech" and the ratings guess "tech"
+    // are the same kind of map, and have to rank as one.
+    const categories: Record<string, string | null> = Object.fromEntries(
+      poolMaps.map((pm) => [pm.leaderboardId, canonicalKind(pm.category)]),
+    );
+
+    // Where no organiser has tagged a map - which is every map outside the
+    // pools - a ranked one still has BeatLeader's ratings to guess from. That is what makes a wider scope worth
+    // having for play styles: hundreds of scores per kind of map instead of one.
+    for (const s of scores) {
+      categories[s.leaderboardId] ??= canonicalKind(
+        categorizeMap({
+          acc: s.leaderboard.accRating,
+          pass: s.leaderboard.passRating,
+          tech: s.leaderboard.techRating,
+        }),
+      );
+    }
+
+    const profiles = buildPlayerProfiles({ scores: detailed, model, categories });
+
+    const built: TournamentModel = {
+      model,
+      failModel: buildFailModel({ scores: detailed, model, outcomes: evidence.outcomes }),
+      profiles,
+      styles: buildPlayStyles({ profiles, scores: detailed, categories }),
+      scope,
+      failKeys,
+      excluded,
+      observationCount: observations.length,
+      runObservationCount,
+      runsKnownFor,
+      playerCount,
+      mapCount,
+      maxScores,
+      chosenLatentFactors: chosen.latentFactors ?? 0,
+      estimates: new Map(),
+      scores: detailed,
+      categories,
+      version,
+    };
+    modelCache.set(cacheKey, built);
+    // This runs on the request thread, so how long it takes is how long the site
+    // stalls when scores change. Worth being able to see.
+    console.info(
+      `[model] fitted ${observations.length} scores for ${playerCount} players in ${Math.round(performance.now() - fitStarted)}ms`,
+    );
+    return built;
   })();
 
   building.set(cacheKey, { version, model: fit });
