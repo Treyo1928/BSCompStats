@@ -22,13 +22,13 @@
       "types": "./dist/match/index.d.ts",
       "default": "./dist/match/index.js"
     },
-    "./optimize": {
-      "types": "./dist/optimize/index.d.ts",
-      "default": "./dist/optimize/index.js"
-    },
     "./scoresaber": {
       "types": "./dist/scoresaber/index.d.ts",
       "default": "./dist/scoresaber/index.js"
+    },
+    "./bracket": {
+      "types": "./dist/bracket/index.d.ts",
+      "default": "./dist/bracket/index.js"
     }
   },
   "scripts": {

@@ -1,39 +1,51 @@
+import {
+  parsePointsCurve,
+  parseScoringMode,
+  tallyMaps as tallyUnder,
+  type RecordedRun,
+  type Scoring,
+} from '@bscs/core/match';
+
+/** How a match is scored, from its row. */
+export function scoringOf(match: { scoring: string; pointsCurve: unknown }): Scoring {
+  return { mode: parseScoringMode(match.scoring), curve: parsePointsCurve(match.pointsCurve) };
+}
+
 /**
- * Maps won by each side, from a match's recorded runs. The one counting the
- * match page, the tournament page, link previews and `completeMatch` all use:
- * each player's best run on a map, summed per team; a map counts only once
- * both sides have posted (one side's scores entered is a map in progress, not
- * a map won); the tiebreaker only counts when the other maps finish level.
+ * What counts as a perfect score on a pool map: the organisers' figure, or
+ * BeatLeader's predicted accuracy where the tournament allows it and the map
+ * has one. Null when neither; match points then cannot be shown for the map,
+ * though it is still decided on the curve.
+ */
+export function perfectAccOf(
+  poolMap: { perfectAcc: number | null; leaderboard: { predictedAcc: number } },
+  fromBeatLeader: boolean,
+): { value: number | null; source: 'ORGANISERS' | 'BEATLEADER' | null } {
+  if (poolMap.perfectAcc != null && poolMap.perfectAcc > 0) return { value: poolMap.perfectAcc, source: 'ORGANISERS' };
+  if (fromBeatLeader && poolMap.leaderboard.predictedAcc > 0) {
+    return { value: poolMap.leaderboard.predictedAcc, source: 'BEATLEADER' };
+  }
+  return { value: null, source: null };
+}
+
+/**
+ * Maps won by each side, under the match's own scoring. The one count the
+ * match page, the tournament page, link previews and completing a match all
+ * use. Who wins a map never depends on its perfect accuracy, so none is needed.
  */
 export function tallyMaps(
-  maps: ReadonlyArray<{
-    isTiebreaker: boolean;
-    attempts: ReadonlyArray<{ teamId: string; playerId: string; score: number }>;
-  }>,
+  maps: ReadonlyArray<{ isTiebreaker: boolean; attempts: readonly RecordedRun[] }>,
   teamAId: string,
   teamBId: string,
+  match: { scoring: string; pointsCurve: unknown },
 ): { a: number; b: number } {
-  const totalFor = (attempts: (typeof maps)[number]['attempts'], teamId: string): number | null => {
-    const best = new Map<string, number>();
-    for (const attempt of attempts) {
-      if (attempt.teamId !== teamId) continue;
-      best.set(attempt.playerId, Math.max(best.get(attempt.playerId) ?? 0, attempt.score));
-    }
-    if (best.size === 0) return null;
-    return [...best.values()].reduce((sum, score) => sum + score, 0);
-  };
-
-  let a = 0;
-  let b = 0;
-  const count = (map: (typeof maps)[number]) => {
-    const totalA = totalFor(map.attempts, teamAId);
-    const totalB = totalFor(map.attempts, teamBId);
-    if (totalA == null || totalB == null) return;
-    if (totalA > totalB) a++;
-    else if (totalB > totalA) b++;
-  };
-
-  maps.filter((m) => !m.isTiebreaker).forEach(count);
-  if (a === b) maps.filter((m) => m.isTiebreaker).forEach(count);
-  return { a, b };
+  return tallyUnder(
+    maps.map((m) => ({ isTiebreaker: m.isTiebreaker, perfectAcc: null, attempts: m.attempts })),
+    teamAId,
+    teamBId,
+    scoringOf(match),
+  );
 }
+
+/** A select for what `tallyMaps` needs of a match's maps. */
+export const TALLY_ATTEMPTS = { select: { teamId: true, playerId: true, score: true, accuracy: true } } as const;

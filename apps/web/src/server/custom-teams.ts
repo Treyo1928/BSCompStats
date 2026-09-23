@@ -1,11 +1,12 @@
 import { prisma, type Prisma } from '@bscs/db';
 import { assertPoolIsBigEnough, parseFormat, PickBanError } from './match-helpers';
+import { parsePointsCurve, parseScoringMode } from '@bscs/core/match';
 
 /**
  * Match-only ("ad hoc") teams, and the one way a match gets opened.
  *
  * A match-only team is a real Team row in the tournament's division, flagged
- * `adHoc`. That is deliberate: lineups, advice, captaincy and the score feed
+ * `adHoc`. That is deliberate: lineups, scoring, captaincy and the score feed
  * all hang off team membership, and a side that exists for one scrim should
  * get every one of them without a second code path. The flag only decides
  * where the team is listed, and that it is tidied away with its last match.
@@ -111,6 +112,8 @@ export async function openMatch(input: {
   coinFlip: 'A' | 'B';
   blindLineups: boolean;
   name?: string;
+  /** "ACCURACY" or "MATCH_POINTS"; the tournament's default where not given, and always where it is locked. */
+  scoring?: string | null;
 }): Promise<{ matchId: string } | { error: string }> {
   const { tournamentId, poolId, teamAId, teamBId } = input;
   if (teamAId === teamBId) return { error: 'A team cannot play itself - choose two different teams.' };
@@ -120,9 +123,12 @@ export async function openMatch(input: {
       where: { id: poolId },
       select: { tournamentId: true, maps: { select: { id: true, isTiebreaker: true } } },
     }),
-    prisma.tournament.findUnique({ where: { id: tournamentId }, select: { defaultFormat: true } }),
+    prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { defaultFormat: true, matchScoring: true, scoringLocked: true, pointsCurve: true },
+    }),
     prisma.team.findMany({
-      where: { id: { in: [teamAId, teamBId] }, division: { tournamentId } },
+      where: { id: { in: [teamAId, teamBId] }, division: { tournamentId }, playerPool: false },
       select: { id: true, name: true },
     }),
   ]);
@@ -161,6 +167,12 @@ export async function openMatch(input: {
       state: 'PICKBAN',
       startedAt: new Date(),
       blindLineups: input.blindLineups,
+      scoring: tournament.scoringLocked
+        ? parseScoringMode(tournament.matchScoring)
+        : parseScoringMode(input.scoring ?? tournament.matchScoring),
+      // The curve as it stands now, kept with the match: retuning it later
+      // must not rewrite a result that was already played.
+      pointsCurve: parsePointsCurve(tournament.pointsCurve),
     },
     select: { id: true },
   });

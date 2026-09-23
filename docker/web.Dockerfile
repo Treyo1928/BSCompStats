@@ -61,14 +61,6 @@ COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
 
-# Match advice runs on a worker thread, which needs a real script to load - the
-# bundled server chunks will not do. This is the compiled core package, plus zod
-# which it imports; node resolves that upwards from /app/advice to
-# /app/node_modules. See apps/web/src/server/advice-thread.ts.
-COPY --from=build --chown=nextjs:nodejs /app/packages/core/dist ./advice/core
-COPY --from=build --chown=nextjs:nodejs /app/packages/core/package.json ./advice/package.json
-COPY --from=build --chown=nextjs:nodejs /app/node_modules/zod ./node_modules/zod
-
 # The generated Prisma client is required at runtime; the CLI is not, because
 # migrations run in their own container.
 COPY --from=build --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma

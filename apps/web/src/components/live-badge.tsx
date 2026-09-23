@@ -35,7 +35,7 @@ export function LiveBadge({
   useEffect(() => {
     if (!lastAt || lastHandled.current === lastAt) return;
     // Scores arrive in bursts - a sync writes a whole roster at once - and each
-    // refresh re-runs the prediction model. One refresh per burst is enough.
+    // refresh rebuilds the board. One refresh per burst is enough.
     const timer = setTimeout(() => {
       lastHandled.current = lastAt;
       router.refresh();

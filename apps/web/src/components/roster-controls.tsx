@@ -273,6 +273,7 @@ export function PlayerPicker({
                           .filter(Boolean)
                           .join(' · ')}
                       </span>
+                      {c.note && <span className="block truncate text-xs text-warn">{c.note}</span>}
                     </span>
                     <span className="w-20 text-right text-xs tabular text-muted">
                       {c.onTeam
@@ -351,7 +352,7 @@ export function MemberControls({
         type="button"
         disabled={pending}
         aria-pressed={!available}
-        title={`${availabilityLabel}. Players who are out are left out of lineups and predictions.`}
+        title={`${availabilityLabel}. Players who are out are left out of lineups.`}
         onClick={() => run(() => setMemberStatus(memberId, { available: !available }))}
         className={`${pill} ${available ? 'text-faint hover:text-ink' : 'text-warn'}`}
       >

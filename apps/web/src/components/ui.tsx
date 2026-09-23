@@ -464,13 +464,6 @@ export function heat(t: number): CSSProperties {
   };
 }
 
-/** Win chance as a colour: red below even, green above. */
-export function chanceColor(p: number): string {
-  if (p >= 0.6) return 'var(--color-win)';
-  if (p <= 0.4) return 'var(--color-lose)';
-  return 'var(--color-warn)';
-}
-
 export function Stat({
   label,
   children,

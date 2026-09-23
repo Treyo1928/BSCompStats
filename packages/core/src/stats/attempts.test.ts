@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { maxScoreForNotes, notesHit, notesPassed, pickBestRun, runEvidence, runProgress, type Run } from './attempts.js';
-import { buildFailModel } from './profile.js';
-import { fitSkillModel, type Observation } from './model.js';
 import { classifyFails, detectDnf } from './normalize.js';
 import fixture from './fixtures/msu-fall-2026.json' with { type: 'json' };
 
-const observations = fixture as Observation[];
+const observations = fixture as Array<{ playerId: string; leaderboardId: string; acc: number }>;
 const spin = 'spin-eternally';
 /** A run that reached `notes` notes at this accuracy, scored as BeatLeader would have it. */
 const run = (over: Partial<Run> & { notes?: number }): Run => {
@@ -113,69 +111,6 @@ describe('what recorded runs say', () => {
     expect(runProgress({ time: 30, endType: 'FAIL' }, undefined)).toBeCloseTo(0.5, 6);
     expect(runProgress({ time: 30, endType: 'CLEAR' }, undefined)).toBe(1);
     expect(runProgress({ time: 30, endType: 'FAIL' }, 0)).toBeCloseTo(0.5, 6);
-  });
-});
-
-describe('the fail model with recorded runs', () => {
-  const model = fitSkillModel(observations);
-  const scores = observations.map((o) => ({ ...o, isDnf: o.isDnf ?? false }));
-
-  it('believes a cell whose runs all died, and one whose runs all cleared', () => {
-    const outcomes = [
-      ...[1, 2, 3, 4].map(() => ({ playerId: 'gayalex5', leaderboardId: spin, finished: false })),
-      ...[1, 2, 3, 4, 5].map(() => ({ playerId: 'LS', leaderboardId: spin, finished: true })),
-    ];
-    const without = buildFailModel({ scores, model });
-    const withRuns = buildFailModel({ scores, model, outcomes });
-
-    expect(withRuns.probability('gayalex5', spin)).toBeGreaterThan(0.5);
-    expect(withRuns.probability('gayalex5', spin)).toBeGreaterThan(without.probability('gayalex5', spin) * 3);
-    expect(withRuns.probability('LS', spin)).toBeLessThan(without.probability('LS', spin));
-    expect(withRuns.probability('LS', spin)).toBeLessThan(0.1);
-  });
-
-  it('does not make players who hide their runs look safer than before', () => {
-    const outcomes = [1, 2, 3, 4, 5, 6].map(() => ({ playerId: 'gayalex5', leaderboardId: spin, finished: false }));
-    const without = buildFailModel({ scores, model });
-    const withRuns = buildFailModel({ scores, model, outcomes });
-    // Treyo's runs are not known; nothing about them has changed.
-    expect(withRuns.globalRate).toBe(without.globalRate);
-    expect(withRuns.probability('Treyo', 'konpeito-extremists')).toBeCloseTo(
-      without.probability('Treyo', 'konpeito-extremists'),
-      6,
-    );
-  });
-});
-
-describe('a real score on an easier map', () => {
-  it('holds down the prediction on a harder map the player has never run', () => {
-    // gayalex5's runs on 2026-09-22: a quit on Konpeito Extremists at 38.5%
-    // and on Girls' Night at 48.7%, both easier than Spin Eternally, where
-    // nothing lasted fifteen seconds. Without them the model said 81%.
-    const runs = [
-      { playerId: 'gayalex5', leaderboardId: 'konpeito-extremists', acc: 0.385, weight: 1 },
-      { playerId: 'gayalex5', leaderboardId: 'girls-night', acc: 0.487, weight: 1 },
-    ];
-    const before = fitSkillModel(observations).predict('gayalex5', spin);
-    const after = fitSkillModel([...observations, ...runs]).predict('gayalex5', spin);
-    expect(before.acc).toBeGreaterThan(0.7);
-    expect(after.cappedBy).toBe('konpeito-extremists');
-    expect(after.acc).toBeLessThan(0.4);
-    // Easy maps are untouched: nothing easier than them has a low score.
-    expect(fitSkillModel([...observations, ...runs]).predict('gayalex5', 'madeleine').acc).toBeGreaterThan(0.93);
-  });
-
-  it('never caps a map the player has actually played, and never raises anything', () => {
-    const model = fitSkillModel(observations);
-    for (const o of observations.slice(0, 40)) {
-      expect(model.predict(o.playerId, o.leaderboardId).cappedBy).toBeNull();
-    }
-    const runs = [{ playerId: 'gayalex5', leaderboardId: 'konpeito-extremists', acc: 0.385, weight: 1 }];
-    const plain = fitSkillModel(observations);
-    const capped = fitSkillModel([...observations, ...runs]);
-    for (const map of ['spin-eternally', 'i-swear-i-ll-be-just-fine', 'pedi']) {
-      expect(capped.predict('gayalex5', map).acc).toBeLessThanOrEqual(plain.predict('gayalex5', map).acc + 0.02);
-    }
   });
 });
 

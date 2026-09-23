@@ -5,7 +5,7 @@ import { SiteHeader } from '@/components/site-header';
 import { ViewAsBanner } from '@/components/view-as-banner';
 
 const DESCRIPTION =
-  'Beat Saber tournaments: map pools with live scores, team rosters, pick and ban, lineup advice and win predictions.';
+  'Beat Saber tournaments: map pools with live scores, team rosters, pick and ban, and matches scored straight from BeatLeader.';
 
 export const metadata: Metadata = {
   // Makes the og:image URLs each page generates absolute, which crawlers need.

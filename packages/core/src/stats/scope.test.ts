@@ -8,7 +8,6 @@ import {
   describeScope,
   type ScopedScore,
 } from './scope.js';
-import { fitSkillModel } from './model.js';
 
 const NOW = 1_800_000_000;
 const daysAgo = (d: number) => NOW - d * 86_400;
@@ -155,23 +154,6 @@ describe('the per-map floor', () => {
     );
     expect(result.mapCount).toBe(1);
     expect(result.excluded['too few players on this map']).toBe(1);
-  });
-});
-
-describe('recency weighting reaches the model', () => {
-  it('lets a recent score outweigh an old one', () => {
-    // Same player, same map difficulty, two very different scores - one from
-    // today, one from a year ago. The model should land near the recent one.
-    const observations = [
-      { playerId: 'p', leaderboardId: 'm1', acc: 0.97, weight: 1 },
-      { playerId: 'p', leaderboardId: 'm2', acc: 0.9, weight: 0.05 },
-      { playerId: 'other', leaderboardId: 'm1', acc: 0.95, weight: 1 },
-      { playerId: 'other', leaderboardId: 'm2', acc: 0.95, weight: 1 },
-    ];
-    const weighted = fitSkillModel(observations);
-    const unweighted = fitSkillModel(observations.map((o) => ({ ...o, weight: 1 })));
-
-    expect(weighted.playerBias.p!).toBeGreaterThan(unweighted.playerBias.p!);
   });
 });
 

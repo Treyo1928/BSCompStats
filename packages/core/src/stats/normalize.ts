@@ -37,8 +37,13 @@ export interface NormalizedScore {
  * clean one. Anything here disqualifies a score from the skill model, though it
  * is still shown in the UI.
  */
+/**
+ * Modifiers that make a score something other than a normal run of the map.
+ * No Fail is not one: matches are always played with it on, it changes
+ * nothing unless the player dies, and a run where it did kick in is still the
+ * player's real result - it is marked, not dropped.
+ */
 const SCORE_ALTERING_MODIFIERS = new Set([
-  'NF', // No Fail - the score is real but the run was a survival
   'SS', // Slower Song
   'EZ', // Easy mode
   'NO', // No Obstacles
@@ -54,6 +59,11 @@ export function parseModifiers(raw: string | undefined): string[] {
     .split(',')
     .map((m) => m.trim().toUpperCase())
     .filter(Boolean);
+}
+
+/** No Fail kicked in: the player died, and played the rest of the map on. */
+export function noFailTriggered(raw: string | undefined): boolean {
+  return parseModifiers(raw).includes('NF');
 }
 
 export function hasScoreAlteringModifier(raw: string | undefined): boolean {

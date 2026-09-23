@@ -11,9 +11,10 @@ import { PlayerLink } from './player-card';
  * Laid out the way the spreadsheet was, because that layout is genuinely good
  * for the job: team blocks down the side, maps across the top, a score and the
  * accuracy underneath it in each cell. What is new is everything a sheet could
- * not do - shading computed from the live field rather than typed in, a
- * prediction where a score is missing, abandoned runs called out instead of
- * sitting there as a number that drags an average down silently.
+ * not do - shading computed from the live field rather than typed in, the
+ * runs behind a map nobody has cleared, abandoned runs called out instead of
+ * sitting there as a number that drags an average down silently. A map a player
+ * has not played is left empty: nothing here is estimated.
  */
 
 /** Above this many teams the board opens collapsed, so a big field is scannable. */
@@ -23,15 +24,11 @@ export function PoolBoardTable({
   maps,
   teams,
   myTeamIds = [],
-  showPredictions = true,
 }: {
-  // Only the plain data: the board's model holds functions, which cannot cross
-  // into a client component.
   maps: PoolBoard['maps'];
   teams: PoolBoard['teams'];
   /** Teams the viewer is on; these stay open when the rest start collapsed. */
   myTeamIds?: string[];
-  showPredictions?: boolean;
 }) {
   const board = { maps, teams };
   const keyOf = (teamId: string | null) => teamId ?? 'unassigned';
@@ -148,7 +145,7 @@ export function PoolBoardTable({
                       </span>
                       <span
                         className={`truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
-                        title={row.available ? undefined : 'Not available - left out of lineups and predictions'}
+                        title={row.available ? undefined : 'Not available - left out of lineups'}
                       >
                         {row.playerName}
                       </span>
@@ -160,7 +157,6 @@ export function PoolBoardTable({
                       key={cell.leaderboardId}
                       cell={cell}
                       range={columnRange.get(cell.leaderboardId)}
-                      showPredictions={showPredictions}
                     />
                   ))}
 
@@ -237,9 +233,6 @@ function MapHeader({ map }: { map: BoardMap }) {
           {map.name}
         </span>
         <DifficultyChip value={map.difficultyValue} label={map.difficultyLabel} />
-        <span className="h-3 text-[9px] font-semibold uppercase tracking-widest text-accent">
-          {map.category ?? map.autoCategory ?? ''}
-        </span>
       </a>
     </th>
   );
@@ -248,51 +241,29 @@ function MapHeader({ map }: { map: BoardMap }) {
 function Cell({
   cell,
   range,
-  showPredictions,
 }: {
   cell: BoardCell;
   range?: { min: number; max: number };
-  showPredictions: boolean;
 }) {
-  // Tried, never cleared, and no run hit ten notes: nothing of theirs to show,
-  // so the prediction sits in the middle as on any unplayed map, and the
-  // tries are a mark in the corner. A reviewer reads the number, not a hover.
+  // Tried, never cleared, and no run hit ten notes: no number of theirs to
+  // show, so the cell stays empty and the tries are a mark in the corner.
   const triesOnly = cell.acc == null && cell.runs != null && cell.runs.fails + cell.runs.falseStarts > 0;
   const tries = triesOnly ? cell.runs!.fails + cell.runs!.falseStarts : 0;
 
-  // No score: show what the model expects, clearly marked as an estimate so it
-  // is never mistaken for something somebody actually played.
+  // Not played: empty. What someone might score is not something we know.
   if (cell.acc == null) {
     const triesNote = triesOnly
       ? ` They have tried it ${tries} ${tries === 1 ? 'time' : 'times'} without hitting ten notes: ${cell.runs!.fails} ${cell.runs!.fails === 1 ? 'fail' : 'fails'}, ${cell.runs!.falseStarts} ${cell.runs!.falseStarts === 1 ? 'false start' : 'false starts'}.`
       : '';
     return (
-      <td className="p-[3px] text-center align-middle" title={triesOnly && !showPredictions ? triesNote.trim() : undefined}>
+      <td className="p-[3px] text-center align-middle" title={triesOnly ? triesNote.trim() : 'Not played'}>
         <div className="relative flex h-[42px] items-center justify-center rounded-md border border-dashed border-edge">
           {triesOnly && (
             <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300/90" aria-label={`${tries} tries, none hit ten notes`}>
               ✗{tries}
             </span>
           )}
-          {showPredictions ? (
-            cell.isEstimate ? (
-              <span
-                className="text-xs font-medium text-accent"
-                title="Your own estimate, in place of the model's prediction. Only you see it, and it is used in the lineups and win chances you are shown."
-              >
-                ≈{pct(cell.predictedAcc, 1)}
-              </span>
-            ) : (
-              <span
-                className="text-xs italic text-faint"
-                title={`Predicted - no score recorded here. Likely between ${pct(cell.predictedLow, 0)} and ${pct(cell.predictedHigh, 0)}; the fewer comparable maps they have played, the wider that is.${cell.cappedBy ? ' Held down by their real score on an easier map: they cannot be expected to do better here than that implies.' : ''}${triesNote} Someone who knows better can set their own estimate below the board.`}
-              >
-                ~{pct(cell.predictedAcc, 1)}
-              </span>
-            )
-          ) : (
-            <span className="text-faint">—</span>
-          )}
+          <span className="text-faint">—</span>
         </div>
       </td>
     );
@@ -305,7 +276,7 @@ function Cell({
     <span className="relative flex h-[42px] flex-col items-center justify-center leading-tight">
       <span className="text-[13px] font-semibold tabular">{pct(cell.acc)}</span>
       <span className="text-[10px] tabular opacity-75">
-        {cell.isRun ? `≈${num(cell.projectedScore ?? 0)}` : num(cell.score ?? 0)}
+        {cell.isRun && cell.runs?.bestTry ? `✗ at ${clock(cell.runs.bestTry.seconds)}` : num(cell.score ?? 0)}
       </span>
       {cell.isRun && (
         <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300" aria-label="Best run, never cleared">
@@ -327,6 +298,11 @@ function Cell({
           FC
         </span>
       )}
+      {cell.noFail && (
+        <span className="absolute left-1 top-0.5 text-[8px] font-bold tracking-wide text-amber-300" aria-label="No Fail kicked in">
+          NF
+        </span>
+      )}
       {cell.runs && cell.runs.total > 1 && (
         <span
           className="absolute bottom-0.5 left-1 text-[8px] font-bold tracking-wide opacity-70"
@@ -344,10 +320,11 @@ function Cell({
       title={
         [
           cell.isRun && cell.runs?.bestTry
-            ? `Never cleared. Their longest run was scoring ${pct(cell.runs.bestTry.acc)} over ${cell.runs.bestTry.notesHit} notes when it ended ${Math.round(cell.runs.bestTry.seconds)} s in (${Math.round(cell.runs.bestTry.progress * 100)}% of the song) - about ${num(cell.projectedScore ?? 0)} over the whole map. That is their score here, and what predictions rest on, until they clear it.`
+            ? `Never cleared. Their longest run was at ${pct(cell.runs.bestTry.acc)} over ${cell.runs.bestTry.notesHit} notes when it ended ${clock(cell.runs.bestTry.seconds)} in (${Math.round(cell.runs.bestTry.progress * 100)}% of the song). Shown as their number here until they clear it.`
             : null,
           cell.rank ? `#${cell.rank} in this pool` : null,
           cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
+          cell.noFail ? 'No Fail kicked in: they died partway and played the rest of the map on. The accuracy is without No Fail’s penalty.' : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
           cell.isDnf
             ? 'Abandoned or anomalous run - far below this player’s normal and everyone else on this map. Not counted.'
@@ -375,4 +352,10 @@ function Cell({
       </div>
     </td>
   );
+}
+
+/** Seconds as m:ss. */
+function clock(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }

@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { can } from '@bscs/core/match';
+import { BRACKET_FORMAT_NAMES, parseBracketFormat } from '@bscs/core/bracket';
 import {
   Panel,
   PageHeader,
@@ -29,7 +30,7 @@ import {
   createTeam,
   triggerRefresh,
   setTournamentVisibility,
-  setCaptainsEnterScores,
+  setMatchRules,
   addTournamentMember,
   removeTournamentMember,
   deleteTournament,
@@ -83,6 +84,11 @@ export default async function TournamentPage({
       description: true,
       isPublic: true,
       captainsEnterScores: true,
+      captainsPullScores: true,
+      captainsCreateMatches: true,
+      matchScoring: true,
+      scoringLocked: true,
+      perfectFromBeatLeader: true,
       members: {
         orderBy: { createdAt: 'asc' },
         select: { id: true, role: true, user: { select: { name: true, image: true } } },
@@ -106,7 +112,7 @@ export default async function TournamentPage({
           id: true,
           name: true,
           teams: {
-            where: { adHoc: false },
+            where: { adHoc: false, playerPool: false },
             orderBy: { name: 'asc' },
             select: {
               id: true,
@@ -120,6 +126,10 @@ export default async function TournamentPage({
             },
           },
         },
+      },
+      brackets: {
+        orderBy: { order: 'asc' },
+        select: { id: true, name: true, format: true, _count: { select: { entries: true } }, pool: { select: { name: true } } },
       },
       drafts: {
         where: { matchId: null },
@@ -141,6 +151,8 @@ export default async function TournamentPage({
           state: true,
           winnerId: true,
           completedAt: true,
+          scoring: true,
+          pointsCurve: true,
           teamAId: true,
           teamBId: true,
           teamA: { select: matchTeamSelect },
@@ -151,7 +163,7 @@ export default async function TournamentPage({
             select: {
               isTiebreaker: true,
               poolMap: { select: { leaderboard: { select: { map: { select: { coverImage: true } } } } } },
-              attempts: { select: { teamId: true, playerId: true, score: true } },
+              attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } },
             },
           },
         },
@@ -191,23 +203,6 @@ export default async function TournamentPage({
                 {!tournament.isPublic && <input type="hidden" name="isPublic" value="on" />}
                 <Button variant="ghost" type="submit">
                   {tournament.isPublic ? 'Make private' : 'Make public'}
-                </Button>
-              </form>
-            )}
-            {can(actor, 'MANAGE_TOURNAMENT') && (
-              <form action={setCaptainsEnterScores}>
-                <input type="hidden" name="tournamentId" value={tournament.id} />
-                {!tournament.captainsEnterScores && <input type="hidden" name="allow" value="on" />}
-                <Button
-                  variant="ghost"
-                  type="submit"
-                  title={
-                    tournament.captainsEnterScores
-                      ? 'Captains can enter their own team\'s match scores. Click to make it organisers only.'
-                      : 'Only organisers and admins can enter match scores. Click to let captains enter their own team\'s.'
-                  }
-                >
-                  Scores: {tournament.captainsEnterScores ? 'captains + staff' : 'staff only'}
                 </Button>
               </form>
             )}
@@ -282,14 +277,53 @@ export default async function TournamentPage({
         </Panel>
       )}
 
-      {can(actor, 'CREATE_MATCH') && (
+      {(tournament.brackets.length > 0 || can(actor, 'MANAGE_TOURNAMENT')) && (
+        <Panel
+          title="Brackets"
+          subtitle={tournament.brackets.length ? undefined : 'Optional: round robin, single or double elimination'}
+          actions={
+            <Link
+              href={`/t/${tournament.slug}/brackets`}
+              className="text-xs text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+            >
+              {can(actor, 'MANAGE_TOURNAMENT') ? 'All brackets · new bracket' : 'All brackets'}
+            </Link>
+          }
+        >
+          {tournament.brackets.length === 0 ? (
+            <Empty>None yet. Matches can be set up without one.</Empty>
+          ) : (
+            <ul className="grid gap-2 md:grid-cols-2">
+              {tournament.brackets.map((b) => (
+                <li key={b.id}>
+                  <Link
+                    href={`/t/${tournament.slug}/bracket/${b.id}`}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-edge bg-raised/40 px-3 py-2.5 transition hover:border-faint"
+                  >
+                    <span className="min-w-0 truncate font-medium">{b.name}</span>
+                    <span className="shrink-0 text-xs text-muted">
+                      {BRACKET_FORMAT_NAMES[parseBracketFormat(b.format)]} · {b._count.entries} teams
+                      {b.pool ? ` · ${b.pool.name}` : ''}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
+
+      {can(actor, 'CREATE_MATCH', { captainsCreateMatches: tournament.captainsCreateMatches }) && (
         <div className="space-y-2">
           <NewMatchForm
             tournamentId={tournament.id}
             teams={teams}
             pools={tournament.pools}
             from="tournament"
+            scoring={{ mode: tournament.matchScoring, locked: tournament.scoringLocked }}
+            ownTeamIds={can(actor, 'CREATE_MATCH') ? undefined : [...(actor.captainOfTeamIds ?? [])]}
           />
+          {can(actor, 'CREATE_MATCH') && (
           <p className="px-1 text-sm text-muted">
             Sides that are not tournament teams?{' '}
             <Link
@@ -300,6 +334,7 @@ export default async function TournamentPage({
             </Link>
             .
           </p>
+          )}
         </div>
       )}
 
@@ -387,12 +422,6 @@ export default async function TournamentPage({
             teams.length > 0 ? (
               <>
                 <Link
-                  href={`/t/${tournament.slug}/stats`}
-                  className="inline-flex h-8 items-center rounded-lg border border-edge-strong bg-raised/60 px-2.5 text-xs font-medium text-ink transition hover:border-faint"
-                >
-                  Player stats →
-                </Link>
-                <Link
                   href={`/t/${tournament.slug}/teams`}
                   className="text-xs text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
                 >
@@ -415,7 +444,7 @@ export default async function TournamentPage({
                     borderLeft: `3px solid ${team.color}`,
                   }}
                 >
-                  <Link href={`/t/${tournament.slug}/stats?team=${team.id}`} className="group min-w-0 flex-1">
+                  <Link href={`/t/${tournament.slug}/teams`} className="group min-w-0 flex-1">
                     <p
                       className="truncate font-semibold group-hover:underline"
                       style={{ color: teamInk(team.color, team.colorSecondary) }}
@@ -424,7 +453,7 @@ export default async function TournamentPage({
                     </p>
                     <p className="truncate text-xs text-muted">
                       {team.members.length > 0
-                        ? `${team.members.length} players · team stats →`
+                        ? `${team.members.length} players`
                         : 'No players yet'}
                     </p>
                   </Link>
@@ -460,6 +489,47 @@ export default async function TournamentPage({
           )}
         </Panel>
       </div>
+
+      {can(actor, 'MANAGE_TOURNAMENT') && (
+        <Panel title="Match rules" subtitle="Who may do what on match night, and how maps are scored">
+          <form action={setMatchRules} className="space-y-3 text-sm">
+            <input type="hidden" name="tournamentId" value={tournament.id} />
+            <fieldset className="space-y-2">
+              <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Captains may</legend>
+              <RuleBox name="captainsCreateMatches" checked={tournament.captainsCreateMatches}>
+                Set up matches for their own team
+                <RuleNote>Otherwise only tournament admins can.</RuleNote>
+              </RuleBox>
+              <RuleBox name="captainsPullScores" checked={tournament.captainsPullScores}>
+                Pull their match&apos;s scores from BeatLeader
+                <RuleNote>Fills both teams&apos; scores for a map in from everyone&apos;s latest run.</RuleNote>
+              </RuleBox>
+              <RuleBox name="captainsEnterScores" checked={tournament.captainsEnterScores}>
+                Type their own team&apos;s scores in by hand
+                <RuleNote>The override for when BeatLeader cannot say. Admins always can.</RuleNote>
+              </RuleBox>
+            </fieldset>
+            <fieldset className="space-y-2 border-t border-edge pt-3">
+              <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Scoring</legend>
+              <Field label="New matches are scored on">
+                <select name="matchScoring" className={inputClass} defaultValue={tournament.matchScoring}>
+                  <option value="ACCURACY">Average accuracy</option>
+                  <option value="MATCH_POINTS">Match points (the curve)</option>
+                </select>
+              </Field>
+              <RuleBox name="scoringLocked" checked={tournament.scoringLocked}>
+                Every match uses this
+                <RuleNote>Otherwise whoever sets a match up can choose.</RuleNote>
+              </RuleBox>
+              <RuleBox name="perfectFromBeatLeader" checked={tournament.perfectFromBeatLeader}>
+                Use BeatLeader&apos;s predicted accuracy as a map&apos;s perfect % until one is set
+                <RuleNote>Perfect % only sizes a map&apos;s points; it never decides who wins it. Set it per map on the pool page.</RuleNote>
+              </RuleBox>
+            </fieldset>
+            <Button type="submit">Save rules</Button>
+          </form>
+        </Panel>
+      )}
 
       {can(actor, 'MANAGE_TOURNAMENT') && (
         <Panel
@@ -561,6 +631,8 @@ interface MatchCardData {
   name: string;
   state: string;
   winnerId: string | null;
+  scoring: string;
+  pointsCurve: unknown;
   teamAId: string;
   teamBId: string;
   teamA: MatchCardTeam;
@@ -569,7 +641,7 @@ interface MatchCardData {
   maps: Array<{
     isTiebreaker: boolean;
     poolMap: { leaderboard: { map: { coverImage: string | null } } };
-    attempts: Array<{ teamId: string; playerId: string; score: number }>;
+    attempts: Array<{ teamId: string; playerId: string; score: number; accuracy: number }>;
   }>;
 }
 
@@ -582,7 +654,7 @@ interface MatchCardTeam {
 
 /** A match at a glance: who, on which maps, and how it stands or ended. */
 function MatchCard({ slug, match }: { slug: string; match: MatchCardData }) {
-  const tally = tallyMaps(match.maps, match.teamAId, match.teamBId);
+  const tally = tallyMaps(match.maps, match.teamAId, match.teamBId, match);
   const finished = match.state === 'COMPLETE';
   const winner =
     match.winnerId === match.teamAId ? match.teamA : match.winnerId === match.teamBId ? match.teamB : null;
@@ -669,4 +741,17 @@ function MatchState({ state }: { state: string }) {
     COMPLETE: 'Final',
   };
   return <Badge tone={tone}>{label[state] ?? state}</Badge>;
+}
+
+function RuleBox({ name, checked, children }: { name: string; checked: boolean; children: React.ReactNode }) {
+  return (
+    <label className="flex items-start gap-2">
+      <input type="checkbox" name={name} defaultChecked={checked} className="mt-1" />
+      <span>{children}</span>
+    </label>
+  );
+}
+
+function RuleNote({ children }: { children: React.ReactNode }) {
+  return <span className="block text-xs text-faint">{children}</span>;
 }

@@ -461,10 +461,25 @@ model Tournament {
   /// Default MatchFormat for matches in this tournament. See packages/core/match.
   defaultFormat Json?
 
-  /// What the prediction model learns from. See packages/core/stats/scope.
+  /// Which scores the stats pages look at. See packages/core/stats/scope.
   statsScope Json?
-  /// Captains may enter their own team's scores. Otherwise staff only.
+  /// Captains may type in their own team's scores. Otherwise staff only.
   captainsEnterScores Boolean @default(false)
+  /// Captains of either team may fill a map's scores in from BeatLeader.
+  captainsPullScores  Boolean @default(true)
+  /// Captains may set up matches for their own team. Otherwise staff only.
+  captainsCreateMatches Boolean @default(false)
+
+  /// How new matches are scored: "ACCURACY" or "MATCH_POINTS". See packages/core/match/scoring.
+  matchScoring  String  @default("ACCURACY")
+  /// Every match uses `matchScoring`; nobody picks per match.
+  scoringLocked Boolean @default(false)
+  /// The match points curve: { padding, slope, perfectPoints }. Null is the default curve.
+  pointsCurve   Json?
+  /// Where an organiser has not set a map's perfect accuracy, use BeatLeader's predicted accuracy.
+  perfectFromBeatLeader Boolean @default(true)
+  /// Pulling scores from BeatLeader: { lookbackMinutes, toleranceSeconds }. Null is the defaults.
+  scorePull     Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -474,6 +489,7 @@ model Tournament {
   matches   Match[]
   drafts    Draft[]
   members   TournamentMember[]
+  brackets  Bracket[]
 
   @@index([ownerId])
 }
@@ -528,6 +544,10 @@ model Team {
   /// team lists, and goes when its last match does.
   adHoc Boolean @default(false)
 
+  /// The tournament's player pool: players waiting to be put into teams (see
+  /// "Make duos" on the teams page). Shown on the boards, never in a match.
+  playerPool Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -543,6 +563,7 @@ model Team {
   attempts    MatchMapAttempt[]
   draftsAsA   Draft[]      @relation("DraftTeamA")
   draftsAsB   Draft[]      @relation("DraftTeamB")
+  bracketEntries BracketEntry[]
 
   @@unique([divisionId, name])
 }
@@ -593,8 +614,9 @@ model MapPool {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  maps    PoolMap[]
-  matches Match[]
+  maps     PoolMap[]
+  matches  Match[]
+  brackets Bracket[]
 
   @@unique([tournamentId, name])
 }
@@ -614,6 +636,8 @@ model PoolMap {
   label    String?
   /// Reserved as the tiebreaker rather than being pickable.
   isTiebreaker Boolean @default(false)
+  /// What counts as a perfect score here (0..1), for match points. Set by the organisers.
+  perfectAcc Float?
 
   matchMaps MatchMap[]
   bans      MatchAction[]
@@ -660,6 +684,11 @@ model Match {
   /// Each team's lineups stay hidden from the other until both have set every map.
   blindLineups Boolean @default(false)
 
+  /// "ACCURACY" or "MATCH_POINTS", fixed when the match is made.
+  scoring     String @default("ACCURACY")
+  /// The curve as it stood when the match was made, so retuning it later does not rewrite results.
+  pointsCurve Json?
+
   scheduledAt DateTime?
   startedAt   DateTime?
   completedAt DateTime?
@@ -671,6 +700,7 @@ model Match {
   maps       MatchMap[]
   shareLinks ShareLink[]
   draft      Draft?
+  bracketNode BracketNode?
 
   @@index([tournamentId])
   @@index([poolId])
@@ -729,6 +759,13 @@ model MatchMap {
   /// Teams that have spent a replay on this map. Each entry is one more run of
   /// the map by both sides; a player's best run is the one that counts.
   replayCalledByTeamIds String[] @default([])
+
+  /// When the run being played opened: the map being picked, or the latest
+  /// replay being called. A BeatLeader run from before it is not this map's.
+  runOpenedAt    DateTime  @default(now())
+  /// Set once someone has said the scores are final. Nothing is pulled or
+  /// typed in after that until an organiser reopens them.
+  scoresClosedAt DateTime?
 
   createdAt DateTime @default(now())
 
@@ -791,9 +828,15 @@ model MatchMapAttempt {
   score    Int
   accuracy Float @default(0)
 
-  /// AUTO when matched from BeatLeader, MANUAL when an organiser typed it.
+  /// AUTO when pulled from BeatLeader, MANUAL when someone typed it.
   source            String  @default("AUTO")
   beatLeaderScoreId Int?
+  /// The BeatLeader run this was pulled from.
+  beatLeaderAttemptId Int?
+  /// How that run ended: CLEAR, FAIL, QUIT...
+  endType           String?
+  /// Unix seconds the run ended, as BeatLeader has it.
+  timeset           Int?
   replayUrl         String?
 
   createdAt DateTime @default(now())
@@ -876,4 +919,73 @@ model ShareLink {
   expiresAt DateTime?
 
   @@index([matchId])
+}
+
+// ===========================================================================
+//  Brackets
+// ===========================================================================
+
+/// A stage of a tournament: round robin, single or double elimination. Optional,
+/// and a tournament may have several - qualifiers on one pool, finals on another.
+///
+/// Only the shape and the reported results are stored. Who plays in each slot is
+/// worked out from the seeds and results every time (packages/core/bracket), so
+/// an undone result can never leave the bracket half-updated.
+model Bracket {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  name   String
+  /// "ROUND_ROBIN" | "SINGLE_ELIM" | "DOUBLE_ELIM"
+  format String
+  /// The pool its matches are played on.
+  poolId String?
+  pool   MapPool? @relation(fields: [poolId], references: [id], onDelete: SetNull)
+  order  Int      @default(0)
+
+  createdAt DateTime @default(now())
+
+  entries BracketEntry[]
+  nodes   BracketNode[]
+
+  @@index([tournamentId])
+}
+
+/// A team in a bracket, and its seed (1 is the top seed).
+model BracketEntry {
+  id        String  @id @default(cuid())
+  bracketId String
+  bracket   Bracket @relation(fields: [bracketId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  seed      Int
+
+  @@unique([bracketId, teamId])
+  @@unique([bracketId, seed])
+}
+
+/// One match slot in a bracket.
+model BracketNode {
+  id        String  @id @default(cuid())
+  bracketId String
+  bracket   Bracket @relation(fields: [bracketId], references: [id], onDelete: Cascade)
+
+  /// e.g. "W2-1": unique in the bracket, and what other nodes' sources name.
+  key      String
+  /// "RR" | "W" | "L" | "GF"
+  section  String
+  round    Int
+  position Int
+  /// Where each side comes from: { a: SlotSource, b: SlotSource }.
+  sources  Json
+
+  /// The winner, as reported by the linked match or set by an organiser.
+  winnerId String?
+  /// The match played for this slot.
+  matchId  String? @unique
+  match    Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  @@unique([bracketId, key])
+  @@index([bracketId])
 }
