@@ -1,5 +1,5 @@
 import { prisma } from '@bscs/db';
-import { evaluateMaps, type SimMap } from '@bscs/core/optimize';
+import { assignSpread, evaluateMaps, type SimMap } from '@bscs/core/optimize';
 import { parseFormat } from './match-helpers';
 import { predictorFor } from './stats';
 import type { PoolBoard } from './board';
@@ -220,54 +220,4 @@ export async function buildPoolOutlook(
   });
 
   return { playersPerMap: k, formatName: format.name, maps, shortHanded: null, repeatsNeeded };
-}
-
-/**
- * One option per map, maximising the total, with as few repeats as the numbers
- * allow: none when there are at least as many options as maps, otherwise
- * exactly the shortfall - six duos over seven maps means one duo plays twice,
- * not three of them.
- *
- * Depth-first with a bound. Only each map's top N options can matter (the other
- * N-1 maps cannot take more than that away), which keeps the search small
- * however large the roster is.
- */
-function assignSpread<T extends { playerIds: string[]; value: number }>(perMap: T[][]): Array<T | null> {
-  const n = perMap.length;
-  const keyOf = (g: T) => [...g.playerIds].sort().join('|');
-  const distinct = new Set(perMap.flatMap((groups) => groups.map(keyOf))).size;
-  const repeatsAllowed = Math.max(0, n - distinct);
-
-  const options = perMap.map((groups) =>
-    [...groups].sort((a, b) => b.value - a.value).slice(0, Math.max(n, 1)),
-  );
-  // Best still achievable from map i onwards, ignoring the constraint.
-  const ceiling = new Array<number>(n + 1).fill(0);
-  for (let i = n - 1; i >= 0; i--) ceiling[i] = ceiling[i + 1]! + (options[i]![0]?.value ?? 0);
-
-  let best: Array<T | null> = new Array(n).fill(null);
-  let bestTotal = -1;
-  const current: Array<T | null> = new Array(n).fill(null);
-  const used = new Map<string, number>();
-
-  const visit = (i: number, total: number, repeatsLeft: number) => {
-    if (total + ceiling[i]! <= bestTotal) return;
-    if (i === n) {
-      bestTotal = total;
-      best = [...current];
-      return;
-    }
-    for (const group of options[i]!) {
-      const key = keyOf(group);
-      const count = used.get(key) ?? 0;
-      if (count > 0 && repeatsLeft === 0) continue;
-      used.set(key, count + 1);
-      current[i] = group;
-      visit(i + 1, total + group.value, count > 0 ? repeatsLeft - 1 : repeatsLeft);
-      used.set(key, count);
-    }
-    current[i] = null;
-  };
-  visit(0, 0, repeatsAllowed);
-  return best;
 }
