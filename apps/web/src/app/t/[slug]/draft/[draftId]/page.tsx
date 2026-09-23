@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { draftSequence, parseDraftSettings } from '@bscs/core/match';
-import { compareOnSharedMaps, indexScores } from '@bscs/core/stats';
 import { can } from '@/server/match-helpers';
 import {
   Avatar,
@@ -22,7 +21,7 @@ import { MatchLive } from '@/components/match-live';
 import { PlayerLink } from '@/components/player-card';
 import { MatchOptions } from '@/components/custom-match-builder';
 import { getActorOrAnonymous } from '@/server/session';
-import { buildTournamentModel } from '@/server/stats';
+import { buildTournamentData } from '@/server/stats';
 import { getDraftSummary } from '@/server/summaries';
 import { deleteDraft, draftPick, startDraftMatch, undoDraftPick } from '@/server/draft-actions';
 
@@ -90,7 +89,7 @@ export default async function DraftPage({
   const actor = await getActorOrAnonymous(draft.tournament.id);
   if (!can(actor, 'VIEW', { isPublic: draft.tournament.isPublic })) notFound();
 
-  const model = await buildTournamentModel(draft.tournament.id);
+  const data = await buildTournamentData(draft.tournament.id);
   const settings = parseDraftSettings(draft);
   const sequence = draftSequence(settings, draft.players.length);
   const picked = draft.players
@@ -101,20 +100,10 @@ export default async function DraftPage({
   const canPick = onTheClock ? can(actor, 'MAKE_PICK_BAN', { teamId: onTheClock.id }) : false;
   const complete = picked.length >= draft.players.length;
 
-  // Strongest first: it is what a captain is scanning for.
-  // On like-for-like comparisons with everyone else in the draft, as the stats
-  // pages rank people - so the order here is one a captain can check there.
-  const index = indexScores(model.scores);
-  const everyone = [
-    ...draft.players.map((p) => p.player.id),
-    ...draft.teamA.members.map((m) => m.player.id),
-    ...draft.teamB.members.map((m) => m.player.id),
-  ];
-  const standing = new Map(everyone.map((id) => [id, compareOnSharedMaps(index, id, everyone).gap]));
-  const skillOf = (playerId: string) => standing.get(playerId) ?? -Infinity;
+  // Highest BeatLeader pp first - a figure everyone can look up - then by name.
   const available = draft.players
     .filter((p) => p.pickNumber == null)
-    .sort((a, b) => skillOf(b.player.id) - skillOf(a.player.id) || b.player.pp - a.player.pp);
+    .sort((a, b) => b.player.pp - a.player.pp || a.player.name.localeCompare(b.player.name));
 
   const teams = [
     { side: 'A' as const, team: draft.teamA },
@@ -300,7 +289,7 @@ export default async function DraftPage({
           ) : (
             <ul className="divide-y divide-edge/60">
               {available.map(({ player }) => {
-                const profile = model.profiles[player.id];
+                const profile = data.profiles[player.id];
                 return (
                   <li key={player.id} className="flex items-center gap-3 px-4 py-2">
                     <PlayerLink playerId={player.id} name={player.name} className="flex min-w-0 flex-1 items-center gap-3">

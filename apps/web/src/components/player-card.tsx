@@ -1,16 +1,13 @@
 'use client';
 
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { getPlayerOverview, type PlayerOverview } from '@/server/player-overview';
-import { StyleBadges } from './player-stats';
-import { Avatar, pct, teamInk } from './ui';
+import { Avatar, teamInk } from './ui';
 
 /**
- * The player card: tap anyone, anywhere in a tournament, and get who they are
- * and the three places to go next - their stats, their team's, their
- * BeatLeader profile.
+ * The player card: tap anyone, anywhere in a tournament, and get who they are,
+ * their team, and their BeatLeader and ScoreSaber profiles.
  *
  * One dialog per tournament layout, opened through context, so a board with
  * forty names on it mounts forty buttons and not forty dialogs.
@@ -96,16 +93,7 @@ export function PlayerCardProvider({ slug, children }: { slug: string; children:
                         ))
                       )}
                     </p>
-                    <p className="mt-0.5 truncate text-xs text-faint">
-                      {[
-                        overview.country,
-                        overview.pp > 0 ? `${Math.round(overview.pp).toLocaleString('en-US')}pp BL` : null,
-                        overview.ssPp > 0 ? `${Math.round(overview.ssPp).toLocaleString('en-US')}pp SS` : null,
-                        overview.globalRank > 0 ? `#${overview.globalRank.toLocaleString('en-US')} on BeatLeader` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </p>
+                    {overview.country && <p className="mt-0.5 truncate text-xs text-faint">{overview.country}</p>}
                   </>
                 )}
               </div>
@@ -130,53 +118,27 @@ export function PlayerCardProvider({ slug, children }: { slug: string; children:
 
             {overview && (
               <>
-                {overview.style && (
-                  <div className="mt-4">
-                    <div className="flex flex-wrap gap-1.5">
-                      <StyleBadges style={overview.style} />
-                    </div>
-                    <p className="mt-1.5 text-sm text-muted">{overview.style.summary}</p>
-                  </div>
-                )}
-
-                <dl className="mt-4 grid grid-cols-3 gap-2 text-center">
+                <dl className="mt-4 grid grid-cols-2 gap-2 text-center">
                   <Figure
-                    label="Average"
-                    value={overview.meanAcc != null ? pct(overview.meanAcc) : '—'}
-                    note={`${overview.played} of ${overview.mapCount} maps`}
-                    warn={overview.played < overview.mapCount}
+                    label="BeatLeader"
+                    value={overview.pp > 0 ? `${Math.round(overview.pp).toLocaleString('en-US')}pp` : '—'}
+                    note={overview.globalRank > 0 ? `#${overview.globalRank.toLocaleString('en-US')} global` : 'unranked'}
                   />
                   <Figure
-                    label="On team"
-                    value={overview.teams[0]?.teamRank ? `#${overview.teams[0].teamRank}` : '—'}
-                    note={
-                      overview.teams[0]
-                        ? `of ${overview.teams[0].teamSize}${overview.teams.length > 1 ? ` · ${overview.teams[0].name}` : ''}`
-                        : 'no team'
-                    }
-                  />
-                  <Figure
-                    label="In the field"
-                    value={overview.fieldRank ? `#${overview.fieldRank}` : '—'}
-                    note={`of ${overview.fieldSize}`}
+                    label="ScoreSaber"
+                    value={overview.ssPp > 0 ? `${Math.round(overview.ssPp).toLocaleString('en-US')}pp` : '—'}
+                    note={overview.scoreSaberId ? (overview.ssRank > 0 ? `#${overview.ssRank.toLocaleString('en-US')} global` : 'unranked') : 'not linked'}
                   />
                 </dl>
+                <p className={`mt-3 text-xs ${overview.runsPublic === false ? 'text-warn' : 'text-muted'}`}>
+                  {overview.runsPublic === true
+                    ? 'Shows their runs on BeatLeader, so match scores can be pulled for them.'
+                    : overview.runsPublic === false
+                      ? 'Keeps their BeatLeader stats private: only a new personal best can be pulled. They can turn on "Show my stats publicly" in their BeatLeader settings.'
+                      : 'Not yet known whether BeatLeader shows their runs.'}
+                </p>
 
                 <div className="mt-4 space-y-2">
-                  {overview.teams.length > 0 && (
-                    <Link
-                      href={`/t/${slug}/stats/${overview.playerId}${overview.teams.length > 1 ? `?team=${overview.teams[0]!.teamId}` : ''}`}
-                      className={`${action} border-transparent bg-accent font-semibold text-surface hover:brightness-110`}
-                    >
-                      {overview.name}&apos;s stats
-                    </Link>
-                  )}
-                  {overview.teams.map((t) => (
-                    <Link key={t.teamId} href={`/t/${slug}/stats?team=${t.teamId}`} className={ghost}>
-                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
-                      <span className="truncate">{t.name} stats</span>
-                    </Link>
-                  ))}
                   {/* Both platforms, side by side: neither is the player's "real" profile. */}
                   <div className={`grid gap-2 ${overview.scoreSaberId ? 'grid-cols-2' : ''}`}>
                     <a
@@ -208,12 +170,12 @@ export function PlayerCardProvider({ slug, children }: { slug: string; children:
   );
 }
 
-function Figure({ label, value, note, warn }: { label: string; value: string; note: string; warn?: boolean }) {
+function Figure({ label, value, note }: { label: string; value: string; note: string }) {
   return (
     <div className="rounded-lg border border-edge bg-raised/50 px-1 py-2">
       <dt className="text-[9px] font-medium uppercase tracking-wider text-faint">{label}</dt>
       <dd className="text-base font-semibold tabular">{value}</dd>
-      <dd className={`text-[10px] tabular ${warn ? 'text-warn' : 'text-faint'}`}>{note}</dd>
+      <dd className="text-[10px] tabular text-faint">{note}</dd>
     </div>
   );
 }
@@ -241,7 +203,7 @@ export function PlayerLink({
       type="button"
       onClick={() => open(playerId)}
       aria-haspopup="dialog"
-      title={`${name} - overview and stats`}
+      title={`${name} - profile`}
       // Exempt from the 44px touch-target rule in globals.css: an avatar in a
       // stack, or a name in a row that is already tall enough, must not grow.
       data-inline

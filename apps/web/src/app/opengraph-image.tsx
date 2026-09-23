@@ -22,7 +22,7 @@ export default async function Image() {
             Beat Saber tournaments, live
           </div>
           <div style={{ display: 'flex', marginTop: 16, fontSize: 32, color: OG_COLORS.muted }}>
-            Map pools, team rosters, pick and ban, lineup advice and win predictions.
+            Map pools, live scores, pick and ban, and matches scored straight from BeatLeader.
           </div>
         </div>
         <div style={{ display: 'flex' }}>

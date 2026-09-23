@@ -4,9 +4,9 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 /**
- * Keeps a match page (or a captains' draft) current: when anyone picks, bans, saves a lineup or
- * enters a score - or when advice that was being calculated is ready - every
- * open copy of the page re-renders.
+ * Keeps a match page (or a captains' draft) current: when anyone picks, bans,
+ * saves a lineup or enters or pulls a score, every open copy of the page
+ * re-renders.
  *
  * Renders nothing. The stream only says that something changed; the data still
  * comes from the server, through the same checks as a normal page load.

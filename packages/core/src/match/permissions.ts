@@ -47,6 +47,7 @@ export type Action =
   | 'MAKE_PICK_BAN'
   | 'SET_LINEUP'
   | 'ENTER_SCORE'
+  | 'PULL_SCORES'
   | 'OVERRIDE_RULES'
   | 'ACT_FOR_OTHERS'
   | 'UNDO_ACTION';
@@ -58,6 +59,12 @@ export interface ActionContext {
   isPublic?: boolean;
   /** Tournament setting: captains may enter their own team's scores. */
   captainsEnterScores?: boolean;
+  /** Tournament setting: captains may fill a map's scores in from BeatLeader. */
+  captainsPullScores?: boolean;
+  /** Tournament setting: captains may set up a match their team plays in. */
+  captainsCreateMatches?: boolean;
+  /** For match-scoped actions: the two teams in the match. */
+  matchTeamIds?: readonly string[];
 }
 
 /** Roles that administer a tournament rather than compete in it. */
@@ -89,10 +96,19 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
       // public gets the private answer, not an open door.
       return context.isPublic === true || actor.tournamentRole != null;
 
+    case 'CREATE_MATCH':
+      // Where the tournament allows it, a captain may set up a match for their
+      // own team. Without a team named, the question is whether they could set
+      // up any match at all - enough to show them the form.
+      if (staff) return true;
+      if (context.captainsCreateMatches !== true) return false;
+      return context.teamId == null
+        ? (actor.captainOfTeamIds?.length ?? 0) > 0
+        : isCaptainOf(actor, context.teamId);
+
     case 'MANAGE_TOURNAMENT':
     case 'MANAGE_TEAMS':
     case 'IMPORT_POOL':
-    case 'CREATE_MATCH':
     case 'ACT_FOR_OTHERS':
     case 'UNDO_ACTION':
       // Note there is no captain branch here: a captain who may override is one
@@ -100,11 +116,21 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
       return staff;
 
     case 'ENTER_SCORE':
-      // BeatLeader only knows a player's best ever run, not the one they just
-      // played, so match scores are typed in. Staff always may; captains only
-      // for their own team, and only where the tournament allows it.
+      // Typing a score in is the override for when BeatLeader cannot say.
+      // Staff always may; captains only for their own team, and only where
+      // the tournament allows it.
       return (
         staff || (context.captainsEnterScores === true && isCaptainOf(actor, context.teamId))
+      );
+
+    case 'PULL_SCORES':
+      // Filling scores in from BeatLeader writes what BeatLeader recorded, for
+      // both teams at once - so either captain in the match may, where the
+      // tournament allows it.
+      return (
+        staff ||
+        (context.captainsPullScores === true &&
+          (context.matchTeamIds ?? []).some((id) => isCaptainOf(actor, id)))
       );
 
     case 'MAKE_PICK_BAN':

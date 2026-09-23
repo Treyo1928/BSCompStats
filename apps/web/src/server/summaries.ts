@@ -3,7 +3,6 @@ import { prisma } from '@bscs/db';
 import { nextDraftSlot, parseDraftSettings } from '@bscs/core/match';
 import { classifyFails } from '@bscs/core/stats';
 import { tallyMaps } from './match-summary';
-import { buildTournamentStats, OVERALL } from './player-stats';
 import { loadScores } from './score-sources';
 
 /**
@@ -48,12 +47,14 @@ export const getTournamentSummary = cache(async (slug: string) => {
         select: {
           state: true,
           winnerId: true,
+          scoring: true,
+          pointsCurve: true,
           teamAId: true,
           teamBId: true,
           teamA: { select: { name: true } },
           teamB: { select: { name: true } },
           maps: {
-            select: { isTiebreaker: true, attempts: { select: { teamId: true, playerId: true, score: true } } },
+            select: { isTiebreaker: true, attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } } },
           },
         },
       },
@@ -67,7 +68,7 @@ export const getTournamentSummary = cache(async (slug: string) => {
   const finished = t.matches.filter((m) => m.state === 'COMPLETE');
 
   const results = finished.slice(0, 3).map((m) => {
-    const tally = tallyMaps(m.maps, m.teamAId, m.teamBId);
+    const tally = tallyMaps(m.maps, m.teamAId, m.teamBId, m);
     const aWon = m.winnerId === m.teamAId;
     const bWon = m.winnerId === m.teamBId;
     if (!aWon && !bWon) return `${m.teamA.name} ${tally.a}-${tally.b} ${m.teamB.name}`;
@@ -175,6 +176,8 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
       name: true,
       state: true,
       winnerId: true,
+      scoring: true,
+      pointsCurve: true,
       teamAId: true,
       teamBId: true,
       tournament: { select: { slug: true, name: true, isPublic: true } },
@@ -186,14 +189,14 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
         select: {
           isTiebreaker: true,
           poolMap: { select: { leaderboard: { select: { map: { select: { name: true, coverImage: true } } } } } },
-          attempts: { select: { teamId: true, playerId: true, score: true } },
+          attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } },
         },
       },
     },
   });
   if (!m || m.tournament.slug !== slug || !m.tournament.isPublic) return null;
 
-  const tally = tallyMaps(m.maps, m.teamAId, m.teamBId);
+  const tally = tallyMaps(m.maps, m.teamAId, m.teamBId, m);
   const winner = m.winnerId === m.teamAId ? m.teamA : m.winnerId === m.teamBId ? m.teamB : null;
 
   const status =
@@ -222,99 +225,6 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
       cover: x.poolMap.leaderboard.map.coverImage,
       isTiebreaker: x.isTiebreaker,
     })),
-  };
-});
-
-const points = (gap: number) => `${gap >= 0 ? '+' : '−'}${Math.abs(gap * 100).toFixed(1)}`;
-
-/** The stats page: each team in ranked order, as the page itself shows it. */
-export const getStatsSummary = cache(async (slug: string) => {
-  const t = await prisma.tournament.findUnique({
-    where: { slug },
-    select: { id: true, name: true, isPublic: true },
-  });
-  if (!t || !t.isPublic) return null;
-
-  const stats = await buildTournamentStats(t.id);
-  // The card is about the tournament's own teams; a side made up for one match is a footnote to it.
-  const teams = stats.teams
-    .filter((team) => !team.adHoc)
-    .map((team) => ({
-      name: team.name,
-      color: team.color,
-      players: [...team.players]
-        .sort((a, b) => (a.standings[OVERALL]?.teamRank ?? Infinity) - (b.standings[OVERALL]?.teamRank ?? Infinity))
-        .map((p) => ({
-          name: p.name,
-          rank: p.standings[OVERALL]?.teamRank ?? null,
-          gap: p.standings[OVERALL]?.vsTeam.gap ?? null,
-          style: p.profile && p.specialty.status === 'RANGE' ? p.specialty.label : null,
-        })),
-    }));
-
-  return {
-    tournamentName: t.name,
-    teams,
-    fieldSize: stats.fieldSize,
-    mapCount: stats.mapCount,
-    description:
-      teams.length === 0
-        ? 'No teams yet.'
-        : `Ranked within each team, on the maps both players have actually played. ${teams
-            .map((team) => `${team.name}: ${team.players.map((p) => p.name).join(', ') || 'no players yet'}`)
-            .join(' | ')}`,
-  };
-});
-
-/** One player: who they play for, where they rank, and how they play. */
-export const getPlayerStatsSummary = cache(async (slug: string, playerId: string) => {
-  const t = await prisma.tournament.findUnique({
-    where: { slug },
-    select: { id: true, name: true, isPublic: true },
-  });
-  if (!t || !t.isPublic) return null;
-
-  const stats = await buildTournamentStats(t.id);
-  const spot = stats.teams
-    .flatMap((team) => team.players.filter((p) => p.playerId === playerId).map((player) => ({ team, player })))
-    // Entered teams are listed first, so that is the side the headline figures are against.
-    .at(0);
-  if (!spot) return null;
-
-  const { team, player } = spot;
-  const overall = player.standings[OVERALL]!;
-  // The kinds they can actually be ranked on, best first - what is worth a line in a preview.
-  const ranks = player.kinds
-    .filter((k) => k.teamRank != null)
-    .sort((a, b) => a.teamRank! - b.teamRank!)
-    .map((k) => ({ label: k.kind, rank: k.teamRank, of: k.teamRanked }));
-
-  const facts = [
-    overall.teamRank ? `#${overall.teamRank} of ${overall.teamRanked} on ${team.name}` : null,
-    overall.fieldRank ? `#${overall.fieldRank} of ${overall.fieldRanked} in the field` : null,
-    player.profile && player.profile.meanAcc > 0
-      ? `${pct(player.profile.meanAcc, 2)} average on ${player.played} of ${stats.mapCount} pool maps`
-      : null,
-  ].filter(Boolean);
-
-  return {
-    tournamentName: t.name,
-    name: player.name,
-    avatar: player.avatar,
-    team: { name: team.name, color: team.color },
-    style: player.profile ? { label: player.specialty.label, summary: player.specialty.summary } : null,
-    meanAcc: player.profile && player.profile.meanAcc > 0 ? player.profile.meanAcc : null,
-    played: player.played,
-    mapCount: stats.mapCount,
-    overall,
-    ranks,
-    description: [
-      player.profile ? `${player.specialty.label}.` : null,
-      facts.join(' · '),
-      overall.vsTeam.gap != null ? `${points(overall.vsTeam.gap)} points vs teammates on the maps both have played.` : null,
-    ]
-      .filter(Boolean)
-      .join(' '),
   };
 });
 

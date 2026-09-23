@@ -7,14 +7,22 @@ export function NewMatchForm({
   teams,
   pools,
   from,
+  scoring,
+  ownTeamIds,
 }: {
   tournamentId: string;
   teams: Array<{ id: string; name: string }>;
   pools: Array<{ id: string; name: string }>;
   /** Which page to come back to if the form is rejected. */
   from: 'tournament' | 'teams';
+  /** The tournament's default scoring, and whether every match must use it. */
+  scoring: { mode: string; locked: boolean };
+  /** For a captain setting up their own match: the teams they may put down as Team A. Everyone else: absent. */
+  ownTeamIds?: string[];
 }) {
-  if (teams.length < 2 || pools.length === 0) {
+  const sideA = ownTeamIds ? teams.filter((t) => ownTeamIds.includes(t.id)) : teams;
+  const sideB = ownTeamIds ? teams.filter((t) => !ownTeamIds.includes(t.id) || sideA.length > 1) : teams;
+  if (teams.length < 2 || pools.length === 0 || sideA.length === 0 || sideB.length === 0) {
     return (
       <Panel title="New match">
         <Empty>A match needs two teams and a map pool. Add those first.</Empty>
@@ -28,18 +36,18 @@ export function NewMatchForm({
         <input type="hidden" name="tournamentId" value={tournamentId} />
         <input type="hidden" name="from" value={from} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Team A">
-            <select name="teamAId" className={inputClass} defaultValue={teams[0]!.id}>
-              {teams.map((t) => (
+          <Field label={ownTeamIds ? 'Your team' : 'Team A'}>
+            <select name="teamAId" className={inputClass} defaultValue={sideA[0]!.id}>
+              {sideA.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Team B">
-            <select name="teamBId" className={inputClass} defaultValue={teams[1]!.id}>
-              {teams.map((t) => (
+          <Field label={ownTeamIds ? 'Against' : 'Team B'}>
+            <select name="teamBId" className={inputClass} defaultValue={(sideB.find((t) => t.id !== sideA[0]!.id) ?? sideB[0]!).id}>
+              {sideB.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>
@@ -65,6 +73,22 @@ export function NewMatchForm({
             <option value="B">Team B</option>
           </select>
         </Field>
+        {scoring.locked ? (
+          <p className="text-xs text-muted">
+            Scored on {scoring.mode === 'MATCH_POINTS' ? 'match points' : 'average accuracy'}, as every match in
+            this tournament is.
+          </p>
+        ) : (
+          <Field
+            label="Scoring"
+            hint="Match points curve each player's accuracy before averaging, which evens out a strong player duoing with a newer one."
+          >
+            <select name="scoring" className={inputClass} defaultValue={scoring.mode}>
+              <option value="ACCURACY">Average accuracy</option>
+              <option value="MATCH_POINTS">Match points</option>
+            </select>
+          </Field>
+        )}
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" name="blindLineups" className="mt-1" />
           <span>

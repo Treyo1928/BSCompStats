@@ -6,7 +6,7 @@ import { can } from '@/server/match-helpers';
 import { Badge, Empty, FormError, PageHeader, Panel } from '@/components/ui';
 import { CustomMatchBuilder, type BuilderPlayer } from '@/components/custom-match-builder';
 import { getActorOrAnonymous } from '@/server/session';
-import { buildTournamentModel } from '@/server/stats';
+import { buildTournamentData } from '@/server/stats';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Custom match' };
@@ -49,7 +49,7 @@ export default async function CustomMatchPage({
       team: { select: { name: true, color: true, adHoc: true } },
     },
   });
-  const model = await buildTournamentModel(tournament.id);
+  const data = await buildTournamentData(tournament.id);
 
   const players = new Map<string, BuilderPlayer>();
   for (const { player, team } of members) {
@@ -58,7 +58,7 @@ export default async function CustomMatchPage({
       ...player,
       teamName: team.adHoc ? null : team.name,
       teamColor: team.adHoc ? null : team.color,
-      meanAcc: model.profiles[player.id]?.meanAcc || null,
+      meanAcc: data.profiles[player.id]?.meanAcc || null,
     });
   }
 

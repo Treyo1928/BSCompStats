@@ -19,6 +19,7 @@ export default async function TournamentLayout({
       id: true,
       isPublic: true,
       pools: { orderBy: { createdAt: 'asc' }, select: { id: true, name: true } },
+      _count: { select: { brackets: true } },
     },
   });
   if (!tournament) return children;
@@ -34,7 +35,9 @@ export default async function TournamentLayout({
   }));
   const after: TournamentNavItem[] = [
     { href: `/t/${slug}/teams`, label: 'Teams' },
-    { href: `/t/${slug}/stats`, label: 'Player stats', deep: true },
+    ...(tournament._count.brackets > 0 || can(actor, 'MANAGE_TOURNAMENT')
+      ? [{ href: `/t/${slug}/brackets`, label: 'Brackets', deep: true }]
+      : []),
     ...(can(actor, 'CREATE_MATCH') ? [{ href: `/t/${slug}/custom`, label: 'Custom match' }] : []),
   ];
 

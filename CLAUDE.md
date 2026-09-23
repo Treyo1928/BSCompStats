@@ -1,9 +1,13 @@
 # BSCompStats - context for Claude
 
-Self-hosted Beat Saber tournament stats: map pools with live scores, pick/ban,
-lineup advice, win predictions and player stats. Replaces the MSU league's
-Google Sheets. Read README.md for what the app does and why the stats model is
-built the way it is; this file is what a new session needs beyond that.
+Self-hosted Beat Saber tournament manager: map pools with live scores,
+pick/ban, lineups, match scores pulled from BeatLeader, match points, optional
+brackets (round robin / single / double elim), a player pool with duo-making.
+Replaces the MSU league's Google Sheets. Since 2026-09-23 it shows only what
+is objectively known - every prediction (skill model, win chances, lineup/pick
+advice, estimates), the player stats pages, strength/specialty labels and map
+kinds were removed on purpose. Don't bring any back. README.md still describes
+the old model; this file is current.
 
 ## Working rules (the user has asked for these)
 
@@ -39,12 +43,13 @@ docker run --rm -v "$PWD":/app -w /app node:22-bookworm-slim sh -c '…'
 ```
 
 - Typecheck: `cd apps/web && npx tsc --noEmit -p .` (and `apps/worker`).
-- Tests: `npx vitest run --root packages/core` (~190 tests, ~40s).
+- Tests: `npx vitest run --root packages/core` (~150 tests, a few seconds).
 - Core must be rebuilt before the web typecheck sees changes to it:
   `npm run build --workspace @bscs/core`. Prisma client after schema changes:
   `npx prisma generate --schema packages/db/prisma/schema.prisma` (needs
   `apt-get install -y openssl` in the container first).
-- Live site: `docker compose up -d --build` (~4 min). Migrations run in the
+- Live site (bs.treyo.dev, host port 3001): before handing back, always
+  `docker compose down` (never `-v`) then `docker compose up -d --build` (~4 min). Migrations run in the
   `migrate` service. Check `docker compose logs migrate`, the web container is
   `healthy`, and `docker logs --since 5m bscompstats-web-1 | grep -ciE '⨯|unhandled'`
   is 0.
@@ -63,54 +68,66 @@ docker run --rm -v "$PWD":/app -w /app node:22-bookworm-slim sh -c '…'
 apps/web       Next.js 15, app router, server actions, SSE. Tailwind 4.
 apps/worker    BeatLeader live socket + polls; history, profiles, ScoreSaber sync
 packages/core  Pure domain logic, unit-tested. beatleader/ scoresaber/ stats/
-               match/ optimize/
+               match/ (points.ts curve, scoring.ts map results, pull.ts)
+               bracket/ (generate, resolve, standings, duos)
 packages/db    Prisma schema + migrations (additive only so far)
 ```
 
 Key server modules in `apps/web/src/server/`:
-- `stats.ts` - fits the skill model per tournament, cached per (tournament,
-  platform, scope); concurrent requests share one in-flight fit.
+- `stats.ts` - `buildTournamentData`: the scores in view, map kinds,
+  abandoned-run flags, descriptive profiles. No fitting.
 - `score-sources.ts` - loads BeatLeader + ScoreSaber scores onto common map
   keys (song hash + difficulty), best run per map. Everything reads through it.
 - `board.ts` - the pool board. `loadBoardMembers` decides who is on it.
-- `player-stats.ts` - the stats pages: like-for-like standings, pp profiles,
-  specialty labels, views (pool/ranked/all) and platform (both/BL/SS).
-- `matches.ts` + `advice-thread.ts` - match advice on a worker thread.
-- `answer-card.ts` - "if they field this, what should we field".
+- `brackets.ts` + `bracket-actions.ts` - brackets; `pool-actions.ts` - the
+  player pool (a Team with `playerPool`) and "Make duos".
+- `matches.ts` - the match view: per-map results under the match's scoring.
+- `match-summary.ts` - `scoringOf`, `perfectAccOf`, the one `tallyMaps`.
+- `score-pull.ts` + `pullMapScores`/`savePulledRuns` in `match-actions.ts` -
+  fill a map's scores from everyone's latest BeatLeader run.
 - `draft-actions.ts`, `custom-teams.ts` - captains' drafts and match-only teams.
 
 ## Design decisions worth knowing (each was arrived at the hard way)
 
-- **Ranks are ranks of the number shown.** On the pool: average gap to
-  teammates over maps *both* have played (`stats/standings.ts`); nobody in
-  common = unranked, not last. A kind of map means exactly the maps called
-  that - grouping kinds into families made two pages disagree.
-- **Wider views rank by pp**, overall and per kind. Accuracy on shared maps
-  only says who is more accurate. Specialty = where a player's pp comes from
-  (`stats/pp-profile.ts`), per platform, averaged. Three earlier attempts
-  (leans vs a model prediction; BeatLeader's skill triangle vs same-pp
-  players; team-relative best/worst) all mislabelled known players and were
-  removed. Don't reintroduce them.
-- **Both platforms count equally.** pp is never added across sites; it's shown
-  side by side and combined by standing. The tournament's own prediction
-  scope (`statsScope`) is separate from the stats-page view.
 - **History downloads go back forever and record completion**
   (`historyBackfilledTo`, `ssBackfilledAt`). A backfill that stopped at the
   first already-stored page silently lost most of players' history.
-- **Win chances**: per-map figure is best lineup vs best lineup, where "best"
-  is a genuine best response (they field what's hardest for us; we answer
-  that), averaged with the reverse. The lineup panel models the opponent as a
-  captain (alternating best responses, `BEST_RESPONSE_ROUNDS`) - assuming a
-  roster rotation made a two-stars-two-passengers team a 97% favourite.
-  Averaging over every possible lineup is shown only as detail.
-- **The skill fit runs to convergence, and factors are shrunk hard.** Forty
-  fixed sweeps left a one-factor fit mid-drift (a factor of -0.37 that settles
-  at +0.33), and a factor ridge of 0.3 let ten acc-map scores put gayalex5 at
-  93% on Spin Eternally, above LS who beats them everywhere - the outlook
-  called the map lost. Now: sweep until nothing moves (`tolerance`), factor
-  ridge 1-3 in the CV grid, and a more complex model must win held-out error
-  by 1% or the simpler one is kept. `stats/fixtures/msu-fall-2026.json` is the
-  regression case.
+- **Match points** (Wynttter's curve, working name): each player's accuracy
+  goes through `raw(a) = 1/(1+padding-a) + slope*a`, scaled so a map's
+  perfect % is worth `perfectPoints`, THEN the team averages. Curve before
+  averaging, never after. Defaults 0.03 / 80 / 100 from his sheet (its cached
+  values fit slightly different params; the Apps Script source was never
+  seen). The perfect % never decides a map - both teams share the scale - so
+  a missing one shows accuracy instead of points, it doesn't lock the mode
+  out. A match snapshots its scoring and curve when made. "Percent
+  difference" = accuracy each loser needed to add to draw level (solved for
+  under the curve). Curve + pull settings: unlinked `/t/<slug>/settings/scoring`.
+- **Pulling scores** (`match/pull.ts`): not "the latest run". Among each
+  fielded player's runs since the map's `runOpenedAt` (pick, or replay call),
+  the start time most players share (start = timeset - time, see `runStart`)
+  is the go; each player's run from it is saved. So it can be pressed any time
+  after the song, repeatedly, even if someone replayed the map since. Nobody
+  from the go yet = WAITING (press again). Restart/quit, modifiers other than
+  NF, a start >15s off = CHECK (listed, not saved). Matches are always played
+  with No Fail on (the user's rule) - never warn about NF. Fails save. Typed-in (MANUAL) scores
+  are never overwritten. `scoresClosedAt` locks pull and typing until staff
+  reopen; completing a match closes every map. BeatLeader's `time` for a clear
+  is usually the level length but not always (138s/36s on a 156s song seen).
+- **Maps are played in order**: a map's scores can be pulled or typed only
+  once every earlier map (tiebreaker last) has its scores closed; staff may
+  go out of order (`earlierMapOpen`). A team with exactly `playersPerMap`
+  available players gets its lineups filled automatically (`fillForcedLineups`).
+- **No Fail** is not a score-altering modifier: matches are played with it on.
+  NF on a BeatLeader score means it kicked in (they died); such scores are kept
+  and tagged NF on the board.
+- **Brackets** store shape (`BracketNode.sources`: seed / winnerOf / loserOf)
+  and reported winners only; `resolveBracket` recomputes who plays every time,
+  so byes and undone results propagate. A match started from a slot reports
+  its winner on complete; reopening clears it. A result set by hand completes
+  (or, cleared, reopens) the slot's match. Slots where a side can never be
+  filled (`passThrough`) are never drawn and the word "bye" is never shown -
+  the user asked; the team just appears in its next match. The drawing is
+  `lib/bracket-layout.ts` (tree rows from the final backwards, SVG lines).
 - **Recorded runs (fails) come from BeatLeader, not from sign-in.** BeatLeader
   serves `/map/scorestats` only where the player has "show my stats publicly"
   on (401 otherwise, OAuth included - checked in its source: only the clan and
@@ -122,41 +139,27 @@ Key server modules in `apps/web/src/server/`:
   no clear, the longest run that hit 10+ notes (any end type; notes derived
   from score/accuracy, `notesPassed`; among runs within 10% of the song of
   the longest, the most accurate - `pickBestRun`) is the
-  player's score on the map, full weight - the user's rule, deliberately.
-  A 17-second quit at 38% *is* what that player would have scored had they
-  kept going, and numbers like that were never predicted before because
-  nothing on a leaderboard shows them. Don't weight or soften it. On the
-  board it is a score cell (heat colour, in the average, `isRun` with a ✗
-  corner icon), not a warning box. Unplayed cells are capped by the player's
-  real score on any easier map less the difficulty gap (`cappedBy` in
-  `predictWith`): the additive fit cannot express "fine on acc maps, collapses
-  on hard ones" and Huber treats such scores as outliers. The fail model
-  takes runs as `outcomes`, never into a map's rate.
+  player's number on the map, full weight - the user's rule, deliberately.
+  On the board it is a score cell (heat colour, in the average, `isRun` with
+  a ✗ corner and "✗ at m:ss" under it), not a warning box. No projected
+  full-map score: that was an estimate. Unplayed cells are just "—".
 - **Anomalies are dramatic.** The abandoned-run floor is 60% of the player's
   median (was 85%: it wrote off PretzelBread's 74.5% and 70.4% on Hush and
   Pedi, which are real); below 35% is an anomaly outright even with no column
   (zolism's 0.08% and 0.01%). The user wants bad-but-real scores counted.
-- **Map kinds** come from an organiser's tag (`PoolMap.category`, settable on
-  the pool page) or a guess from BeatLeader ratings (`categorizeMap`). Kinds
-  are spelling-normalised (`canonicalKind`). Changing a tag invalidates the
-  model cache.
+- **Perfect %** per pool map (`PoolMap.perfectAcc`, admin-set on the pool
+  page) for match points, falling back to BeatLeader's predictedAcc where the
+  tournament allows. `PoolMap.category` still exists in the DB, unused.
 - **Match-only (`adHoc`) teams** are real Team rows; listed behind a tab,
   removed with their last match.
 
-## State of play (2026-09-22)
+## State of play (2026-09-24)
 
-`master` is at the ScoreSaber commit. Branch `match-only-tabs` holds
-uncommitted work, all deployed and checked live: match-only team tabs, the
-two win-chance fixes, the opponent-captain model, per-map outcomes in the
-strategy panel, the answer-card modal with inference, the converged fit with
-the tightened factor grid, the pool outlook's opponent expected-acc column
-and column notes, and recorded runs from BeatLeader (fails on the board and
-in the model, "Recorded runs" panel on the player page). Not yet checked in a
-real browser: the Teams-page ScoreSaber search tabs and link button, the SS
-markers on the pool board, and the answer-card modal itself (its action was
-exercised directly).
+Branch `match-manager` (off master, uncommitted, deployed live). Round 2 added:
+stats pages removed, kinds removed, pull rework with close/reopen, pool
+deletion, brackets, player pool + duos. The user is testing a 2v2 scrim with
+it. Player card is now just profile + pp + whether runs are public.
 
-Known rough edges: labels for players with <20 ranked scores still come from
-shared maps and are approximate; the ratings guess for map kinds is often wrong
-for unranked maps (organiser tags fix it per pool; BeatSaver tags were
-discussed as a source, not built); the "Suggested pick" reason text is long.
+Known rough edges: brackets have no grand-final reset; round robin draws are
+left for an organiser to settle by hand; the Apps Script behind Wynttter's
+sheet was never seen.

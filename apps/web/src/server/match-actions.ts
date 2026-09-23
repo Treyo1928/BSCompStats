@@ -13,6 +13,7 @@ import {
   resolveMapPlan,
   validateLineups,
   isCaptainOf,
+  isStaff,
   type LineupInput,
 } from './match-helpers';
 import { buildPickBanContext } from './matches';
@@ -20,7 +21,9 @@ import { getActor, realUser } from './session';
 import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
 import { cleanUpAdHocTeams, openMatch } from './custom-teams';
-import { tallyMaps } from './match-summary';
+import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
+import { aggregateTotals } from '@bscs/core/match';
+import { choose, fetchRuns, loadPullTarget, writeRuns } from './score-pull';
 
 /**
  * Match mutations.
@@ -42,16 +45,22 @@ export async function createMatch(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
-  assertCan(actor, 'CREATE_MATCH');
 
   const tournament = await prisma.tournament.findUnique({
     where: { id: tournamentId },
-    select: { slug: true },
+    select: { slug: true, captainsCreateMatches: true },
   });
   if (!tournament) throw new Error('Pool or tournament not found.');
 
   const back =
     formData.get('from') === 'teams' ? `/t/${tournament.slug}/teams` : `/t/${tournament.slug}`;
+
+  // Staff may set up any match; where the tournament allows it, a captain may
+  // set up one their own team plays in.
+  const sides = [String(formData.get('teamAId')), String(formData.get('teamBId'))];
+  if (!sides.some((teamId) => can(actor, 'CREATE_MATCH', { teamId, captainsCreateMatches: tournament.captainsCreateMatches }))) {
+    failBack(back, 'You can only set up a match your own team plays in.');
+  }
 
   const opened = await openMatch({
     tournamentId,
@@ -61,6 +70,7 @@ export async function createMatch(formData: FormData): Promise<void> {
     coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
     blindLineups: formData.get('blindLineups') === 'on',
     name: String(formData.get('name') ?? ''),
+    scoring: formData.get('scoring') ? String(formData.get('scoring')) : null,
   });
   if ('error' in opened) failBack(back, opened.error);
 
@@ -230,7 +240,7 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
         (id) => (mm.lineups.find((l) => l.teamId === id)?.slots.length ?? 0) >= format.playersPerMap,
       ),
     );
-    if (!everySet && actor.userId) {
+    if (!everySet && actor.userId && !isStaff(actor)) {
       const spots = await prisma.teamMember.findMany({
         where: { teamId: { in: [match.teamAId, match.teamBId] }, player: { userId: actor.userId } },
         select: { teamId: true },
@@ -307,12 +317,9 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
 }
 
 /**
- * Record what was scored in the match.
- *
- * Typed in rather than pulled from BeatLeader, because BeatLeader only keeps a
- * player's best ever run on a map: someone who practised to a 96 and scores a
- * 93 on the night would be credited with the 96. The run that counts is the one
- * played here.
+ * Type in what was scored in the match - the override for when BeatLeader
+ * cannot say: a player whose stats are private, a run that did not upload,
+ * someone who started late.
  *
  * One form per team per map. A blank field removes that run. Where a replay
  * has been called there are further runs, and each player's best one counts.
@@ -341,12 +348,16 @@ export async function saveScores(formData: FormData): Promise<void> {
   const matchMap = await prisma.matchMap.findFirst({
     where: { id: matchMapId, matchId },
     select: {
+      scoresClosedAt: true,
       replayCalledByTeamIds: true,
       poolMap: { select: { leaderboard: { select: { maxScore: true } } } },
       lineups: { where: { teamId }, select: { slots: { select: { playerId: true } } } },
     },
   });
   if (!matchMap) throw new Error('That map is not part of this match.');
+  if (matchMap.scoresClosedAt) failBack(back, CLOSED);
+  const outOfOrder = await earlierMapOpen(matchId, matchMapId, isStaff(actor));
+  if (outOfOrder) failBack(back, outOfOrder);
 
   const maxScore = matchMap.poolMap.leaderboard.maxScore;
   const runsAllowed = 1 + matchMap.replayCalledByTeamIds.length;
@@ -376,7 +387,16 @@ export async function saveScores(formData: FormData): Promise<void> {
         prisma.matchMapAttempt.upsert({
           where: key,
           create: { matchMapId, teamId, playerId, attempt, score, accuracy, source: 'MANUAL' },
-          update: { score, accuracy, source: 'MANUAL', beatLeaderScoreId: null, replayUrl: null },
+          update: {
+            score,
+            accuracy,
+            source: 'MANUAL',
+            beatLeaderScoreId: null,
+            beatLeaderAttemptId: null,
+            endType: null,
+            timeset: null,
+            replayUrl: null,
+          },
         }),
       );
     }
@@ -428,9 +448,10 @@ export async function callReplay(formData: FormData): Promise<void> {
     );
   }
 
+  // A replay is a new run: it opens now, and its scores are open until closed.
   await prisma.matchMap.update({
     where: { id: matchMapId },
-    data: { replayCalledByTeamIds: { push: teamId } },
+    data: { replayCalledByTeamIds: { push: teamId }, runOpenedAt: new Date(), scoresClosedAt: null },
   });
   await matchChanged(match.tournament.slug, matchId);
 }
@@ -472,7 +493,15 @@ async function materializeMaps(matchId: string): Promise<void> {
     where: { matchId, poolMapId: { notIn: plan.map((p) => p.poolMapId) } },
   });
 
+  const current = new Map(
+    (await prisma.matchMap.findMany({ where: { matchId }, select: { order: true, poolMapId: true } })).map((m) => [
+      m.order,
+      m.poolMapId,
+    ]),
+  );
   for (const entry of plan) {
+    // An undo and a different pick put another map in a slot: its run opens now.
+    const replaced = current.has(entry.order) && current.get(entry.order) !== entry.poolMapId;
     await prisma.matchMap.upsert({
       where: { matchId_order: { matchId, order: entry.order } },
       create: {
@@ -486,9 +515,12 @@ async function materializeMaps(matchId: string): Promise<void> {
         poolMapId: entry.poolMapId,
         isTiebreaker: entry.isTiebreaker,
         pickedById: entry.pickedByTeamId,
+        ...(replaced ? { runOpenedAt: new Date(), scoresClosedAt: null } : {}),
       },
     });
   }
+
+  await fillForcedLineups(matchId, [match.teamAId, match.teamBId], format.playersPerMap);
 
   const complete = plan.length >= format.pickBanSequence.filter((s) => s.action === 'PICK').length;
   // Both directions: an undo that reopens pick/ban has to say so.
@@ -498,11 +530,49 @@ async function materializeMaps(matchId: string): Promise<void> {
   });
 }
 
+/**
+ * A team with exactly as many players as a map needs has nothing to choose:
+ * everyone plays every map. Their lineups are set as each map is picked, so
+ * nobody has to click through a choice that is not one.
+ */
+async function fillForcedLineups(matchId: string, teamIds: string[], playersPerMap: number): Promise<void> {
+  const [maps, rosters] = await Promise.all([
+    prisma.matchMap.findMany({ where: { matchId }, select: { id: true, lineups: { select: { teamId: true } } } }),
+    prisma.teamMember.findMany({
+      where: { teamId: { in: teamIds }, available: true },
+      orderBy: { order: 'asc' },
+      select: { teamId: true, playerId: true },
+    }),
+  ]);
+  for (const teamId of teamIds) {
+    const players = rosters.filter((r) => r.teamId === teamId).map((r) => r.playerId);
+    if (players.length !== playersPerMap) continue;
+    for (const map of maps) {
+      if (map.lineups.some((l) => l.teamId === teamId)) continue;
+      await prisma.lineup.create({
+        data: {
+          matchMapId: map.id,
+          teamId,
+          slots: { create: players.map((playerId, slot) => ({ playerId, slot })) },
+        },
+      });
+    }
+  }
+}
+
 async function loadForMutation(matchId: string) {
   const match = await prisma.match.findUnique({
     where: { id: matchId },
     include: {
-      tournament: { select: { slug: true, defaultFormat: true, captainsEnterScores: true } },
+      tournament: {
+        select: {
+          slug: true,
+          defaultFormat: true,
+          captainsEnterScores: true,
+          captainsPullScores: true,
+          perfectFromBeatLeader: true,
+        },
+      },
       pool: { select: { maps: { orderBy: { order: 'asc' }, select: { id: true, isTiebreaker: true } } } },
       actions: {
         where: { undoneAt: null },
@@ -528,35 +598,43 @@ export async function completeMatch(formData: FormData): Promise<void> {
 
   const maps = await prisma.matchMap.findMany({
     where: { matchId },
-    include: { attempts: true },
+    include: {
+      attempts: true,
+      poolMap: { select: { perfectAcc: true, leaderboard: { select: { predictedAcc: true } } } },
+    },
   });
 
-  let { a, b } = tallyMaps(maps, match.teamAId, match.teamBId);
+  let { a, b } = tallyMaps(maps, match.teamAId, match.teamBId, match);
 
   // A format decided on aggregate counts points, not maps: winning three maps
   // narrowly and losing one badly can lose the match.
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
   if (format.winCondition === 'AGGREGATE_MARGIN') {
-    // Best attempt per player, so a replayed map counts the higher run.
-    const totalFor = (attempts: Array<{ teamId: string; playerId: string; score: number }>, teamId: string) => {
-      const best = new Map<string, number>();
-      for (const attempt of attempts.filter((x) => x.teamId === teamId)) {
-        best.set(attempt.playerId, Math.max(best.get(attempt.playerId) ?? 0, attempt.score));
-      }
-      return [...best.values()].reduce((acc, v) => acc + v, 0);
-    };
-    a = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamAId), 0);
-    b = maps.reduce((sum, m) => sum + totalFor(m.attempts, match.teamBId), 0);
+    ({ a, b } = aggregateTotals(
+      maps.map((m) => ({
+        perfectAcc: perfectAccOf(m.poolMap, match.tournament.perfectFromBeatLeader).value,
+        attempts: m.attempts,
+      })),
+      match.teamAId,
+      match.teamBId,
+      scoringOf(match),
+    ));
   }
 
-  await prisma.match.update({
-    where: { id: matchId },
-    data: {
-      state: 'COMPLETE',
-      completedAt: new Date(),
-      winnerId: a === b ? null : a > b ? match.teamAId : match.teamBId,
-    },
-  });
+  await prisma.$transaction([
+    prisma.match.update({
+      where: { id: matchId },
+      data: {
+        state: 'COMPLETE',
+        completedAt: new Date(),
+        winnerId: a === b ? null : a > b ? match.teamAId : match.teamBId,
+      },
+    }),
+    // A finished match's scores are final, map by map.
+    prisma.matchMap.updateMany({ where: { matchId, scoresClosedAt: null }, data: { scoresClosedAt: new Date() } }),
+    // A bracket match reports its winner to the bracket; a draw leaves the slot for an organiser.
+    prisma.bracketNode.updateMany({ where: { matchId }, data: { winnerId: a === b ? null : a > b ? match.teamAId : match.teamBId } }),
+  ]);
 
   await matchChanged(match.tournament.slug, matchId);
 }
@@ -586,10 +664,234 @@ export async function reopenMatch(formData: FormData): Promise<void> {
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
-  await prisma.match.update({
-    where: { id: matchId },
-    data: { state: 'PLAYING', completedAt: null, winnerId: null },
-  });
+  await prisma.$transaction([
+    prisma.match.update({
+      where: { id: matchId },
+      data: { state: 'PLAYING', completedAt: null, winnerId: null },
+    }),
+    // Its bracket slot is undecided again, and so is everything after it.
+    prisma.bracketNode.updateMany({ where: { matchId }, data: { winnerId: null } }),
+  ]);
 
+  await matchChanged(match.tournament.slug, matchId);
+}
+
+// ---------------------------------------------------------------------------
+//  Scores from BeatLeader
+// ---------------------------------------------------------------------------
+
+export interface PullReviewRun {
+  id: number;
+  source: 'RUN' | 'SCORE';
+  endType: string;
+  /** Unix seconds it ended. */
+  timeset: number;
+  /** Seconds into the song it ended. */
+  time: number;
+  score: number;
+  accuracy: number;
+}
+
+export interface PullPlayer {
+  playerId: string;
+  playerName: string;
+  teamNames: string[];
+  status: 'SAVED' | 'KEPT' | 'CHECK' | 'WAITING';
+  /** The run the pull would use, where it found one. */
+  chosenId: number | null;
+  candidates: PullReviewRun[];
+  notes: string[];
+}
+
+export type PullOutcome =
+  | { status: 'done'; matchMapId: string; attempt: number; players: PullPlayer[] }
+  | { status: 'error'; error: string };
+
+/** Load a match for a BeatLeader pull and check the caller may do one. */
+async function authorisePull(matchId: string): Promise<{ slug: string; staff: boolean } | { error: string }> {
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) return { error: 'Sign in first.' };
+  if (
+    !can(actor, 'PULL_SCORES', {
+      captainsPullScores: match.tournament.captainsPullScores,
+      matchTeamIds: [match.teamAId, match.teamBId],
+    })
+  ) {
+    return { error: 'You cannot fill in scores for this match.' };
+  }
+  if (match.state === 'COMPLETE') return { error: 'This match is complete, so its scores are frozen. Reopen it to change them.' };
+  return { slug: match.tournament.slug, staff: isStaff(actor) };
+}
+
+const CLOSED = 'Scores for this map are closed. An organiser can reopen them.';
+
+/**
+ * Maps are played in order: a map's scores can be filled in only once every
+ * map before it has its scores closed. Organisers may go out of order - it is
+ * their call when something has gone wrong - so this names the map in the way
+ * for anyone else, and null for them.
+ */
+async function earlierMapOpen(matchId: string, matchMapId: string, staff: boolean): Promise<string | null> {
+  if (staff) return null;
+  const maps = await prisma.matchMap.findMany({
+    where: { matchId },
+    orderBy: { order: 'asc' },
+    select: { id: true, order: true, isTiebreaker: true, scoresClosedAt: true, poolMap: { select: { leaderboard: { select: { map: { select: { name: true } } } } } } },
+  });
+  const target = maps.find((m) => m.id === matchMapId);
+  if (!target) return null;
+  // The tiebreaker comes after every other map, whatever its slot.
+  const before = maps.filter((m) => m.id !== target.id && (target.isTiebreaker ? !m.isTiebreaker : !m.isTiebreaker && m.order < target.order));
+  const open = before.find((m) => m.scoresClosedAt == null);
+  return open
+    ? `Maps are played in order: close the scores for ${open.isTiebreaker ? 'the tiebreaker' : `map ${open.order}`} (${open.poolMap.leaderboard.map.name}) first. An organiser can fill maps in out of order.`
+    : null;
+}
+
+/**
+ * Fill a map's scores in from BeatLeader. Safe to press at any time after the
+ * song and as often as needed: whoever has a run from the go is saved, anyone
+ * not finished yet is listed as waiting, and pressing again picks them up.
+ * Runs that want a person's eye are listed to be chosen from, not saved.
+ * Values rather than throws, so the reason reaches the screen.
+ */
+export async function pullMapScores(matchId: string, matchMapId: string): Promise<PullOutcome> {
+  const allowed = await authorisePull(matchId);
+  if ('error' in allowed) return { status: 'error', error: allowed.error };
+  const target = await loadPullTarget(matchId, matchMapId);
+  if (!target) return { status: 'error', error: 'That map is not part of this match.' };
+  if (target.closed) return { status: 'error', error: CLOSED };
+  const outOfOrder = await earlierMapOpen(matchId, matchMapId, allowed.staff);
+  if (outOfOrder) return { status: 'error', error: outOfOrder };
+  if (target.players.size === 0) return { status: 'error', error: 'Set the lineups for this map first.' };
+
+  let result;
+  try {
+    result = choose(target, await fetchRuns(target));
+  } catch (err) {
+    console.error('[pull] BeatLeader fetch failed:', err);
+    return { status: 'error', error: 'BeatLeader did not answer. Try again in a moment, or enter the scores by hand.' };
+  }
+
+  const written = new Set(
+    await writeRuns(
+      target,
+      result.picks.filter((p) => p.status === 'MATCHED').map((p) => ({ playerId: p.playerId, run: p.chosen! })),
+    ),
+  );
+  if (written.size > 0) await matchChanged(allowed.slug, matchId);
+
+  const teams = await prisma.team.findMany({
+    where: { id: { in: [target.teamAId, target.teamBId] } },
+    select: { id: true, name: true },
+  });
+  const teamName = new Map(teams.map((t) => [t.id, t.name]));
+  return {
+    status: 'done',
+    matchMapId,
+    attempt: target.attempt,
+    players: result.picks.map((pick) => ({
+      playerId: pick.playerId,
+      playerName: pick.playerName,
+      teamNames: target.lineups
+        .filter((l) => l.playerIds.includes(pick.playerId))
+        .map((l) => teamName.get(l.teamId) ?? ''),
+      status:
+        pick.status === 'MATCHED'
+          ? written.has(pick.playerId)
+            ? 'SAVED'
+            : 'KEPT'
+          : pick.status,
+      chosenId: pick.chosen?.id ?? null,
+      candidates: pick.candidates.map((run) => ({
+        id: run.id,
+        source: run.source,
+        endType: run.endType,
+        timeset: run.timeset,
+        time: run.time,
+        score: Math.round(run.baseScore),
+        accuracy: target.maxScore > 0 ? Math.min(1, run.baseScore / target.maxScore) : run.accuracy,
+      })),
+      notes: pick.status === 'MATCHED' && !written.has(pick.playerId)
+        ? ['Their score was typed in by hand, so it was left as it is.', ...pick.notes]
+        : pick.notes,
+    })),
+  };
+}
+
+/**
+ * Save runs someone chose by hand from a pull's list. Each is fetched from
+ * BeatLeader again by its id, so what is written is exactly what BeatLeader
+ * recorded.
+ */
+export async function savePulledRuns(
+  matchId: string,
+  matchMapId: string,
+  choices: ReadonlyArray<{ playerId: string; runId: number }>,
+): Promise<{ error?: string; count?: number }> {
+  const allowed = await authorisePull(matchId);
+  if ('error' in allowed) return { error: allowed.error };
+  const target = await loadPullTarget(matchId, matchMapId);
+  if (!target) return { error: 'That map is not part of this match.' };
+  if (target.closed) return { error: CLOSED };
+  const outOfOrder = await earlierMapOpen(matchId, matchMapId, allowed.staff);
+  if (outOfOrder) return { error: outOfOrder };
+
+  let runs;
+  try {
+    runs = await fetchRuns(target);
+  } catch (err) {
+    console.error('[pull] BeatLeader fetch failed:', err);
+    return { error: 'BeatLeader did not answer. Try again in a moment.' };
+  }
+  const chosen = [];
+  for (const choice of choices) {
+    if (!target.players.has(choice.playerId)) continue;
+    const run = runs.find((r) => r.playerId === choice.playerId)?.runs.find((r) => r.id === choice.runId);
+    if (!run) return { error: 'One of those runs is no longer on BeatLeader. Pull again.' };
+    chosen.push({ playerId: choice.playerId, run });
+  }
+  const written = chosen.length ? await writeRuns(target, chosen) : [];
+  await matchChanged(allowed.slug, matchId);
+  return { count: written.length };
+}
+
+/**
+ * Say a map's scores are final: no more pulling or typing until an organiser
+ * reopens them. Anyone who may fill the scores in may close them.
+ */
+export async function closeMapScores(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  const context = {
+    captainsPullScores: match.tournament.captainsPullScores,
+    captainsEnterScores: match.tournament.captainsEnterScores,
+    matchTeamIds: [match.teamAId, match.teamBId],
+  };
+  const mayFill =
+    can(actor, 'PULL_SCORES', context) ||
+    [match.teamAId, match.teamBId].some((teamId) => can(actor, 'ENTER_SCORE', { ...context, teamId }));
+  if (!mayFill) throw new Error('You cannot close these scores.');
+  await prisma.matchMap.updateMany({
+    where: { id: matchMapId, matchId, scoresClosedAt: null },
+    data: { scoresClosedAt: new Date() },
+  });
+  await matchChanged(match.tournament.slug, matchId);
+}
+
+/** Reopen a map's scores so they can be pulled or typed again. Organisers only. */
+export async function reopenMapScores(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'UNDO_ACTION');
+  if (match.state === 'COMPLETE') failBack(`/t/${match.tournament.slug}/match/${matchId}`, 'Reopen the match first.');
+  await prisma.matchMap.updateMany({ where: { id: matchMapId, matchId }, data: { scoresClosedAt: null } });
   await matchChanged(match.tournament.slug, matchId);
 }

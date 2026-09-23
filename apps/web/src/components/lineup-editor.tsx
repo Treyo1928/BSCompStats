@@ -2,14 +2,14 @@
 
 import { useState } from 'react';
 import { saveLineup } from '@/server/match-actions';
+import type { MatchScore } from '@/server/matches';
 import { Avatar, Button, pct, num, teamInk } from './ui';
 
 /**
- * Picks the players a team fields on one map.
+ * Picks the players a team fields on one map, and shows what each scored.
  *
  * Validation is server-side - the duo rule spans every map, so no single
- * control can judge it - but the UI shows the recommendation inline and warns
- * before submitting, so a captain is steered rather than only scolded.
+ * control can judge it - and what it objects to is shown right here.
  */
 export function LineupEditor({
   matchId,
@@ -20,7 +20,6 @@ export function LineupEditor({
   scores,
   canEdit,
   canOverride,
-  recommended,
   hidden,
   ruleBreaks,
 }: {
@@ -35,10 +34,9 @@ export function LineupEditor({
   };
   selected: string[];
   playersPerMap: number;
-  scores: Array<{ playerId: string; playerName: string; score: number; accuracy: number }>;
+  scores: MatchScore[];
   canEdit: boolean;
   canOverride: boolean;
-  recommended?: string[];
   /** The rules this saved lineup was pushed through in spite of, if any. */
   ruleBreaks?: string;
   /** Set when this team's lineup is being kept from the viewer; says why. */
@@ -61,8 +59,10 @@ export function LineupEditor({
     );
   };
 
-  const recommendedSet = new Set(recommended ?? []);
   const scoreBy = new Map(scores.map((s) => [s.playerId, s]));
+  // Exactly enough players for a map: everyone plays, so there is nothing to pick.
+  const forced = team.players.length === playersPerMap;
+  const editable = canEdit && !forced;
 
   return (
     <div
@@ -76,14 +76,6 @@ export function LineupEditor({
         >
           {team.name}
         </span>
-        {recommended && recommended.length > 0 && (
-          <span
-            className="truncate text-[10px] text-muted"
-            title="What the optimiser suggests for this map"
-          >
-            suggested: {recommended.map((id) => team.players.find((p) => p.id === id)?.name ?? id).join(' + ')}
-          </span>
-        )}
       </div>
 
       {hidden && <p className="px-1 py-2 text-xs text-muted">{hidden}</p>}
@@ -104,7 +96,7 @@ export function LineupEditor({
             <button
               key={player.id}
               type="button"
-              disabled={!canEdit || !matchMapId}
+              disabled={!editable || !matchMapId}
               onClick={() => toggle(player.id)}
               className={`flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-sm transition ${
                 isChosen
@@ -120,14 +112,20 @@ export function LineupEditor({
                   ring={isChosen ? team.color : undefined}
                 />
                 <span className="truncate">{player.name}</span>
-                {recommendedSet.has(player.id) && !isChosen && (
-                  <span className="text-[10px] text-accent" title="Suggested by the optimiser">★</span>
-                )}
               </span>
               {score && (
-                <span className="shrink-0 tabular text-xs">
-                  {num(score.score)}{' '}
-                  <span className="opacity-70">{pct(score.accuracy)}</span>
+                <span
+                  className="shrink-0 text-right tabular text-xs"
+                  title={[
+                    score.source === 'AUTO' ? 'From BeatLeader' : 'Entered by hand',
+                    score.endType && score.endType !== 'CLEAR' ? `run ${score.endType.toLowerCase()}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                >
+                  {score.points != null && <span className="mr-1.5 font-semibold text-ink">{score.points.toFixed(2)}</span>}
+                  {num(score.score)} <span className="opacity-70">{pct(score.accuracy)}</span>
+                  {score.endType && score.endType !== 'CLEAR' && <span className="ml-1 text-lose">✗</span>}
                 </span>
               )}
             </button>
@@ -135,7 +133,31 @@ export function LineupEditor({
         })}
       </div>
 
-      {canEdit && matchMapId && (
+      {!hidden && scores.some((s) => s.replayUrl) && (
+        <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 px-1 text-[11px]">
+          {scores
+            .filter((s) => s.replayUrl)
+            .map((s) => (
+              <a
+                key={s.playerId}
+                href={s.replayUrl!}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+              >
+                ▶ {s.playerName}&apos;s replay
+              </a>
+            ))}
+        </p>
+      )}
+
+      {forced && !hidden && (
+        <p className="mt-1.5 px-1 text-[11px] text-faint">
+          {team.players.length === 1 ? 'Their only player plays every map.' : `All ${team.players.length} of them play every map.`}
+        </p>
+      )}
+
+      {editable && matchMapId && (
         <form
           action={async (formData) => {
             setSaving(true);

@@ -2,18 +2,16 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { prisma } from '@bscs/db';
+import { prisma, Prisma } from '@bscs/db';
 import { assertCan, can, isCaptainOf, ForbiddenError } from '@bscs/core/match';
 import { getActor, getActorOrAnonymous } from './session';
 import { importPool } from './pools';
 import { requestAttempts, requestRefresh } from '@/lib/redis';
 import { beatLeader, scoreSaber } from './pools';
-import { cookies } from 'next/headers';
 import { failBack } from './form-errors';
-import { ESTIMATES_COOKIE, failKey, parseEstimateCookie } from './stats';
-import { SCOPE_PRESETS } from '@bscs/core/stats';
+import { parsePointsCurve, parseScoringMode, DEFAULT_TOLERANCE_SECONDS } from '@bscs/core/match';
 import { looksLikeSteamId, parseScoreSaberId } from '@bscs/core/scoresaber';
-import { hexColor } from './custom-teams';
+import { cleanUpAdHocTeams, hexColor } from './custom-teams';
 
 /** Server actions. Every one re-checks permission - the UI is not the guard. */
 
@@ -191,7 +189,11 @@ export async function deleteTournament(formData: FormData): Promise<void> {
   redirect('/');
 }
 
-export async function setCaptainsEnterScores(formData: FormData): Promise<void> {
+/**
+ * Who may do what in this tournament's matches, and how matches are scored.
+ * One form, so the page states every rule in one place.
+ */
+export async function setMatchRules(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
@@ -199,54 +201,101 @@ export async function setCaptainsEnterScores(formData: FormData): Promise<void> 
 
   await prisma.tournament.update({
     where: { id: tournamentId },
-    data: { captainsEnterScores: formData.get('allow') === 'on' },
+    data: {
+      captainsCreateMatches: formData.get('captainsCreateMatches') === 'on',
+      captainsEnterScores: formData.get('captainsEnterScores') === 'on',
+      captainsPullScores: formData.get('captainsPullScores') === 'on',
+      matchScoring: parseScoringMode(formData.get('matchScoring')),
+      scoringLocked: formData.get('scoringLocked') === 'on',
+      perfectFromBeatLeader: formData.get('perfectFromBeatLeader') === 'on',
+    },
   });
   revalidatePath('/t', 'layout');
 }
 
 /**
- * What the prediction model learns from: the pool alone, or a player's wider
- * BeatLeader history. Widening it also asks the worker to go and fetch that
- * history, which is why predictions shift over the following minute or two
- * rather than at once.
+ * The match points curve and how scores are pulled from BeatLeader - set once
+ * and left alone, so they live on a page of their own. A match keeps the curve
+ * it was made with; changing it here changes matches made from now on.
  */
-export async function setStatsScope(formData: FormData): Promise<void> {
+export async function setScoringSettings(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
-  const preset = SCOPE_PRESETS[String(formData.get('source'))] ?? SCOPE_PRESETS.poolOnly!;
-  const months = Number(formData.get('months'));
-  const scope =
-    preset.source === 'POOL_ONLY'
-      ? preset
-      : {
-          ...preset,
-          // 0 means "all time".
-          maxAgeDays: Number.isFinite(months) && months > 0 ? Math.round(months * 30.5) : null,
-        };
+  const tournament = await prisma.tournament.findUnique({ where: { id: tournamentId }, select: { slug: true } });
+  if (!tournament) throw new Error('No such tournament.');
+  const back = `/t/${tournament.slug}/settings/scoring`;
 
-  // Whether history is kept for the stats pages is a separate decision, and
-  // choosing what predictions learn from must not quietly undo it.
-  const current = await prisma.tournament.findUnique({
-    where: { id: tournamentId },
-    select: { statsScope: true },
-  });
-  const keepHistory = (current?.statsScope as { keepHistory?: unknown } | null)?.keepHistory === true;
+  const number = (name: string) => {
+    const raw = String(formData.get(name) ?? '').trim();
+    return raw === '' ? undefined : Number(raw);
+  };
+  if (formData.get('reset') === 'on') {
+    await prisma.tournament.update({ where: { id: tournamentId }, data: { pointsCurve: Prisma.DbNull, scorePull: Prisma.DbNull } });
+    revalidatePath('/t', 'layout');
+    redirect(`${back}?saved=1`);
+  }
+
+  const curve = { padding: number('padding'), slope: number('slope'), perfectPoints: number('perfectPoints') };
+  for (const [name, value] of Object.entries(curve)) {
+    if (value !== undefined && !Number.isFinite(value)) failBack(back, `${name} must be a number.`);
+  }
+  const parsed = parsePointsCurve(curve);
+  // parsePointsCurve falls back to the defaults on nonsense; here nonsense is worth saying out loud.
+  if (
+    (curve.padding !== undefined && curve.padding !== parsed.padding) ||
+    (curve.slope !== undefined && curve.slope !== parsed.slope) ||
+    (curve.perfectPoints !== undefined && curve.perfectPoints !== parsed.perfectPoints)
+  ) {
+    failBack(back, 'Padding must be above 0 and at most 1, slope 0 or more, and perfect points above 0.');
+  }
+
+  const toleranceSeconds = number('toleranceSeconds') ?? DEFAULT_TOLERANCE_SECONDS;
+  if (!(toleranceSeconds >= 1 && toleranceSeconds <= 600)) failBack(back, 'Allow between 1 and 600 seconds between starts.');
 
   await prisma.tournament.update({
     where: { id: tournamentId },
-    data: { statsScope: { ...scope, keepHistory } },
+    data: { pointsCurve: parsed, scorePull: { toleranceSeconds } },
   });
-  await requestRefresh(undefined, actor.userId);
+  revalidatePath('/t', 'layout');
+  redirect(`${back}?saved=1`);
+}
+
+/**
+ * What counts as a perfect score on a pool map, for match points. It scales
+ * the points shown for the map; it never changes who wins one.
+ */
+export async function setPoolMapPerfect(formData: FormData): Promise<void> {
+  const poolMapId = String(formData.get('poolMapId'));
+  const poolMap = await prisma.poolMap.findUnique({
+    where: { id: poolMapId },
+    select: { poolId: true, pool: { select: { tournamentId: true, tournament: { select: { slug: true } } } } },
+  });
+  if (!poolMap) throw new Error('No such map.');
+
+  const actor = await getActor(poolMap.pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+
+  const back = `/t/${poolMap.pool.tournament.slug}/pool/${poolMap.poolId}`;
+  const raw = String(formData.get('perfect') ?? '').replace('%', '').trim();
+  let perfectAcc: number | null = null;
+  if (raw !== '') {
+    const percent = Number(raw);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      failBack(back, `"${raw}" is not an accuracy. Enter a percentage, such as 99.5.`);
+    }
+    perfectAcc = Math.round(percent * 1000) / 100000;
+  }
+  await prisma.poolMap.update({ where: { id: poolMapId }, data: { perfectAcc } });
   revalidatePath('/t', 'layout');
 }
 
 /**
  * Keep every player's wider BeatLeader history downloaded, so the player stats
- * pages can be looked at over ranked or all maps. Predictions, boards and match
- * advice keep learning from whatever the tournament's scope says.
+ * pages can be looked at over ranked or all maps.
  */
 export async function setKeepHistory(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
@@ -269,94 +318,42 @@ export async function setKeepHistory(formData: FormData): Promise<void> {
   revalidatePath('/t', 'layout');
 }
 
-/**
- * What kind of map this is - the organiser's word, which always wins over the
- * guess made from BeatLeader's ratings. Blank hands it back to the guess.
- */
-export async function setPoolMapKind(formData: FormData): Promise<void> {
-  const poolMapId = String(formData.get('poolMapId'));
-  const poolMap = await prisma.poolMap.findUnique({
-    where: { id: poolMapId },
-    select: { pool: { select: { tournamentId: true } } },
-  });
-  if (!poolMap) throw new Error('No such map.');
-
-  const actor = await getActor(poolMap.pool.tournamentId);
-  if (!actor) throw new Error('Sign in first.');
-  assertCan(actor, 'IMPORT_POOL');
-
-  // "Something else" in the list means the text box beside it is the answer.
-  const picked = String(formData.get('kind') ?? '');
-  const kind = (picked === '__custom' ? String(formData.get('custom') ?? '') : picked).trim().slice(0, 24);
-
-  await prisma.poolMap.update({ where: { id: poolMapId }, data: { category: kind || null } });
-  revalidatePath('/t', 'layout');
-}
 
 /**
- * Set, or clear, the viewer's own estimate of what a player would score on a
- * map they have not played.
- *
- * Kept in a session cookie, not the database: it changes what this viewer is
- * shown and nobody else, and it is gone when they close the browser. So anyone
- * who can see the pool may use it - there is nothing here to abuse.
+ * Delete a map pool, and every match played on it: a match cannot outlive
+ * the pool its picks and bans were made from. Asks for the pool's name, the
+ * way deleting a tournament does. Scores on BeatLeader and the players are
+ * untouched.
  */
-export async function setPredictionEstimate(formData: FormData): Promise<void> {
+export async function deletePool(formData: FormData): Promise<void> {
   const poolId = String(formData.get('poolId'));
-  const playerId = String(formData.get('playerId'));
-  const leaderboardId = String(formData.get('leaderboardId'));
-
   const pool = await prisma.mapPool.findUnique({
     where: { id: poolId },
     select: {
+      name: true,
       tournamentId: true,
-      tournament: { select: { slug: true, isPublic: true } },
-      maps: { where: { leaderboardId }, select: { id: true } },
+      tournament: { select: { slug: true } },
+      matches: { select: { teamAId: true, teamBId: true } },
     },
   });
-  if (!pool || pool.maps.length === 0) throw new Error('That map is not in this pool.');
-
-  const actor = await getActorOrAnonymous(pool.tournamentId);
-  assertCan(actor, 'VIEW', { isPublic: pool.tournament.isPublic });
-
-  const onRoster = await prisma.teamMember.findFirst({
-    where: { playerId, team: { division: { tournamentId: pool.tournamentId } } },
-    select: { id: true },
-  });
-  if (!onRoster) throw new Error('That player is not in this tournament.');
+  if (!pool) throw new Error('No such pool.');
+  const actor = await getActor(pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
 
   const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
-  const jar = await cookies();
-  const all = parseEstimateCookie(jar.get(ESTIMATES_COOKIE)?.value);
-  const mine = { ...(all[pool.tournamentId] ?? {}) };
-  const key = failKey(playerId, leaderboardId);
-  const raw = String(formData.get('accuracy') ?? '').replace('%', '').trim();
-
-  if (raw === '' || formData.get('clear') === 'on') {
-    delete mine[key];
-  } else {
-    const percent = Number(raw);
-    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
-      failBack(back, `"${raw}" is not an accuracy. Enter a percentage, such as 45.`);
-    }
-    // A cookie is small; a hundred estimates is already far more than anyone sets.
-    if (!(key in mine) && Object.keys(mine).length >= 100) {
-      failBack(back, 'That is a lot of estimates. Clear some before adding more.');
-    }
-    mine[key] = Math.round(percent * 100) / 10000;
+  if (String(formData.get('confirmName') ?? '').trim() !== pool.name) {
+    failBack(back, `Type the pool's name exactly ("${pool.name}") to delete it.`);
   }
 
-  if (Object.keys(mine).length > 0) all[pool.tournamentId] = mine;
-  else delete all[pool.tournamentId];
-
-  // No maxAge: a session cookie, gone when the browser closes.
-  jar.set(ESTIMATES_COOKIE, JSON.stringify(all), {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-  });
-  revalidatePath(back);
+  await prisma.$transaction([
+    prisma.match.deleteMany({ where: { poolId } }),
+    prisma.mapPool.delete({ where: { id: poolId } }),
+  ]);
+  // Sides made up for those matches have nothing left to exist for.
+  await cleanUpAdHocTeams(pool.matches.flatMap((m) => [m.teamAId, m.teamBId]));
+  revalidatePath('/t', 'layout');
+  redirect(`/t/${pool.tournament.slug}`);
 }
 
 export async function importPoolAction(formData: FormData): Promise<void> {
@@ -408,30 +405,6 @@ export async function importPoolAction(formData: FormData): Promise<void> {
   redirect(`${back}/pool/${result.poolId}`);
 }
 
-export async function setPoolMapMeta(formData: FormData): Promise<void> {
-  const poolMapId = String(formData.get('poolMapId'));
-  const poolMap = await prisma.poolMap.findUnique({
-    where: { id: poolMapId },
-    select: { pool: { select: { tournamentId: true, id: true } } },
-  });
-  if (!poolMap) throw new Error('No such map.');
-
-  const actor = await getActor(poolMap.pool.tournamentId);
-  if (!actor) throw new Error('Sign in first.');
-  assertCan(actor, 'IMPORT_POOL');
-
-  await prisma.poolMap.update({
-    where: { id: poolMapId },
-    data: {
-      category: String(formData.get('category') ?? '').trim() || null,
-      label: String(formData.get('label') ?? '').trim() || null,
-      isTiebreaker: formData.get('isTiebreaker') === 'on',
-    },
-  });
-
-  revalidatePath(`/t`, 'layout');
-}
-
 /** Loads a team and checks the caller may manage rosters in its tournament. */
 async function requireTeamManager(teamId: string) {
   const team = await prisma.team.findUnique({
@@ -460,6 +433,8 @@ export interface PlayerCandidate {
   onTeam: boolean;
   /** Which site this result came from. `beatLeaderId` holds that site's id for them. */
   platform?: 'beatleader' | 'scoresaber';
+  /** Anything worth knowing before picking them, e.g. whose it is now. */
+  note?: string;
 }
 
 /**
@@ -942,129 +917,15 @@ export async function triggerRefresh(formData: FormData): Promise<void> {
   lastRefreshAt.set(actor.userId, now);
 
   await requestRefresh(poolId, actor.userId);
-  revalidatePath('/t', 'layout');
-}
-
-/**
- * Link (or unlink) a player's ScoreSaber profile.
- *
- * ScoreSaber has no sign-in to prove a profile is yours, so this cannot be
- * verified the way a BeatLeader login is. It is open to the player themselves,
- * to the people running a tournament they are rostered in, and to site admins
- * - and the profile is checked to exist. What is at stake is which public
- * scores count toward someone's stats, and it shows on their page for anyone
- * to correct.
- */
-/**
- * Pull a player's recorded runs from BeatLeader now. Their own call, or a
- * team manager's. BeatLeader serves the runs only where the player has turned
- * on "show my stats publicly" - a 401 otherwise, whoever asks, our sign-in
- * included - so this is also how someone who has just flipped that switch
- * gets their fails onto the board without waiting for the next sweep.
- */
-export async function pullRuns(formData: FormData): Promise<void> {
-  const playerId = String(formData.get('playerId'));
-  const slug = String(formData.get('slug'));
-
-  const [player, tournament] = await Promise.all([
-    prisma.player.findUnique({ where: { id: playerId }, select: { id: true, userId: true } }),
-    prisma.tournament.findUnique({ where: { slug }, select: { id: true } }),
-  ]);
-  if (!player || !tournament) throw new Error('No such player.');
-
-  const actor = await getActor(tournament.id);
-  if (!actor) throw new Error('Sign in first.');
-  const rostered = await prisma.teamMember.findFirst({
-    where: { playerId, team: { division: { tournamentId: tournament.id } } },
-    select: { id: true },
+  // The runs behind the board too - fails and quits a leaderboard never shows -
+  // for everyone in the tournament who shows them. Otherwise they only arrive
+  // on the worker's two-hourly pass.
+  const players = await prisma.teamMember.findMany({
+    where: { team: { division: { tournamentId } }, player: { attemptsPublic: { not: false } } },
+    select: { playerId: true },
+    distinct: ['playerId'],
   });
-  const allowed = player.userId === actor.userId || (rostered != null && can(actor, 'MANAGE_TEAMS'));
-  if (!allowed) throw new ForbiddenError('MANAGE_TEAMS');
-
-  const now = Date.now();
-  if (now - (lastRefreshAt.get(`runs:${actor.userId}`) ?? 0) < REFRESH_COOLDOWN_MS) return;
-  lastRefreshAt.set(`runs:${actor.userId}`, now);
-
-  await requestAttempts([playerId], actor.userId);
-  revalidatePath(`/t/${slug}/stats/${playerId}`);
-}
-
-export async function linkScoreSaber(formData: FormData): Promise<void> {
-  const playerId = String(formData.get('playerId'));
-  const slug = String(formData.get('slug'));
-  const back = `/t/${slug}/stats/${playerId}`;
-
-  const [player, tournament] = await Promise.all([
-    prisma.player.findUnique({ where: { id: playerId }, select: { id: true, userId: true } }),
-    prisma.tournament.findUnique({ where: { slug }, select: { id: true } }),
-  ]);
-  if (!player || !tournament) throw new Error('No such player.');
-
-  const actor = await getActor(tournament.id);
-  if (!actor) throw new Error('Sign in first.');
-  const rostered = await prisma.teamMember.findFirst({
-    where: { playerId, team: { division: { tournamentId: tournament.id } } },
-    select: { id: true },
-  });
-  const allowed = player.userId === actor.userId || (rostered != null && can(actor, 'MANAGE_TEAMS'));
-  if (!allowed) throw new ForbiddenError('MANAGE_TEAMS');
-
-  if (formData.get('unlink') === 'on') {
-    await prisma.$transaction([
-      prisma.scoreSaberScore.deleteMany({ where: { playerId } }),
-      prisma.player.update({
-        where: { id: playerId },
-        data: {
-          scoreSaberId: null,
-          ssPp: 0,
-          ssRank: 0,
-          ssCountryRank: 0,
-          ssRankedPlayCount: 0,
-          ssAvgRankedAcc: 0,
-          ssSyncedAt: null,
-          ssBackfilledAt: null,
-          // Or the automatic lookup would find the same profile again within the week.
-          ssOptOut: true,
-        },
-      }),
-    ]);
-    revalidatePath('/t', 'layout');
-    return;
-  }
-
-  const scoreSaberId = parseScoreSaberId(String(formData.get('profile') ?? ''));
-  if (!scoreSaberId) failBack(back, 'Paste a ScoreSaber profile link (scoresaber.com/u/...) or the id from one.');
-
-  const taken = await prisma.player.findFirst({
-    where: { scoreSaberId, id: { not: playerId } },
-    select: { name: true },
-  });
-  if (taken) failBack(back, `That ScoreSaber profile is already linked to ${taken.name}.`);
-
-  let profile;
-  try {
-    profile = await scoreSaber.getPlayer(scoreSaberId);
-  } catch {
-    failBack(back, 'ScoreSaber could not be reached. Try again in a moment.');
-  }
-  if (!profile) failBack(back, 'ScoreSaber has no such player.');
-
-  await prisma.player.update({
-    where: { id: playerId },
-    data: {
-      scoreSaberId,
-      ssPp: profile.pp ?? 0,
-      ssRank: profile.rank ?? 0,
-      ssCountryRank: profile.countryRank ?? 0,
-      ssRankedPlayCount: profile.scoreStats?.rankedPlayCount ?? 0,
-      ssAvgRankedAcc: (profile.scoreStats?.averageRankedAccuracy ?? 0) / 100,
-      ssOptOut: false,
-      // The scores are the worker's job; this makes it a full walk on its next pass.
-      ssSyncedAt: null,
-      ssBackfilledAt: null,
-    },
-  });
-  await requestRefresh(undefined, actor.userId);
+  if (players.length) await requestAttempts(players.map((p) => p.playerId), actor.userId);
   revalidatePath('/t', 'layout');
 }
 
@@ -1186,11 +1047,13 @@ export async function linkScoreSaberToMember(memberId: string, scoreSaberId: str
   if (!member) return { error: 'No such player.' };
   const actor = await requireTeamManager(member.teamId);
 
-  const taken = await prisma.player.findFirst({
+  // Linked to someone else already - usually the same person's other
+  // BeatLeader account. An organiser linking it here means it belongs here, so
+  // it moves (see below) rather than being refused.
+  const previous = await prisma.player.findFirst({
     where: { scoreSaberId, id: { not: member.playerId } },
-    select: { name: true },
+    select: { id: true },
   });
-  if (taken) return { error: `That ScoreSaber profile is already linked to ${taken.name}.` };
 
   let profile;
   try {
@@ -1200,18 +1063,32 @@ export async function linkScoreSaberToMember(memberId: string, scoreSaberId: str
   }
   if (!profile) return { error: 'ScoreSaber has no such player.' };
 
-  await prisma.player.update({
-    where: { id: member.playerId },
-    data: {
-      scoreSaberId,
-      ssPp: profile.pp ?? 0,
-      ssRank: profile.rank ?? 0,
-      ssCountryRank: profile.countryRank ?? 0,
-      ssOptOut: false,
-      ssSyncedAt: null,
-      ssBackfilledAt: null,
-    },
-  });
+  await prisma.$transaction([
+    ...(previous
+      ? [
+          // Opted out, or the automatic lookup - which links a Steam account's
+          // own id - would put it straight back on the old account.
+          prisma.player.update({
+            where: { id: previous.id },
+            data: { scoreSaberId: null, ssPp: 0, ssRank: 0, ssCountryRank: 0, ssOptOut: true, ssSyncedAt: null, ssBackfilledAt: null },
+          }),
+          // Those scores were that profile's; they are fetched again for the new owner.
+          prisma.scoreSaberScore.deleteMany({ where: { playerId: previous.id } }),
+        ]
+      : []),
+    prisma.player.update({
+      where: { id: member.playerId },
+      data: {
+        scoreSaberId,
+        ssPp: profile.pp ?? 0,
+        ssRank: profile.rank ?? 0,
+        ssCountryRank: profile.countryRank ?? 0,
+        ssOptOut: false,
+        ssSyncedAt: null,
+        ssBackfilledAt: null,
+      },
+    }),
+  ]);
   await requestRefresh(undefined, actor.userId);
   revalidatePath('/t', 'layout');
   return {};
@@ -1225,12 +1102,20 @@ export async function searchScoreSaberForMember(
   const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { teamId: true } });
   if (!member) return { candidates: [], error: 'No such player.' };
   const result = await searchScoreSaberCandidates(member.teamId, rawQuery);
-  // "On team" means something else here: a profile that is already somebody's cannot be linked again.
+  // A profile already linked to someone else - most often the same person's
+  // other BeatLeader account - can still be picked: it moves here. Say so first.
   const ids = result.candidates.map((c) => c.beatLeaderId);
-  const inUse = new Set(
-    (await prisma.player.findMany({ where: { scoreSaberId: { in: ids } }, select: { scoreSaberId: true } })).map(
-      (p) => p.scoreSaberId,
+  const owners = new Map(
+    (await prisma.player.findMany({ where: { scoreSaberId: { in: ids } }, select: { scoreSaberId: true, name: true } })).map(
+      (p) => [p.scoreSaberId, p.name],
     ),
   );
-  return { ...result, candidates: result.candidates.map((c) => ({ ...c, onTeam: inUse.has(c.beatLeaderId) })) };
+  return {
+    ...result,
+    candidates: result.candidates.map((c) => ({
+      ...c,
+      onTeam: false,
+      note: owners.has(c.beatLeaderId) ? `linked to ${owners.get(c.beatLeaderId)} - picking it moves it here` : undefined,
+    })),
+  };
 }

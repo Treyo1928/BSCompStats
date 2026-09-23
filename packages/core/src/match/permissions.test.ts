@@ -75,3 +75,23 @@ describe('viewing', () => {
     expect(can(player, 'VIEW', { isPublic: false })).toBe(true);
   });
 });
+
+describe('match set-up and BeatLeader scores', () => {
+  const captain = { userId: 'u', globalRole: 'USER' as const, tournamentRole: 'CAPTAIN' as const, captainOfTeamIds: ['red'] };
+  const organiser = { userId: 'o', globalRole: 'USER' as const, tournamentRole: 'ORGANIZER' as const };
+
+  it('lets a captain create a match for their own team only where the tournament allows it', () => {
+    expect(can(captain, 'CREATE_MATCH', { teamId: 'red' })).toBe(false);
+    expect(can(captain, 'CREATE_MATCH', { teamId: 'red', captainsCreateMatches: true })).toBe(true);
+    expect(can(captain, 'CREATE_MATCH', { teamId: 'blue', captainsCreateMatches: true })).toBe(false);
+    expect(can(captain, 'CREATE_MATCH', { captainsCreateMatches: true })).toBe(true);
+    expect(can(organiser, 'CREATE_MATCH')).toBe(true);
+  });
+
+  it('lets either captain in a match pull its scores where the tournament allows it', () => {
+    expect(can(captain, 'PULL_SCORES', { matchTeamIds: ['red', 'blue'] })).toBe(false);
+    expect(can(captain, 'PULL_SCORES', { matchTeamIds: ['red', 'blue'], captainsPullScores: true })).toBe(true);
+    expect(can(captain, 'PULL_SCORES', { matchTeamIds: ['green', 'blue'], captainsPullScores: true })).toBe(false);
+    expect(can(organiser, 'PULL_SCORES', { matchTeamIds: ['green', 'blue'] })).toBe(true);
+  });
+});

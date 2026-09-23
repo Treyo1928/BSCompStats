@@ -14,8 +14,6 @@ import {
   AvatarStack,
   DifficultyChip,
   MapCover,
-  Meter,
-  chanceColor,
   teamInk,
   teamWash,
   pct,
@@ -26,7 +24,7 @@ import { PlayerAvatarStack } from '@/components/player-card';
 import { MatchLive } from '@/components/match-live';
 import { getMatchSummary } from '@/server/summaries';
 import { ConfirmButton } from '@/components/confirm-button';
-import { loadMatch, buildAdvice } from '@/server/matches';
+import { loadMatch, type MatchView } from '@/server/matches';
 import { getActorOrAnonymous } from '@/server/session';
 import {
   submitPickBan,
@@ -37,9 +35,12 @@ import {
   cancelReplay,
   completeMatch,
   reopenMatch,
+  closeMapScores,
+  reopenMapScores,
 } from '@/server/match-actions';
 import { LineupEditor } from '@/components/lineup-editor';
-import { AnswerCard } from '@/components/answer-card';
+import { PullScores } from '@/components/pull-scores';
+import { PointsCalculator } from '@/components/points-calculator';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,10 +70,10 @@ export default async function MatchPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; matchId: string }>;
-  searchParams: Promise<{ as?: string; error?: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const { slug, matchId } = await params;
-  const { as: requestedSide, error: formError } = await searchParams;
+  const { error: formError } = await searchParams;
 
   const match = await loadMatch(matchId);
   if (!match || match.tournament.slug !== slug) notFound();
@@ -80,24 +81,6 @@ export default async function MatchPage({
   const actor = await getActorOrAnonymous(match.tournament.id);
   if (!can(actor, 'VIEW', { isPublic: match.tournament.isPublic })) notFound();
 
-  // Advice is shown from the viewer's own side. Staff and spectators see it
-  // from team A's perspective, which the heading makes explicit.
-  // Anyone can look at it from either side with ?as=<teamId>; the advice is
-  // built from public scores, so there is nothing here to keep from a viewer.
-  const myTeamId =
-    requestedSide === match.teamA.id || requestedSide === match.teamB.id
-      ? requestedSide
-      : isCaptainOf(actor, match.teamA.id)
-        ? match.teamA.id
-        : isCaptainOf(actor, match.teamB.id)
-          ? match.teamB.id
-          : match.teamA.id;
-  const myTeam = myTeamId === match.teamA.id ? match.teamA : match.teamB;
-
-  const advice = await buildAdvice(match, myTeamId);
-  const mapValueById = new Map(advice.mapValues.map((v) => [v.mapId, v]));
-
-  const usedPoolMapIds = new Set(match.actions.map((a) => a.poolMapId));
   const canAct = match.pending
     ? can(actor, 'MAKE_PICK_BAN', { teamId: match.pending.teamId })
     : false;
@@ -118,9 +101,7 @@ export default async function MatchPage({
         : null;
 
   // Hidden lineups: until both teams have set every map, each side sees only
-  // its own. Someone on a team in this match is held to that even if they also
-  // run the event - otherwise the organiser-captain of a scrim sees the other
-  // card. Staff with no side see everything.
+  // its own. Organisers see and set both, even when playing in the match.
   const rosterSpots = actor.userId
     ? await prisma.teamMember.findMany({
         where: { teamId: { in: [match.teamA.id, match.teamB.id] }, player: { userId: actor.userId } },
@@ -140,8 +121,8 @@ export default async function MatchPage({
       ),
     );
   const lineupsRevealed = !match.blindLineups || everyLineupSet || match.state === 'COMPLETE';
-  const canSeeLineup = (teamId: string) =>
-    lineupsRevealed || (mySides.size > 0 ? mySides.has(teamId) : isStaff(actor));
+  // Organisers see and set both cards, even while playing in the match themselves.
+  const canSeeLineup = (teamId: string) => lineupsRevealed || isStaff(actor) || mySides.has(teamId);
 
   const replaysUsed = new Map<string, number>();
   for (const pm of match.plannedMaps) {
@@ -328,10 +309,6 @@ export default async function MatchPage({
                   {match.pool.maps
                     .filter((m) => match.pending!.availableMapIds.includes(m.poolMapId))
                     .map((map) => {
-                      const value = mapValueById.get(map.poolMapId);
-                      const rank = advice.actionAdvice.findIndex(
-                        (a) => a.mapId === map.poolMapId,
-                      );
                       return (
                         <form key={map.poolMapId} action={submitPickBan} className="contents">
                           <input type="hidden" name="matchId" value={match.id} />
@@ -340,9 +317,7 @@ export default async function MatchPage({
                           <button
                             type="submit"
                             disabled={!canAct}
-                            className={`flex items-center gap-3 rounded-lg border bg-raised/40 p-2 text-left text-sm transition enabled:hover:border-accent enabled:hover:bg-raised disabled:cursor-not-allowed disabled:opacity-60 ${
-                              rank === 0 ? 'border-accent/60' : 'border-edge'
-                            }`}
+                            className="flex items-center gap-3 rounded-lg border border-edge bg-raised/40 p-2 text-left text-sm transition enabled:hover:border-accent enabled:hover:bg-raised disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <MapCover src={map.coverImage} size={48} />
                             <span className="min-w-0 flex-1">
@@ -352,30 +327,8 @@ export default async function MatchPage({
                                   value={map.difficultyValue}
                                   label={map.difficultyLabel}
                                 />
-                                {map.category && (
-                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                                    {map.category}
-                                  </span>
-                                )}
                               </span>
                             </span>
-                            {value && (
-                              <span className="w-14 shrink-0 text-right">
-                                <span
-                                  className="block text-base font-semibold tabular"
-                                  style={{ color: chanceColor(value.likely) }}
-                                >
-                                  {pct(value.likely, 0)}
-                                </span>
-                                <span className="block text-[9px] uppercase tracking-wider text-faint">
-                                  {rank === 0
-                                    ? match.pending!.type === 'PICK'
-                                      ? 'best pick'
-                                      : 'best ban'
-                                    : 'win chance'}
-                                </span>
-                              </span>
-                            )}
                           </button>
                         </form>
                       );
@@ -413,16 +366,10 @@ export default async function MatchPage({
             >
               <div className="space-y-4">
                 {match.plannedMaps.map((planned) => {
-                  const totalA = planned.totals[match.teamA.id];
-                  const totalB = planned.totals[match.teamB.id];
-                  const decided = totalA != null && totalB != null;
-                  const winner = !decided
-                    ? null
-                    : totalA! > totalB!
-                      ? match.teamA
-                      : totalB! > totalA!
-                        ? match.teamB
-                        : null;
+                  const result = planned.result;
+                  const winner =
+                    result.winnerId === match.teamA.id ? match.teamA : result.winnerId === match.teamB.id ? match.teamB : null;
+                  const loser = winner ? (winner.id === match.teamA.id ? match.teamB : match.teamA) : null;
                   const picker =
                     planned.pickedByTeamId === match.teamA.id
                       ? match.teamA
@@ -479,35 +426,8 @@ export default async function MatchPage({
                             </div>
                           </div>
 
-                          {decided && (
-                            <div className="text-right">
-                              <p className="text-base tabular">
-                                <span
-                                  className={totalA! > totalB! ? 'font-semibold' : 'text-muted'}
-                                  style={
-                                    totalA! > totalB!
-                                      ? { color: teamInk(match.teamA.color, match.teamA.colorSecondary) }
-                                      : undefined
-                                  }
-                                >
-                                  {num(totalA!)}
-                                </span>
-                                <span className="mx-2 text-xs text-faint">vs</span>
-                                <span
-                                  className={totalB! > totalA! ? 'font-semibold' : 'text-muted'}
-                                  style={
-                                    totalB! > totalA!
-                                      ? { color: teamInk(match.teamB.color, match.teamB.colorSecondary) }
-                                      : undefined
-                                  }
-                                >
-                                  {num(totalB!)}
-                                </span>
-                              </p>
-                              <p className="text-xs text-muted">
-                                {winner ? `${winner.name} by ${num(Math.abs(totalA! - totalB!))}` : 'Level'}
-                              </p>
-                            </div>
+                          {result.decided && (
+                            <MapScore match={match} planned={planned} winner={winner} loser={loser} />
                           )}
                         </div>
                       </div>
@@ -541,13 +461,6 @@ export default async function MatchPage({
                             canEdit={canSeeLineup(team.id) && can(actor, 'SET_LINEUP', { teamId: team.id })}
                             canOverride={can(actor, 'OVERRIDE_RULES', { teamId: team.id })}
                             ruleBreaks={canSeeLineup(team.id) ? planned.ruleBreaks[team.id] : undefined}
-                            recommended={
-                              team.id === myTeamId
-                                ? (advice.lineups.winProbability?.lineups[planned.poolMapId] as
-                                    | string[]
-                                    | undefined)
-                                : undefined
-                            }
                           />
                         ))}
                       </div>
@@ -563,8 +476,8 @@ export default async function MatchPage({
                                 </Badge>
                               ))}
                               <span>
-                                Both teams play the map again and enter the new scores in the Replay
-                                column. Each player&apos;s best run counts.
+                                Both teams play the map again; pull or enter the new scores once it is
+                                over. Each player&apos;s best run counts.
                               </span>
                               {can(actor, 'UNDO_ACTION') && match.state !== 'COMPLETE' && (
                                 <form action={cancelReplay}>
@@ -578,14 +491,101 @@ export default async function MatchPage({
                             </div>
                           )}
 
+                          {(() => {
+                            const mayPull = can(actor, 'PULL_SCORES', {
+                              captainsPullScores: match.tournament.captainsPullScores,
+                              matchTeamIds: [match.teamA.id, match.teamB.id],
+                            });
+                            const mayType = [match.teamA, match.teamB].some((t) =>
+                              can(actor, 'ENTER_SCORE', { teamId: t.id, captainsEnterScores: match.tournament.captainsEnterScores }),
+                            );
+                            const hasLineup = [match.teamA, match.teamB].some((t) => (planned.lineups[t.id] ?? []).length > 0);
+                            if (match.state === 'COMPLETE') return null;
+                            // Maps are played in order: the first map whose scores are still open is the one being played.
+                            const waitingOn = match.plannedMaps.find(
+                              (m) =>
+                                !m.scoresClosed &&
+                                m.poolMapId !== planned.poolMapId &&
+                                (planned.isTiebreaker ? !m.isTiebreaker : !m.isTiebreaker && m.order < planned.order),
+                            );
+                            if (!planned.scoresClosed && waitingOn && (mayPull || mayType)) {
+                              if (!isStaff(actor)) {
+                                return (
+                                  <p className="text-xs text-muted">
+                                    Played after {waitingOn.isTiebreaker ? 'the tiebreaker' : `map ${waitingOn.order}`} ({waitingOn.map.name}):
+                                    its scores are filled in once that map&apos;s are closed.
+                                  </p>
+                                );
+                              }
+                            }
+                            if (planned.scoresClosed) {
+                              return (
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                  <Badge tone="win">Scores closed</Badge>
+                                  <span>Nothing more is pulled or typed in for this map.</span>
+                                  {can(actor, 'UNDO_ACTION') && (
+                                    <form action={reopenMapScores}>
+                                      <input type="hidden" name="matchId" value={match.id} />
+                                      <input type="hidden" name="matchMapId" value={planned.matchMapId} />
+                                      <button type="submit" className="underline decoration-faint underline-offset-2 hover:text-ink">
+                                        Reopen
+                                      </button>
+                                    </form>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return (
+                              <>
+                                {waitingOn && isStaff(actor) && (
+                                  <p className="text-xs text-amber-300">
+                                    {waitingOn.isTiebreaker ? 'The tiebreaker' : `Map ${waitingOn.order}`} ({waitingOn.map.name}) is still open. Maps are
+                                    played in order; as an organiser you can fill this one in anyway.
+                                  </p>
+                                )}
+                                {mayPull && hasLineup && (
+                                  <PullScores
+                                    matchId={match.id}
+                                    matchMapId={planned.matchMapId!}
+                                    replays={planned.replayCalledByTeamIds.length}
+                                  />
+                                )}
+                                {(mayPull || mayType) && Object.keys(planned.scores).length > 0 && (
+                                  <form action={closeMapScores} className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                    <input type="hidden" name="matchId" value={match.id} />
+                                    <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
+                                    <ConfirmButton
+                                      question={`Close the scores for ${planned.map.name}?\n\nNothing more is pulled or typed in for it. ${can(actor, 'UNDO_ACTION') ? 'You can reopen it.' : 'Only an organiser can reopen it.'}`}
+                                      className="inline-flex h-8 items-center rounded-lg border border-edge bg-raised/60 px-3 text-xs font-medium text-ink transition hover:border-faint"
+                                    >
+                                      Close scores
+                                    </ConfirmButton>
+                                    <span>once everyone&apos;s is in and right.</span>
+                                  </form>
+                                )}
+                              </>
+                            );
+                          })()}
+
                           {match.state !== 'COMPLETE' && (
                             <div className="grid gap-3 sm:grid-cols-2">
                               {[match.teamA, match.teamB].map((team) => {
                                 const lineup = canSeeLineup(team.id) ? (planned.lineups[team.id] ?? []) : [];
-                                const mayEnter = can(actor, 'ENTER_SCORE', {
-                                  teamId: team.id,
-                                  captainsEnterScores: match.tournament.captainsEnterScores,
-                                });
+                                const outOfTurn =
+                                  !isStaff(actor) &&
+                                  match.plannedMaps.some(
+                                    (m) =>
+                                      !m.scoresClosed &&
+                                      m.poolMapId !== planned.poolMapId &&
+                                      (planned.isTiebreaker ? !m.isTiebreaker : !m.isTiebreaker && m.order < planned.order),
+                                  );
+                                const mayEnter =
+                                  !planned.scoresClosed &&
+                                  !outOfTurn &&
+                                  can(actor, 'ENTER_SCORE', {
+                                    teamId: team.id,
+                                    captainsEnterScores: match.tournament.captainsEnterScores,
+                                  });
                                 const mayReplay =
                                   can(actor, 'SET_LINEUP', { teamId: team.id }) &&
                                   (replaysUsed.get(team.id) ?? 0) < match.format.rules.replaysPerTeam;
@@ -605,6 +605,10 @@ export default async function MatchPage({
                                       </p>
                                     )}
                                     {mayEnter && lineup.length > 0 && (
+                                      <details className="group">
+                                        <summary className="cursor-pointer text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink">
+                                          Type {team.name}&apos;s scores in by hand
+                                        </summary>
                                       <form
                                         // Uncontrolled inputs keep what was typed; re-key so a
                                         // save by someone else, or a new replay, shows up.
@@ -647,6 +651,7 @@ export default async function MatchPage({
                                           Save {team.name} scores
                                         </Button>
                                       </form>
+                                      </details>
                                     )}
                                     {mayReplay && (
                                       <form action={callReplay}>
@@ -654,7 +659,7 @@ export default async function MatchPage({
                                         <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
                                         <input type="hidden" name="teamId" value={team.id} />
                                         <ConfirmButton
-                                          question={`Use ${team.name}'s replay on ${planned.map.name}?\n\nBoth teams play the map again and enter their new scores. Each player's best run counts. ${team.name} ${match.format.rules.replaysPerTeam === 1 ? 'only gets one replay' : `gets ${match.format.rules.replaysPerTeam} replays`} this match.`}
+                                          question={`Use ${team.name}'s replay on ${planned.map.name}?\n\nBoth teams play the map again. Each player's best run counts. ${team.name} ${match.format.rules.replaysPerTeam === 1 ? 'only gets one replay' : `gets ${match.format.rules.replaysPerTeam} replays`} this match.`}
                                           title={`Spend ${team.name}'s replay on this map. Both teams play it again and each player's best run counts.`}
                                           className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
                                         >
@@ -677,199 +682,26 @@ export default async function MatchPage({
           )}
         </div>
 
-        {/* Advice sidebar */}
         <aside className="space-y-6">
-          {advice.calculating && match.pending && advice.actionAdvice.length === 0 && (
-            <Panel title={match.pending.type === 'PICK' ? 'Suggested pick' : 'Suggested ban'}>
-              <Calculating>Working out the best {match.pending.type === 'PICK' ? 'pick' : 'ban'}…</Calculating>
+          <ScoringPanel match={match} />
+          {match.plannedMaps.length > 0 || match.pool.maps.length > 0 ? (
+            <Panel title="Calculator" subtitle="Score, accuracy and points, each from the others">
+              <PointsCalculator
+                maps={(match.plannedMaps.length > 0 ? match.plannedMaps.map((pm) => pm.map) : match.pool.maps).map((m) => ({
+                  id: m.poolMapId,
+                  name: m.name,
+                  difficulty: m.difficultyLabel,
+                  maxScore: m.maxScore,
+                  perfectAcc: m.perfectAcc,
+                }))}
+                curve={match.scoring.curve}
+                showPoints={match.scoring.mode === 'MATCH_POINTS'}
+              />
             </Panel>
-          )}
-
-          {advice.actionAdvice.length > 0 && match.pending && (() => {
-            const top = advice.actionAdvice[0]!;
-            const map = match.pool.maps.find((m) => m.poolMapId === top.mapId);
-            return (
-              <Panel
-                title={match.pending.type === 'PICK' ? 'Suggested pick' : 'Suggested ban'}
-                className="border-accent/40"
-              >
-                <div className="flex items-center gap-3">
-                  <MapCover src={map?.coverImage} size={48} />
-                  <p className="font-semibold">{map?.name}</p>
-                </div>
-                <p className="mt-3 text-sm text-muted">{top.reason}</p>
-              </Panel>
-            );
-          })()}
-
-          <Panel
-            title="Win chance by map"
-            subtitle={`From ${myTeam.name}'s side, with each team fielding its strongest lineup for that map`}
-            actions={
-              <div className="flex items-center gap-1 text-xs">
-                {[match.teamA, match.teamB].map((team) => (
-                  <Link
-                    key={team.id}
-                    href={`/t/${slug}/match/${match.id}?as=${team.id}`}
-                    scroll={false}
-                    aria-current={team.id === myTeamId ? 'true' : undefined}
-                    title={`See the advice from ${team.name}'s side`}
-                    className={`rounded-full border px-2 py-0.5 font-medium transition ${
-                      team.id === myTeamId
-                        ? 'border-accent bg-accent/15 text-ink'
-                        : 'border-edge-strong text-muted hover:border-faint hover:text-ink'
-                    }`}
-                  >
-                    {team.name}
-                  </Link>
-                ))}
-              </div>
-            }
-          >
-            {advice.mapValues.length === 0 ? (
-              advice.calculating ? (
-                <Calculating>Working out win chances…</Calculating>
-              ) : (
-                <Empty>Both teams need a full roster before this can be estimated.</Empty>
-              )
-            ) : (
-              <ul className="space-y-2.5 text-sm">
-                {[...advice.mapValues]
-                  .sort((a, b) => b.likely - a.likely)
-                  .map((value) => {
-                    const map = match.pool.maps.find((m) => m.poolMapId === value.mapId);
-                    const used = usedPoolMapIds.has(value.mapId);
-                    return (
-                      <li
-                        key={value.mapId}
-                        className={`flex items-center gap-2.5 ${used ? 'opacity-60' : ''}`}
-                        title={used ? 'Already picked or banned' : undefined}
-                      >
-                        <MapCover src={map?.coverImage} size={30} rounded="rounded-md" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-baseline justify-between gap-2">
-                            <span className="truncate">{map?.name ?? value.mapId}</span>
-                            <span
-                              className="shrink-0 font-semibold tabular"
-                              style={{ color: chanceColor(value.likely) }}
-                            >
-                              {pct(value.likely, 0)}
-                            </span>
-                          </span>
-                          <Meter
-                            value={value.likely}
-                            color={chanceColor(value.likely)}
-                            className="mt-1"
-                          />
-                        </span>
-                      </li>
-                    );
-                  })}
-              </ul>
-            )}
-          </Panel>
-
-          {advice.calculating && !match.pending && match.plannedMaps.length > 0 && (
-            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
-              <Calculating>Working out the best lineups…</Calculating>
-              <p className="mt-2 text-xs text-muted">
-                This takes a few seconds and appears by itself. You can set your players in the
-                meantime - suggestions will show up here and as stars beside their names.
-              </p>
-            </Panel>
-          )}
-
-          {match.pending && match.plannedMaps.length > 0 && (
-            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
-              <p className="text-sm text-muted">
-                Lineup advice appears once every map has been picked. The rules about who can pair
-                up and how often span the whole card, so a lineup for part of it would mislead.
-              </p>
-            </Panel>
-          )}
-
-          {!match.pending && match.plannedMaps.length > 0 && (
-            <AnswerCard
-              matchId={match.id}
-              us={myTeam}
-              them={myTeamId === match.teamA.id ? match.teamB : match.teamA}
-              playersPerMap={match.format.playersPerMap}
-              maps={match.plannedMaps.map((pm) => {
-                const theirId = myTeamId === match.teamA.id ? match.teamB.id : match.teamA.id;
-                const known = canSeeLineup(theirId) ? (pm.lineups[theirId] ?? []) : [];
-                return {
-                  poolMapId: pm.poolMapId,
-                  name: pm.map.name,
-                  isTiebreaker: pm.isTiebreaker,
-                  known: known.length === match.format.playersPerMap ? known : undefined,
-                };
-              })}
-            />
-          )}
-
-          {advice.lineupsInfeasible && (
-            <Panel title="Lineup strategy" subtitle={`For ${myTeam.name}`}>
-              <p className="text-sm text-amber-300">No legal lineup is possible.</p>
-              <p className="mt-2 text-sm text-muted">{advice.lineupsInfeasible}</p>
-            </Panel>
-          )}
-
-          {(advice.lineups.winProbability || advice.lineups.expectedMargin) && (
-            <Panel
-              title="Lineup strategy"
-              subtitle={`For ${myTeam.name}, assuming the other captain answers your card with their best`}
-            >
-              <div className="space-y-4 text-sm">
-                {advice.lineups.winProbability && (
-                  <Strategy
-                    label="Maximise win chance"
-                    result={advice.lineups.winProbability}
-                    match={match}
-                    myTeamId={myTeamId}
-                    highlight
-                  />
-                )}
-                {advice.lineups.expectedMargin && (
-                  <Strategy
-                    label="Maximise total score"
-                    result={advice.lineups.expectedMargin}
-                    match={match}
-                    myTeamId={myTeamId}
-                  />
-                )}
-                {advice.lineups.winProbability &&
-                  advice.lineups.expectedMargin &&
-                  advice.lineups.winProbability.winProbability >
-                    advice.lineups.expectedMargin.winProbability + 0.01 && (
-                    <p className="border-t border-edge pt-3 text-xs text-muted">
-                      Chasing points costs you{' '}
-                      {pct(
-                        advice.lineups.winProbability.winProbability -
-                          advice.lineups.expectedMargin.winProbability,
-                        1,
-                      )}{' '}
-                      of win chance here.
-                    </p>
-                  )}
-              </div>
-            </Panel>
-          )}
+          ) : null}
         </aside>
       </div>
     </div>
-  );
-}
-
-/** Advice that is still being computed on the advice thread. */
-function Calculating({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="flex items-center gap-2 text-sm text-muted" role="status" aria-live="polite">
-      <span
-        aria-hidden
-        className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-edge-strong border-t-accent"
-      />
-      {children}
-    </p>
   );
 }
 
@@ -917,92 +749,88 @@ function TeamScore({
   );
 }
 
-function Strategy({
-  label,
-  result,
-  match,
-  myTeamId,
-  highlight = false,
-}: {
-  label: string;
-  result: {
-    lineups: Record<string, readonly string[]>;
-    winProbability: number;
-    expectedMargin: number;
-    conceded: string[];
-    opponentLineups?: Record<string, readonly string[]>;
-    perMap?: Record<string, { winProbability: number; expectedMargin: number }>;
-  };
-  match: Awaited<ReturnType<typeof loadMatch>>;
-  myTeamId: string;
-  highlight?: boolean;
-}) {
-  if (!match) return null;
-  const nameOf = new Map(
-    [...match.teamA.players, ...match.teamB.players].map((p) => [p.id, p.name]),
-  );
-  const names = (ids: readonly string[] | undefined) => (ids ?? []).map((id) => nameOf.get(id) ?? id).join(' + ');
-  const them = myTeamId === match.teamA.id ? match.teamB : match.teamA;
-  const mapsWon = match.plannedMaps.filter((pm) => !pm.isTiebreaker && (result.perMap?.[pm.poolMapId]?.winProbability ?? 0) >= 0.5).length;
-  const regular = match.plannedMaps.filter((pm) => !pm.isTiebreaker).length;
+/** The name match points go by for now. */
+const POINTS_NAME = 'match points';
 
+/** How the match is scored, said once. */
+function ScoringPanel({ match }: { match: MatchView }) {
+  const { mode, curve } = match.scoring;
+  const missing = match.plannedMaps.filter((pm) => pm.map.perfectAcc == null).length;
   return (
-    <div className={highlight ? 'rounded-lg border border-accent/30 bg-accent/5 p-2.5' : 'px-2.5 opacity-85'}>
-      <div className="mb-1 flex items-center justify-between">
-        <span className="font-medium">{label}</span>
-        <span className="tabular" title="Chance of winning the match with this card, against the best card the other captain can answer it with">
-          {pct(result.winProbability, 1)}
-        </span>
-      </div>
-      {result.perMap && (
-        <p className="mb-2 text-[11px] text-muted">
-          Expected to take {mapsWon} of {regular} maps
-          {result.expectedMargin !== 0 && (
-            <>
-              {' '}
-              · {result.expectedMargin > 0 ? '+' : '−'}
-              {num(Math.round(Math.abs(result.expectedMargin)))} points over the match
-            </>
-          )}
-          . Against {them.name}&apos;s best answer, shown under each map.
+    <Panel title="Scoring" subtitle={mode === 'MATCH_POINTS' ? 'Match points' : 'Average accuracy'}>
+      {mode === 'MATCH_POINTS' ? (
+        <div className="space-y-2 text-sm text-muted">
+          <p>
+            Each player&apos;s accuracy is turned into {POINTS_NAME} on a curve first, and then the team&apos;s
+            points are averaged. Near 100% every point of accuracy is worth more, so a strong player carrying a
+            newer one is not dragged down by the gap alone.
+          </p>
+          <p className="text-xs text-faint">
+            A score at a map&apos;s perfect % is worth {curve.perfectPoints} points. Curve: padding {curve.padding},
+            slope {curve.slope}.
+            {missing > 0 &&
+              ` ${missing === 1 ? 'One map has' : `${missing} maps have`} no perfect % set, so ${missing === 1 ? 'it shows' : 'they show'} accuracy instead of points; the curve still decides ${missing === 1 ? 'it' : 'them'}.`}
+          </p>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">
+          Each team&apos;s average accuracy on a map decides it, as the league sheets always have.
         </p>
       )}
-      <ul className="space-y-1.5 text-xs">
-        {match.plannedMaps.map((planned) => {
-          const group = result.lineups[planned.poolMapId];
-          if (!group) return null;
-          const outcome = result.perMap?.[planned.poolMapId];
-          const conceded = result.conceded.includes(planned.poolMapId);
-          const theirs = result.opponentLineups?.[planned.poolMapId];
-          return (
-            <li key={planned.poolMapId} className="border-t border-edge/60 pt-1.5 first:border-0 first:pt-0">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate font-medium text-ink">
-                  {planned.map.name}
-                  {planned.isTiebreaker && <span className="ml-1 text-[10px] text-faint">TB</span>}
-                </span>
-                {outcome && (
-                  <span
-                    className={`shrink-0 tabular ${conceded ? 'text-amber-300' : outcome.winProbability >= 0.5 ? 'text-win' : 'text-lose'}`}
-                    title={`Chance of taking this map with these two lineups, and the expected score difference`}
-                  >
-                    {pct(outcome.winProbability, 0)}
-                    <span className="ml-1 text-faint">
-                      {outcome.expectedMargin >= 0 ? '+' : '−'}
-                      {num(Math.round(Math.abs(outcome.expectedMargin)))}
-                    </span>
-                    {conceded && <span className="ml-1 font-medium">conceding</span>}
-                  </span>
-                )}
-              </div>
-              <div className="flex justify-between gap-2 text-muted">
-                <span className={conceded ? 'text-amber-300/90' : ''}>{names(group)}</span>
-                {theirs && <span className="truncate text-right text-faint">vs {names(theirs)}</span>}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+    </Panel>
+  );
+}
+
+/** One map's result: each team's number, who took it, and how close it was. */
+function MapScore({
+  match,
+  planned,
+  winner,
+  loser,
+}: {
+  match: MatchView;
+  planned: MatchView['plannedMaps'][number];
+  winner: { id: string; name: string; color: string; colorSecondary: string | null } | null;
+  loser: { name: string } | null;
+}) {
+  const points = match.scoring.mode === 'MATCH_POINTS';
+  const figure = (teamId: string) => {
+    const team = planned.result.teams[teamId];
+    if (!team) return '—';
+    return points && team.points != null ? team.points.toFixed(2) : pct(team.accEquivalent);
+  };
+  const side = (team: MatchView['teamA']) => (
+    <span
+      className={winner?.id === team.id ? 'font-semibold' : 'text-muted'}
+      style={winner?.id === team.id ? { color: teamInk(team.color, team.colorSecondary) } : undefined}
+    >
+      {figure(team.id)}
+    </span>
+  );
+  const catchUp = planned.result.catchUp;
+  return (
+    <div className="text-right">
+      <p className="text-base tabular">
+        {side(match.teamA)}
+        <span className="mx-2 text-xs text-faint">vs</span>
+        {side(match.teamB)}
+      </p>
+      {points && (
+        <p className="text-[11px] tabular text-faint" title="The accuracy each team's average points come to">
+          ≈ {pct(planned.result.teams[match.teamA.id]!.accEquivalent)} vs {pct(planned.result.teams[match.teamB.id]!.accEquivalent)}
+        </p>
+      )}
+      <p className="text-xs text-muted">
+        {winner ? `${winner.name} take it` : 'Level'}
+        {winner && loser && catchUp != null && (
+          <span
+            className="ml-1.5 cursor-help underline decoration-dotted decoration-faint underline-offset-2"
+            title={`Each player on ${loser.name} would have needed about ${pct(catchUp)} more accuracy for ${loser.name} to take this map.`}
+          >
+            · {pct(catchUp)} difference
+          </span>
+        )}
+      </p>
     </div>
   );
 }

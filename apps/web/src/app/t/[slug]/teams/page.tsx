@@ -22,6 +22,8 @@ import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
+import { createPlayerPool, makeDuosFromPool } from '@/server/pool-actions';
+import { RunsVisibilityPanel } from '@/components/runs-visibility';
 import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
 
@@ -63,6 +65,9 @@ export default async function TeamsPage({
       slug: true,
       isPublic: true,
       pools: { select: { id: true, name: true } },
+      captainsCreateMatches: true,
+      matchScoring: true,
+      scoringLocked: true,
       divisions: {
         orderBy: { order: 'asc' },
         select: {
@@ -77,6 +82,7 @@ export default async function TeamsPage({
               color: true,
               colorSecondary: true,
               adHoc: true,
+              playerPool: true,
               members: {
                 orderBy: { order: 'asc' },
                 select: {
@@ -110,7 +116,8 @@ export default async function TeamsPage({
 
   const canManage = can(actor, 'MANAGE_TEAMS');
   const teams = tournament.divisions.flatMap((d) => d.teams);
-  const entered = teams.filter((t) => !t.adHoc);
+  const entered = teams.filter((t) => !t.adHoc && !t.playerPool);
+  const playerPool = teams.find((t) => t.playerPool) ?? null;
   const matchOnly = teams.filter((t) => t.adHoc);
   // Match-only sides have a tab of their own, and only when there are any.
   const showing = show === 'match-only' && matchOnly.length > 0 ? 'adHoc' : 'entered';
@@ -138,6 +145,82 @@ export default async function TeamsPage({
         </p>
       )}
 
+      {showing === 'entered' && (playerPool || canManage) && (
+        <Panel
+          title="Player pool"
+          subtitle="Players signed up but not in a team yet. Make duos from them, or add them to a team by hand."
+        >
+          {!playerPool ? (
+            <form action={createPlayerPool} className="flex flex-wrap items-center gap-3 text-sm text-muted">
+              <input type="hidden" name="tournamentId" value={tournament.id} />
+              <span>For a tournament where teams are made from individual sign-ups.</span>
+              <Button type="submit" variant="ghost">
+                Start a player pool
+              </Button>
+            </form>
+          ) : (
+            <>
+              {playerPool.members.length === 0 ? (
+                <Empty>Nobody in the pool.</Empty>
+              ) : (
+                <form action={makeDuosFromPool} className="space-y-3">
+                  <input type="hidden" name="tournamentId" value={tournament.id} />
+                  <ul className="grid gap-1.5 sm:grid-cols-2">
+                    {[...playerPool.members]
+                      .sort((a, b) => b.player.pp - a.player.pp)
+                      .map((member, i) => (
+                        <li key={member.id} className="flex items-center gap-2 text-sm">
+                          {canManage && (
+                            <input
+                              name={`seed:${member.player.id}`}
+                              inputMode="numeric"
+                              defaultValue={i + 1}
+                              aria-label={`${member.player.name}'s seed`}
+                              title="Seed: 1 is the strongest. Seeded duos pair 1 with the last seed, 2 with the second-last..."
+                              className="h-8 w-[3.25rem] shrink-0 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none"
+                            />
+                          )}
+                          <PlayerLink playerId={member.player.id} name={member.player.name} className="flex min-w-0 flex-1 items-center gap-2 hover:underline">
+                            <Avatar src={member.player.avatar} name={member.player.name} size={24} />
+                            <span className="truncate">{member.player.name}</span>
+                          </PlayerLink>
+                          <span className="text-xs tabular text-muted">
+                            {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
+                          </span>
+                          {canManage && (
+                            <MemberControls
+                              memberId={member.id}
+                              playerName={member.player.name}
+                              teamName="the player pool"
+                              isCaptain={false}
+                              isSub={member.isSub}
+                              available={member.available}
+                              canManage
+                            />
+                          )}
+                        </li>
+                      ))}
+                  </ul>
+                  {canManage && playerPool.members.length >= 2 && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-edge pt-3">
+                      <select name="method" defaultValue="SEEDED" className={`${inputClass} w-auto`}>
+                        <option value="SEEDED">Seeded duos: 1 with the last seed, 2 with the second-last…</option>
+                        <option value="RANDOM">Random duos</option>
+                      </select>
+                      <Button type="submit">Make duos</Button>
+                      <span className="text-xs text-faint">
+                        Seeds start in BeatLeader pp order; change the numbers to seed by hand. An odd player out stays here.
+                      </span>
+                    </div>
+                  )}
+                </form>
+              )}
+              {canManage && <AddPlayerForm teamId={playerPool.id} teamName="the player pool" />}
+            </>
+          )}
+        </Panel>
+      )}
+
       <div className="grid gap-6 md:grid-cols-2">
         {listed.map((team) => (
           <Panel key={team.id} flush>
@@ -163,12 +246,6 @@ export default async function TeamsPage({
                 <span className="hidden sm:inline">
                   {team.members.filter((m) => m.available).length} of {team.members.length} available
                 </span>
-                <Link
-                  href={`/t/${slug}/stats?team=${team.id}`}
-                  className="inline-flex h-8 items-center rounded-lg border border-edge-strong bg-panel/60 px-2.5 font-medium text-ink transition hover:border-faint"
-                >
-                  Team stats →
-                </Link>
               </span>
             </div>
 
@@ -202,7 +279,7 @@ export default async function TeamsPage({
                           </Badge>
                         )}
                         {!member.isSub && !member.available && (
-                          <Badge tone="warn" title="Left out of lineups and predictions">
+                          <Badge tone="warn" title="Left out of lineups">
                             Absent
                           </Badge>
                         )}
@@ -316,16 +393,20 @@ export default async function TeamsPage({
             </form>
           </Panel>
 
-          {can(actor, 'CREATE_MATCH') && (
+          {can(actor, 'CREATE_MATCH', { captainsCreateMatches: tournament.captainsCreateMatches }) && (
             <NewMatchForm
               tournamentId={tournament.id}
               teams={entered}
               pools={tournament.pools}
               from="teams"
+              scoring={{ mode: tournament.matchScoring, locked: tournament.scoringLocked }}
+              ownTeamIds={can(actor, 'CREATE_MATCH') ? undefined : [...(actor.captainOfTeamIds ?? [])]}
             />
           )}
         </div>
       )}
+
+      <RunsVisibilityPanel tournamentId={tournament.id} />
     </div>
   );
 }

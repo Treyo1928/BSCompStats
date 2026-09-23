@@ -1,17 +1,17 @@
-import { isBestRunCandidate, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
-import { categorizeMap } from '@bscs/core/beatleader';
+import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
-import { buildTournamentModel, failKey, type TournamentModel } from './stats';
+import { buildTournamentData, failKey, type TournamentData } from './stats';
 import { loadRuns, loadScores, type ScoreSource, type StoredRun } from './score-sources';
 
 /**
  * The pool board: every tracked player against every map in a pool.
  *
  * This is the direct replacement for the spreadsheet's qualifiers tab, with the
- * things a spreadsheet could not do - predictions for the cells nobody has
- * filled in, fail flags, and live updates.
+ * things a spreadsheet could not do: live updates, the runs behind a map
+ * nobody has cleared, and abandoned runs called out. Every cell is something a
+ * player actually did - an empty one is a map they have not played.
  */
 
 export interface BoardCell {
@@ -22,19 +22,13 @@ export interface BoardCell {
   /** An anomaly - abandoned or disastrous. Not merely a low score on a hard map. */
   isDnf: boolean;
   fullCombo: boolean;
+  /** No Fail kicked in on this score: the player died partway and played on. */
+  noFail: boolean;
   misses: number;
   /** BeatLeader's web replay viewer for this score. Null when the score has no id. */
   replayUrl: string | null;
   /** Where the score shown was set. Null when there is none. */
   platform: 'BL' | 'SS' | null;
-  /** Model estimate, shown when there is no real score. */
-  predictedAcc: number;
-  predictionConfidence: number;
-  /** True when `predictedAcc` was entered by a person rather than modelled. */
-  isEstimate: boolean;
-  /** Roughly one standard deviation either side of the model's prediction. */
-  predictedLow: number;
-  predictedHigh: number;
   /** Rank within the column, 1-based. Null when unplayed. */
   rank: number | null;
   /**
@@ -47,10 +41,6 @@ export interface BoardCell {
    * seconds on a map they have never cleared - their score here all the same.
    */
   isRun: boolean;
-  /** For a run: the score that accuracy comes to over the whole map. */
-  projectedScore: number | null;
-  /** The easier map whose real score holds this prediction down, when one does. */
-  cappedBy: string | null;
 }
 
 export interface CellRuns {
@@ -100,22 +90,16 @@ export interface BoardMap {
   difficultyLabel: string;
   /** BeatLeader's numeric difficulty (1 Easy .. 9 Expert+), for colouring. */
   difficultyValue: number;
-  /**
-   * How unpredictable this map is relative to a typical one - the model's
-   * per-map residual scale. Around 1 is ordinary; Spin Eternally is near 3.
-   */
-  scatter: number;
   customName: string | null;
-  category: string | null;
   maxScore: number;
   coverImage: string | null;
   isTiebreaker: boolean;
+  /** What counts as a perfect score here, for match points: the organisers' figure. */
+  perfectAcc: number | null;
+  /** BeatLeader's predicted accuracy for the map, where it has one. */
+  blPredictedAcc: number | null;
   ranked: boolean;
   stars: number;
-  /** Guessed from the ratings when nobody has labelled the map. */
-  autoCategory: string | null;
-  /** BeatLeader's difficulty ratings; all zero when it has not rated the map. */
-  ratings: { acc: number; pass: number; tech: number };
   /** Mean accuracy across everyone who played it - how hard it proved to be. */
   fieldMeanAcc: number | null;
 }
@@ -133,7 +117,7 @@ export interface PoolBoard {
     adHoc: boolean;
     rows: BoardRow[];
   }>;
-  model: TournamentModel;
+  data: TournamentData;
 }
 
 /**
@@ -209,9 +193,9 @@ export async function buildPoolBoard(
         select: {
           id: true,
           leaderboardId: true,
-          category: true,
           label: true,
           isTiebreaker: true,
+          perfectAcc: true,
           leaderboard: {
             select: {
               id: true,
@@ -220,9 +204,7 @@ export async function buildPoolBoard(
               maxScore: true,
               ranked: true,
               stars: true,
-              accRating: true,
-              passRating: true,
-              techRating: true,
+              predictedAcc: true,
               map: {
                 select: { name: true, subName: true, mapper: true, coverImage: true },
               },
@@ -244,9 +226,8 @@ export async function buildPoolBoard(
   const scoreBy = new Map(scores.map((s) => [`${s.playerId}::${s.leaderboardId}`, s]));
   const known = source === 'scoresaber' ? null : await loadRuns(playerIds, leaderboardIds);
   const runsBy = summariseRuns(known?.runs ?? [], known?.durations ?? {});
-  const maxScoreOf = new Map(pool.maps.map((pm) => [pm.leaderboardId, pm.leaderboard.maxScore]));
 
-  const model = await buildTournamentModel(pool.tournamentId, overrideScope, source);
+  const data = await buildTournamentData(pool.tournamentId, overrideScope, source);
 
   // Column ranks and field means, computed once per map.
   //
@@ -263,7 +244,7 @@ export async function buildPoolBoard(
       .sort((a, b) => b.baseScore - a.baseScore);
 
     const clean = column.filter(
-      (s) => !model.failKeys.has(failKey(s.playerId, s.leaderboardId)),
+      (s) => !data.failKeys.has(failKey(s.playerId, s.leaderboardId)),
     );
 
     columnStats.set(leaderboardId, {
@@ -285,50 +266,35 @@ export async function buildPoolBoard(
     difficultyLabel:
       pm.label ?? displayDifficulty(pm.leaderboard.difficultyValue, pm.leaderboard.customName),
     difficultyValue: pm.leaderboard.difficultyValue,
-    scatter: model.model.mapSigmaScale[pm.leaderboardId] ?? 1,
     customName: pm.leaderboard.customName,
-    category: pm.category,
     maxScore: pm.leaderboard.maxScore,
     coverImage: pm.leaderboard.map.coverImage,
     isTiebreaker: pm.isTiebreaker,
+    perfectAcc: pm.perfectAcc,
+    blPredictedAcc: pm.leaderboard.predictedAcc > 0 ? pm.leaderboard.predictedAcc : null,
     ranked: pm.leaderboard.ranked,
     stars: pm.leaderboard.stars,
-    autoCategory: categorizeMap({
-      acc: pm.leaderboard.accRating,
-      pass: pm.leaderboard.passRating,
-      tech: pm.leaderboard.techRating,
-    }),
-    ratings: {
-      acc: pm.leaderboard.accRating,
-      pass: pm.leaderboard.passRating,
-      tech: pm.leaderboard.techRating,
-    },
     fieldMeanAcc: columnStats.get(pm.leaderboardId)?.mean ?? null,
   }));
 
   const rows: BoardRow[] = members.map((member) => {
     const cells: BoardCell[] = leaderboardIds.map((leaderboardId) => {
       const score = scoreBy.get(`${member.player.id}::${leaderboardId}`);
-      const prediction = model.model.predict(member.player.id, leaderboardId);
-      const estimate =
-        prediction.observedAcc == null
-          ? model.estimates.get(failKey(member.player.id, leaderboardId))
-          : undefined;
       const column = columnStats.get(leaderboardId);
       const rank = score ? (column?.ranked.indexOf(member.player.id) ?? -1) + 1 : null;
       const runs = runsBy.get(`${member.player.id}::${leaderboardId}`) ?? null;
       // No clear, but a run of ten notes or more: its accuracy is their score
       // here, shown and counted like one.
       const bestTry = !score && runs?.bestTry ? runs.bestTry : null;
-      const maxScore = maxScoreOf.get(leaderboardId) ?? 0;
 
       return {
         leaderboardId,
         score: score?.baseScore ?? null,
         acc: score?.accuracy ?? bestTry?.acc ?? null,
         // The classifier's verdict, not a second opinion.
-        isDnf: model.failKeys.has(failKey(member.player.id, leaderboardId)),
+        isDnf: data.failKeys.has(failKey(member.player.id, leaderboardId)),
         fullCombo: score?.fullCombo ?? false,
+        noFail: noFailTriggered(score?.modifiers),
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
         platform: score?.platform ?? null,
         // The stored replayUrl is the raw .bsor file, which a browser downloads.
@@ -338,16 +304,9 @@ export async function buildPoolBoard(
           : bestTry?.replayUrl
             ? `https://replay.beatleader.com/?link=${encodeURIComponent(bestTry.replayUrl)}`
             : null,
-        predictedAcc: estimate ?? prediction.acc,
-        predictionConfidence: prediction.confidence,
-        isEstimate: estimate != null,
-        predictedLow: prediction.accLow,
-        predictedHigh: prediction.accHigh,
         rank: rank && rank > 0 ? rank : null,
         runs,
         isRun: bestTry != null,
-        projectedScore: bestTry && maxScore > 0 ? Math.round(bestTry.acc * maxScore) : null,
-        cappedBy: prediction.cappedBy,
       };
     });
 
@@ -401,7 +360,7 @@ export async function buildPoolBoard(
         rows: teamRows,
       };
     }),
-    model,
+    data,
   };
 }
 
