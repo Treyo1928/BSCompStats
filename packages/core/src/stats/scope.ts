@@ -49,9 +49,6 @@ export const statsScopeSchema = z.object({
    */
   outlierSigmas: z.number().positive().nullable().default(null),
 
-  /** Exclude runs flagged as anomalies (abandoned, disastrous). They are down-weighted regardless. */
-  excludeFails: z.boolean().default(false),
-
   /** Ignore anything below this accuracy outright. */
   minAccuracy: z.number().min(0).max(1).nullable().default(null),
 
@@ -106,7 +103,6 @@ export interface ScopedScore {
   playerId: string;
   leaderboardId: string;
   acc: number;
-  isDnf: boolean;
   /** Unix seconds. */
   timeset: number;
   /** Whether the map is in a pool belonging to this tournament. */
@@ -124,7 +120,6 @@ export interface WeightedObservation {
   playerId: string;
   leaderboardId: string;
   acc: number;
-  isDnf: boolean;
   /** Recency weight in [0,1]; 1 when no half-life is configured. */
   weight: number;
 }
@@ -162,10 +157,6 @@ export function applyScope(
     }
     if (scope.source === 'RANKED_ONLY' && !s.ranked) {
       drop('map is not ranked');
-      return false;
-    }
-    if (scope.excludeFails && s.isDnf) {
-      drop('failed run');
       return false;
     }
     if (scope.minAccuracy != null && s.acc < scope.minAccuracy) {
@@ -249,7 +240,6 @@ export function applyScope(
     playerId: s.playerId,
     leaderboardId: s.leaderboardId,
     acc: s.acc,
-    isDnf: s.isDnf,
     weight: recencyWeight(s.timeset, now, scope.halfLifeDays) * (s.weight ?? 1),
   }));
 
@@ -287,7 +277,6 @@ export function describeScope(scope: StatsScope): string {
   if (scope.maxAgeDays != null) parts.push(`last ${scope.maxAgeDays} days`);
   if (scope.halfLifeDays != null) parts.push(`${scope.halfLifeDays}-day half-life`);
   if (scope.outlierSigmas != null) parts.push(`outliers beyond ${scope.outlierSigmas}σ removed`);
-  if (scope.excludeFails) parts.push('fails excluded');
   if (scope.minAccuracy != null) parts.push(`above ${(scope.minAccuracy * 100).toFixed(0)}%`);
   return parts.join(', ');
 }

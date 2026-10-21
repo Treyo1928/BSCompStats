@@ -1,7 +1,6 @@
 import { cache } from 'react';
 import { prisma } from '@bscs/db';
 import { nextDraftSlot, parseDraftSettings } from '@bscs/core/match';
-import { classifyFails } from '@bscs/core/stats';
 import { tallyMaps } from './match-summary';
 import { loadScores } from './score-sources';
 
@@ -43,18 +42,22 @@ export const getTournamentSummary = cache(async (slug: string) => {
         },
       },
       matches: {
+        // A link preview is for anyone: unlisted matches stay out of it.
+        where: { unlisted: false },
         orderBy: { createdAt: 'desc' },
         select: {
           state: true,
           winnerId: true,
           scoring: true,
           pointsCurve: true,
+          replayCounting: true,
+          doubleFailedRuns: true,
           teamAId: true,
           teamBId: true,
           teamA: { select: { name: true } },
           teamB: { select: { name: true } },
           maps: {
-            select: { isTiebreaker: true, attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } } },
+            select: { isTiebreaker: true, attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true, attempt: true, failed: true } } },
           },
         },
       },
@@ -122,16 +125,14 @@ export const getPoolSummary = cache(async (slug: string, poolId: string) => {
   const nameOf = new Map(members.map((m) => [m.player.id, m.player.name]));
 
   // Through score-sources like the board, so a ScoreSaber-only leader is a
-  // leader here too; and with abandoned runs set aside the way the board does.
+  // leader here too; every score counted, as on the board.
   const scores = await loadScores([...nameOf.keys()], {
     source: 'both',
     leaderboardIds: pool.maps.map((m) => m.leaderboardId),
   });
-  const fails = classifyFails(scores.map((s) => ({ playerId: s.playerId, leaderboardId: s.leaderboardId, acc: s.accuracy })));
 
   const byPlayer = new Map<string, number[]>();
-  scores.forEach((s, i) => {
-    if (fails[i]) return;
+  scores.forEach((s) => {
     byPlayer.set(s.playerId, [...(byPlayer.get(s.playerId) ?? []), s.accuracy]);
   });
 
@@ -178,6 +179,8 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
       winnerId: true,
       scoring: true,
       pointsCurve: true,
+      replayCounting: true,
+      doubleFailedRuns: true,
       teamAId: true,
       teamBId: true,
       tournament: { select: { slug: true, name: true, isPublic: true } },
@@ -189,7 +192,7 @@ export const getMatchSummary = cache(async (slug: string, matchId: string) => {
         select: {
           isTiebreaker: true,
           poolMap: { select: { leaderboard: { select: { map: { select: { name: true, coverImage: true } } } } } },
-          attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } },
+          attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true, attempt: true, failed: true } },
         },
       },
     },

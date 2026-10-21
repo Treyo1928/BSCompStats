@@ -2,7 +2,7 @@ import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
-import { buildTournamentData, failKey, type TournamentData } from './stats';
+import { buildTournamentData, type TournamentData } from './stats';
 import { loadRuns, loadScores, type ScoreSource, type StoredRun } from './score-sources';
 
 /**
@@ -10,7 +10,7 @@ import { loadRuns, loadScores, type ScoreSource, type StoredRun } from './score-
  *
  * This is the direct replacement for the spreadsheet's qualifiers tab, with the
  * things a spreadsheet could not do: live updates, the runs behind a map
- * nobody has cleared, and abandoned runs called out. Every cell is something a
+ * nobody has cleared. Every cell is something a
  * player actually did - an empty one is a map they have not played.
  */
 
@@ -19,8 +19,6 @@ export interface BoardCell {
   /** Null when the player has no score on this map. */
   score: number | null;
   acc: number | null;
-  /** An anomaly - abandoned or disastrous. Not merely a low score on a hard map. */
-  isDnf: boolean;
   fullCombo: boolean;
   /** No Fail kicked in on this score: the player died partway and played on. */
   noFail: boolean;
@@ -231,26 +229,18 @@ export async function buildPoolBoard(
 
   // Column ranks and field means, computed once per map.
   //
-  // The field mean deliberately excludes anomalies. Madeleine is the easiest
-  // map in the MSU pool and every real score on it is above 94%, but one
-  // abandoned attempt at 20% drags the raw mean to 84% and makes it read as the
-  // hardest map on the board. Scores on a map that is simply beyond the player
-  // - the 50s on Spin Eternally - are real and do count: that is how hard the
-  // map proved to be.
+  // The field mean is over every score on the map, however low: nothing is
+  // set aside as an abandoned run.
   const columnStats = new Map<string, { ranked: string[]; mean: number | null }>();
   for (const leaderboardId of leaderboardIds) {
     const column = scores
       .filter((s) => s.leaderboardId === leaderboardId)
       .sort((a, b) => b.baseScore - a.baseScore);
 
-    const clean = column.filter(
-      (s) => !data.failKeys.has(failKey(s.playerId, s.leaderboardId)),
-    );
-
     columnStats.set(leaderboardId, {
       ranked: column.map((s) => s.playerId),
-      mean: clean.length
-        ? clean.reduce((acc, s) => acc + s.accuracy, 0) / clean.length
+      mean: column.length
+        ? column.reduce((acc, s) => acc + s.accuracy, 0) / column.length
         : null,
     });
   }
@@ -291,8 +281,6 @@ export async function buildPoolBoard(
         leaderboardId,
         score: score?.baseScore ?? null,
         acc: score?.accuracy ?? bestTry?.acc ?? null,
-        // The classifier's verdict, not a second opinion.
-        isDnf: data.failKeys.has(failKey(member.player.id, leaderboardId)),
         fullCombo: score?.fullCombo ?? false,
         noFail: noFailTriggered(score?.modifiers),
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
@@ -311,7 +299,6 @@ export async function buildPoolBoard(
     });
 
     const played = cells.filter((c) => c.acc != null);
-    const counted = played.filter((c) => !c.isDnf);
 
     return {
       playerId: member.player.id,
@@ -326,9 +313,8 @@ export async function buildPoolBoard(
       available: member.available,
       runsVisible: known?.visible.get(member.player.id) ?? null,
       cells,
-      // Abandoned runs are left out, as the legend under the board promises.
-      meanAcc: counted.length
-        ? counted.reduce((acc, c) => acc + (c.acc ?? 0), 0) / counted.length
+      meanAcc: played.length
+        ? played.reduce((acc, c) => acc + (c.acc ?? 0), 0) / played.length
         : null,
       played: played.length,
     };

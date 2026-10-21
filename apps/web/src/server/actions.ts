@@ -9,7 +9,7 @@ import { importPool } from './pools';
 import { requestAttempts, requestRefresh } from '@/lib/redis';
 import { beatLeader, scoreSaber } from './pools';
 import { failBack } from './form-errors';
-import { parsePointsCurve, parseScoringMode, DEFAULT_TOLERANCE_SECONDS } from '@bscs/core/match';
+import { parsePointsCurve, parseReplayCounting, parseScoringMode, DEFAULT_TOLERANCE_SECONDS } from '@bscs/core/match';
 import { looksLikeSteamId, parseScoreSaberId } from '@bscs/core/scoresaber';
 import { cleanUpAdHocTeams, hexColor } from './custom-teams';
 
@@ -54,17 +54,26 @@ export async function createTournament(formData: FormData): Promise<void> {
   redirect(`/t/${tournament.slug}`);
 }
 
+/**
+ * Who can see a tournament. Public is listed for everyone; unlisted opens for
+ * anyone with the link but is left off the tournament list; private is for its
+ * members and the players on its rosters.
+ */
 export async function setTournamentVisibility(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
-  await prisma.tournament.update({
+  const visibility = String(formData.get('visibility') ?? 'PRIVATE');
+  const tournament = await prisma.tournament.update({
     where: { id: tournamentId },
-    data: { isPublic: formData.get('isPublic') === 'on' },
+    // Anything unrecognised fails private.
+    data: { isPublic: visibility === 'PUBLIC' || visibility === 'UNLISTED', unlisted: visibility === 'UNLISTED' },
+    select: { slug: true },
   });
   revalidatePath('/', 'layout');
+  redirect(`/t/${tournament.slug}/settings?saved=visibility`);
 }
 
 /**
@@ -77,57 +86,64 @@ export async function setTournamentVisibility(formData: FormData): Promise<void>
  *
  * Handing out or taking away admin is for the owner and site admins. Other
  * organisers can still let viewers in.
+ *
+ * Found the way players are: search, then pick from the list. Only someone who
+ * has signed in here (and so linked a BeatLeader profile) can be added.
  */
-export async function addTournamentMember(formData: FormData): Promise<void> {
-  const tournamentId = String(formData.get('tournamentId'));
+export async function searchPeopleCandidates(
+  tournamentId: string,
+  rawQuery: string,
+): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
   const actor = await getActor(tournamentId);
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
-  const tournament = await prisma.tournament.findUnique({
-    where: { id: tournamentId },
-    select: { slug: true },
+  const found = await findCandidates(rawQuery, actor.globalRole === 'ADMIN', null);
+  const ids = found.candidates.map((c) => c.beatLeaderId);
+  const already = await prisma.tournamentMember.findMany({
+    where: { tournamentId, user: { players: { some: { beatLeaderId: { in: ids } } } } },
+    select: { role: true, user: { select: { players: { select: { beatLeaderId: true } } } } },
   });
-  if (!tournament) throw new Error('No such tournament.');
-  const back = `/t/${tournament.slug}`;
+  const roleOf = new Map(already.flatMap((m) => m.user.players.map((p) => [p.beatLeaderId, m.role] as const)));
+  for (const c of found.candidates) {
+    const role = roleOf.get(c.beatLeaderId);
+    if (role) c.unavailable = role === 'OWNER' ? 'Owner' : role === 'ORGANIZER' ? 'Admin' : 'Viewer';
+    else if (!c.linked) {
+      c.unavailable = 'No account';
+      c.note = 'Has not signed in here yet. They need to sign in once before they can be added.';
+    }
+  }
+  return found;
+}
 
-  const role = formData.get('role') === 'ORGANIZER' ? 'ORGANIZER' : 'VIEWER';
+export async function addTournamentPerson(
+  tournamentId: string,
+  beatLeaderId: string,
+  rawRole: string,
+): Promise<{ error?: string }> {
+  const actor = await getActor(tournamentId);
+  if (!actor) return { error: 'Sign in first.' };
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+
+  const role = rawRole === 'ORGANIZER' ? 'ORGANIZER' : 'VIEWER';
   const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
   if (role === 'ORGANIZER' && !grantsAdmin) {
-    failBack(back, 'Only the tournament owner or a site admin can add tournament admins.');
+    return { error: 'Only the tournament owner or a site admin can add tournament admins.' };
   }
 
-  const who = String(formData.get('who') ?? '').trim();
-  if (!who) failBack(back, 'Enter their account name or BeatLeader ID.');
-
-  // Exact matches only: this must not double as a way to browse who has an
-  // account here.
-  const matches = await prisma.user.findMany({
-    where: {
-      OR: [
-        { name: { equals: who, mode: 'insensitive' } },
-        { players: { some: { beatLeaderId: who } } },
-        { players: { some: { name: { equals: who, mode: 'insensitive' } } } },
-      ],
-    },
-    select: { id: true },
-    take: 2,
-  });
-  if (matches.length === 0) {
-    failBack(back, `Nobody called "${who}" has signed in here yet. They need to sign in once before they can be added.`);
+  const player = await prisma.player.findUnique({ where: { beatLeaderId }, select: { userId: true } });
+  if (!player?.userId) {
+    return { error: 'They have not signed in here yet. They need to sign in once before they can be added.' };
   }
-  if (matches.length > 1) {
-    failBack(back, `More than one account matches "${who}". Use their BeatLeader ID instead.`);
-  }
-  const userId = matches[0]!.id;
+  const userId = player.userId;
 
   const existing = await prisma.tournamentMember.findUnique({
     where: { tournamentId_userId: { tournamentId, userId } },
     select: { role: true },
   });
-  if (existing?.role === 'OWNER') failBack(back, 'They already own this tournament.');
+  if (existing?.role === 'OWNER') return { error: 'They already own this tournament.' };
   if (existing?.role === 'ORGANIZER' && !grantsAdmin) {
-    failBack(back, 'They are a tournament admin; only the owner or a site admin can change that.');
+    return { error: 'They are a tournament admin; only the owner or a site admin can change that.' };
   }
 
   await prisma.tournamentMember.upsert({
@@ -136,6 +152,7 @@ export async function addTournamentMember(formData: FormData): Promise<void> {
     update: { role },
   });
   revalidatePath('/', 'layout');
+  return {};
 }
 
 export async function removeTournamentMember(formData: FormData): Promise<void> {
@@ -177,7 +194,7 @@ export async function deleteTournament(formData: FormData): Promise<void> {
   // Typing the name is the confirmation: this form works without JavaScript,
   // and a mis-click must not be able to do this.
   if (String(formData.get('confirmName') ?? '').trim() !== tournament.name) {
-    failBack(`/t/${tournament.slug}`, `Type the tournament's name exactly ("${tournament.name}") to delete it.`);
+    failBack(`/t/${tournament.slug}/settings`, `Type the tournament's name exactly ("${tournament.name}") to delete it.`);
   }
 
   // Matches point at teams and pools without cascading, so they go first.
@@ -199,18 +216,31 @@ export async function setMatchRules(formData: FormData): Promise<void> {
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
-  await prisma.tournament.update({
+  const tournament = await prisma.tournament.update({
     where: { id: tournamentId },
     data: {
       captainsCreateMatches: formData.get('captainsCreateMatches') === 'on',
       captainsEnterScores: formData.get('captainsEnterScores') === 'on',
       captainsPullScores: formData.get('captainsPullScores') === 'on',
       matchScoring: parseScoringMode(formData.get('matchScoring')),
+      replayCounting: parseReplayCounting(formData.get('replayCounting')),
+      doubleFailedRuns: formData.get('doubleFailedRuns') === 'on',
       scoringLocked: formData.get('scoringLocked') === 'on',
       perfectFromBeatLeader: formData.get('perfectFromBeatLeader') === 'on',
     },
+    select: { slug: true, replayCounting: true, doubleFailedRuns: true },
+  });
+  // How replays and fails count is a rule of the tournament, not a choice per
+  // match: matches still being played follow it. A finished match keeps the
+  // rule its result was decided under.
+  await prisma.match.updateMany({
+    where: { tournamentId, state: { not: 'COMPLETE' } },
+    data: { replayCounting: tournament.replayCounting, doubleFailedRuns: tournament.doubleFailedRuns },
   });
   revalidatePath('/t', 'layout');
+  // A fresh page, not a quiet re-render: it says it saved, and everything
+  // that shows these defaults is drawn again from them.
+  redirect(`/t/${tournament.slug}/settings?saved=rules`);
 }
 
 /**
@@ -226,41 +256,44 @@ export async function setScoringSettings(formData: FormData): Promise<void> {
 
   const tournament = await prisma.tournament.findUnique({ where: { id: tournamentId }, select: { slug: true } });
   if (!tournament) throw new Error('No such tournament.');
-  const back = `/t/${tournament.slug}/settings/scoring`;
+  const back = `/t/${tournament.slug}/settings`;
 
   const number = (name: string) => {
     const raw = String(formData.get(name) ?? '').trim();
     return raw === '' ? undefined : Number(raw);
   };
-  if (formData.get('reset') === 'on') {
-    await prisma.tournament.update({ where: { id: tournamentId }, data: { pointsCurve: Prisma.DbNull, scorePull: Prisma.DbNull } });
-    revalidatePath('/t', 'layout');
-    redirect(`${back}?saved=1`);
+  // The curve and the pull settings are separate forms on the settings page;
+  // each saves only what it sent, so saving one never resets the other.
+  const data: Prisma.TournamentUpdateInput = {};
+  let section = 'curve';
+
+  if (formData.has('padding') || formData.has('slope') || formData.has('perfectPoints')) {
+    const curve = { padding: number('padding'), slope: number('slope'), perfectPoints: number('perfectPoints') };
+    for (const [name, value] of Object.entries(curve)) {
+      if (value !== undefined && !Number.isFinite(value)) failBack(back, `${name} must be a number.`);
+    }
+    const parsed = parsePointsCurve(curve);
+    // parsePointsCurve falls back to the defaults on nonsense; here nonsense is worth saying out loud.
+    if (
+      (curve.padding !== undefined && curve.padding !== parsed.padding) ||
+      (curve.slope !== undefined && curve.slope !== parsed.slope) ||
+      (curve.perfectPoints !== undefined && curve.perfectPoints !== parsed.perfectPoints)
+    ) {
+      failBack(back, 'Padding must be above 0 and at most 1, slope 0 or more, and perfect points above 0.');
+    }
+    data.pointsCurve = parsed;
   }
 
-  const curve = { padding: number('padding'), slope: number('slope'), perfectPoints: number('perfectPoints') };
-  for (const [name, value] of Object.entries(curve)) {
-    if (value !== undefined && !Number.isFinite(value)) failBack(back, `${name} must be a number.`);
-  }
-  const parsed = parsePointsCurve(curve);
-  // parsePointsCurve falls back to the defaults on nonsense; here nonsense is worth saying out loud.
-  if (
-    (curve.padding !== undefined && curve.padding !== parsed.padding) ||
-    (curve.slope !== undefined && curve.slope !== parsed.slope) ||
-    (curve.perfectPoints !== undefined && curve.perfectPoints !== parsed.perfectPoints)
-  ) {
-    failBack(back, 'Padding must be above 0 and at most 1, slope 0 or more, and perfect points above 0.');
+  if (formData.has('toleranceSeconds')) {
+    const toleranceSeconds = number('toleranceSeconds') ?? DEFAULT_TOLERANCE_SECONDS;
+    if (!(toleranceSeconds >= 1 && toleranceSeconds <= 600)) failBack(back, 'Allow between 1 and 600 seconds between starts.');
+    data.scorePull = { toleranceSeconds };
+    if (!data.pointsCurve) section = 'pull';
   }
 
-  const toleranceSeconds = number('toleranceSeconds') ?? DEFAULT_TOLERANCE_SECONDS;
-  if (!(toleranceSeconds >= 1 && toleranceSeconds <= 600)) failBack(back, 'Allow between 1 and 600 seconds between starts.');
-
-  await prisma.tournament.update({
-    where: { id: tournamentId },
-    data: { pointsCurve: parsed, scorePull: { toleranceSeconds } },
-  });
+  await prisma.tournament.update({ where: { id: tournamentId }, data });
   revalidatePath('/t', 'layout');
-  redirect(`${back}?saved=1`);
+  redirect(`${back}?saved=${section}#${section === 'pull' ? 'pull' : 'curve'}`);
 }
 
 /**
@@ -435,6 +468,8 @@ export interface PlayerCandidate {
   platform?: 'beatleader' | 'scoresaber';
   /** Anything worth knowing before picking them, e.g. whose it is now. */
   note?: string;
+  /** Set when they cannot be picked, for a reason other than being on the team: what to show instead. */
+  unavailable?: string;
 }
 
 /**
@@ -660,18 +695,48 @@ export async function addPlayerToTeam(
   if ('error' in found) return found;
   const player = found.player;
 
-  // Max + 1 rather than the count: removals leave gaps, and a count would then
-  // hand out an order that is already taken.
-  const last = await prisma.teamMember.aggregate({ where: { teamId }, _max: { order: true } });
-  await prisma.teamMember.upsert({
-    where: { teamId_playerId: { teamId, playerId: player.id } },
-    create: { teamId, playerId: player.id, order: (last._max.order ?? -1) + 1 },
-    update: {},
-  });
+  await joinTeam(teamId, player.id);
 
   await requestRefresh(undefined, actor.userId);
   revalidatePath('/t', 'layout');
   return {};
+}
+
+/**
+ * Put a player on a roster, however they were found.
+ *
+ * The first player on a team is its captain until an organiser says otherwise.
+ * Joining a team takes them out of the tournament's player pool: the pool is
+ * for players still waiting for one.
+ */
+async function joinTeam(teamId: string, playerId: string): Promise<void> {
+  const team = await prisma.team.findUnique({
+    where: { id: teamId },
+    select: { playerPool: true, division: { select: { tournamentId: true } }, _count: { select: { members: true } } },
+  });
+  if (!team) return;
+  // Max + 1 rather than the count: removals leave gaps, and a count would then
+  // hand out an order that is already taken.
+  const last = await prisma.teamMember.aggregate({ where: { teamId }, _max: { order: true } });
+  await prisma.$transaction([
+    prisma.teamMember.upsert({
+      where: { teamId_playerId: { teamId, playerId } },
+      create: {
+        teamId,
+        playerId,
+        order: (last._max.order ?? -1) + 1,
+        role: !team.playerPool && team._count.members === 0 ? 'CAPTAIN' : 'PLAYER',
+      },
+      update: {},
+    }),
+    ...(team.playerPool
+      ? []
+      : [
+          prisma.teamMember.deleteMany({
+            where: { playerId, team: { playerPool: true, division: { tournamentId: team.division.tournamentId } } },
+          }),
+        ]),
+  ]);
 }
 
 /**
@@ -1030,12 +1095,7 @@ export async function addPlayerFromScoreSaber(teamId: string, scoreSaberId: stri
     await prisma.player.update({ where: { id: player.id }, data: { scoreSaberId, ssOptOut: false, ssBackfilledAt: null, ssSyncedAt: null } });
   }
 
-  const last = await prisma.teamMember.aggregate({ where: { teamId }, _max: { order: true } });
-  await prisma.teamMember.upsert({
-    where: { teamId_playerId: { teamId, playerId: player.id } },
-    create: { teamId, playerId: player.id, order: (last._max.order ?? -1) + 1 },
-    update: {},
-  });
+  await joinTeam(teamId, player.id);
   await requestRefresh(undefined, actor.userId);
   revalidatePath('/t', 'layout');
   return {};
@@ -1118,4 +1178,61 @@ export async function searchScoreSaberForMember(
       note: owners.has(c.beatLeaderId) ? `linked to ${owners.get(c.beatLeaderId)} - picking it moves it here` : undefined,
     })),
   };
+}
+
+/**
+ * Ask BeatLeader again whether players show their runs - after someone has
+ * turned on "Show my stats publicly" and nobody wants to wait for the daily
+ * re-check. One pool map per player is enough to tell: BeatLeader answers
+ * 401 to anyone private. Whoever turns out public has their runs fetched by
+ * the worker straight away.
+ *
+ * Organisers may check anyone in the tournament; a player may check themself.
+ */
+export async function recheckRunsVisibility(
+  tournamentId: string,
+  playerId?: string,
+): Promise<{ error?: string; nowPublic?: string[]; stillPrivate?: string[] }> {
+  const actor = await getActor(tournamentId);
+  if (!actor) return { error: 'Sign in first.' };
+  const members = await prisma.teamMember.findMany({
+    where: { team: { division: { tournamentId } }, ...(playerId ? { playerId } : {}) },
+    select: { player: { select: { id: true, name: true, beatLeaderId: true, userId: true } } },
+    distinct: ['playerId'],
+  });
+  if (members.length === 0) return { error: 'Nobody to check.' };
+  const own = playerId != null && members[0]!.player.userId === actor.userId;
+  if (!own && !can(actor, 'MANAGE_TEAMS')) return { error: 'Only organisers can check other players.' };
+
+  const now = Date.now();
+  if (now - (lastRefreshAt.get(`runs:${actor.userId}`) ?? 0) < 5_000) return { error: 'Give it a few seconds between checks.' };
+  lastRefreshAt.set(`runs:${actor.userId}`, now);
+
+  const probe = await prisma.poolMap.findFirst({ where: { pool: { tournamentId } }, select: { leaderboardId: true } });
+  if (!probe) return { error: 'The tournament needs a map pool before runs can be checked.' };
+
+  const nowPublic: string[] = [];
+  const stillPrivate: string[] = [];
+  const failed: string[] = [];
+  await Promise.all(
+    members.map(async ({ player }) => {
+      try {
+        const answer = await beatLeader.getPlayerMapAttempts(player.beatLeaderId, probe.leaderboardId);
+        const visible = answer !== 'private';
+        await prisma.player.update({
+          where: { id: player.id },
+          data: { attemptsPublic: visible, attemptsCheckedAt: new Date() },
+        });
+        (visible ? nowPublic : stillPrivate).push(player.name);
+      } catch {
+        failed.push(player.name);
+      }
+    }),
+  );
+  if (failed.length === members.length) return { error: 'BeatLeader did not answer. Try again in a moment.' };
+
+  const publicIds = members.filter((m) => nowPublic.includes(m.player.name)).map((m) => m.player.id);
+  if (publicIds.length) await requestAttempts(publicIds, actor.userId);
+  revalidatePath('/t', 'layout');
+  return { nowPublic: nowPublic.sort(), stillPrivate: stillPrivate.sort() };
 }

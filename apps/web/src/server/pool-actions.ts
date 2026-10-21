@@ -101,7 +101,8 @@ export async function makeDuosFromPool(formData: FormData): Promise<void> {
             name: nameFor(a.player.name, b.player.name),
             color,
             colorSecondary,
-            members: { create: [a, b].map((m, order) => ({ playerId: m.playerId, order })) },
+            // Both of a duo are its captains: either may pick, ban and set lineups.
+            members: { create: [a, b].map((m, order) => ({ playerId: m.playerId, order, role: 'CAPTAIN' as const })) },
           },
         }),
         prisma.teamMember.deleteMany({ where: { id: { in: [a.id, b.id] } } }),

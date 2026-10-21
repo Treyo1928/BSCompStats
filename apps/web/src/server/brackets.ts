@@ -91,12 +91,14 @@ export async function loadBracket(bracketId: string): Promise<(BracketView & { t
               state: true,
               scoring: true,
               pointsCurve: true,
+              replayCounting: true,
+              doubleFailedRuns: true,
               teamAId: true,
               teamBId: true,
               maps: {
                 select: {
                   isTiebreaker: true,
-                  attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } },
+                  attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true, attempt: true, failed: true } },
                 },
               },
             },

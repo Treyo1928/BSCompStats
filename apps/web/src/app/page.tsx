@@ -21,23 +21,15 @@ export default async function HomePage() {
 
   const tournaments = await prisma.tournament.findMany({
     // Private tournaments are listed only for the people who can open them:
-    // site admins, members, and anyone whose linked player is on a roster.
+    // site admins and the tournament's staff and viewers. Being on a roster
+    // does not count. Unlisted ones the same way: the rest of the world needs
+    // the link.
     where:
       user?.role === 'ADMIN'
         ? {}
         : user
-          ? {
-              OR: [
-                { isPublic: true },
-                { members: { some: { userId: user.id } } },
-                {
-                  divisions: {
-                    some: { teams: { some: { members: { some: { player: { userId: user.id } } } } } },
-                  },
-                },
-              ],
-            }
-          : { isPublic: true },
+          ? { OR: [{ isPublic: true, unlisted: false }, { members: { some: { userId: user.id } } }] }
+          : { isPublic: true, unlisted: false },
     orderBy: { createdAt: 'desc' },
     select: {
       id: true,
@@ -45,6 +37,7 @@ export default async function HomePage() {
       name: true,
       description: true,
       isPublic: true,
+      unlisted: true,
       _count: { select: { matches: true, pools: true, divisions: true } },
       pools: {
         take: 1,
@@ -101,7 +94,7 @@ export default async function HomePage() {
                           <p className="line-clamp-2 text-sm text-muted">{t.description}</p>
                         )}
                       </div>
-                      {!t.isPublic && <Badge>Private</Badge>}
+                      {!t.isPublic ? <Badge>Private</Badge> : t.unlisted && <Badge>Unlisted</Badge>}
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <p className="flex gap-3 text-xs text-muted">

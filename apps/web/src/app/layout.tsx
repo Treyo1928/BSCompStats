@@ -38,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen">
         <SiteHeader />
         <ViewAsBanner />
-        <main className="mx-auto w-full max-w-7xl px-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4 sm:px-4 sm:pt-6">
+        <main className="mx-auto w-full max-w-7xl px-3 has-[>[data-wide]]:max-w-[100rem] pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4 sm:px-4 sm:pt-6">
           {children}
         </main>
       </body>

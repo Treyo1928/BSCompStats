@@ -130,8 +130,9 @@ export function PullScores({
                       />
                       <span className="tabular">{run.score.toLocaleString('en-US')}</span>
                       <span className="tabular text-muted">{pct(run.accuracy)}</span>
-                      <span className={run.endType === 'CLEAR' ? 'text-muted' : 'text-amber-300'}>
+                      <span className={run.endType === 'CLEAR' && !run.failed ? 'text-muted' : 'text-amber-300'}>
                         {run.endType === 'CLEAR' ? 'cleared' : `${run.endType.toLowerCase()} at ${clock(run.time)}`}
+                        {run.failed && ' · failed (NF), counts ×2'}
                       </span>
                       <span className="text-faint">ended {agoText(run.timeset)}</span>
                     </label>

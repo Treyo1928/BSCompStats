@@ -8,7 +8,7 @@ import { assertCan, can } from './match-helpers';
 import { getActor } from './session';
 import { failBack } from './form-errors';
 import { announceMatchChange, requestRefresh } from '@/lib/redis';
-import { cleanUpAdHocTeams, createAdHocTeam, hexColor, openMatch, SIDE_COLORS } from './custom-teams';
+import { cleanUpAdHocTeams, createAdHocTeam, hexColor, openMatch, SIDE_COLORS, parseCoinFlip } from './custom-teams';
 
 /**
  * Custom matches: sides that exist for the match rather than the tournament,
@@ -98,7 +98,7 @@ export async function createCustomMatch(formData: FormData): Promise<void> {
       poolId: String(formData.get('poolId')),
       teamAId: teamA.id,
       teamBId: teamB.id,
-      coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+      coinFlip: parseCoinFlip(formData.get('coinFlip')),
       blindLineups: formData.get('blindLineups') === 'on',
       name: String(formData.get('name') ?? ''),
     });
@@ -323,7 +323,7 @@ export async function startDraftMatch(formData: FormData): Promise<void> {
     poolId: String(formData.get('poolId')),
     teamAId: draft.teamAId,
     teamBId: draft.teamBId,
-    coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+    coinFlip: parseCoinFlip(formData.get('coinFlip')),
     blindLineups: formData.get('blindLineups') === 'on',
   });
   if ('error' in opened) failBack(back, opened.error);

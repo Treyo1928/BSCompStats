@@ -1,5 +1,6 @@
 import {
   parsePointsCurve,
+  parseReplayCounting,
   parseScoringMode,
   tallyMaps as tallyUnder,
   type RecordedRun,
@@ -7,8 +8,13 @@ import {
 } from '@bscs/core/match';
 
 /** How a match is scored, from its row. */
-export function scoringOf(match: { scoring: string; pointsCurve: unknown }): Scoring {
-  return { mode: parseScoringMode(match.scoring), curve: parsePointsCurve(match.pointsCurve) };
+export function scoringOf(match: { scoring: string; pointsCurve: unknown; replayCounting: string; doubleFailedRuns: boolean }): Scoring {
+  return {
+    mode: parseScoringMode(match.scoring),
+    curve: parsePointsCurve(match.pointsCurve),
+    replays: parseReplayCounting(match.replayCounting),
+    doubleFails: match.doubleFailedRuns,
+  };
 }
 
 /**
@@ -37,7 +43,7 @@ export function tallyMaps(
   maps: ReadonlyArray<{ isTiebreaker: boolean; attempts: readonly RecordedRun[] }>,
   teamAId: string,
   teamBId: string,
-  match: { scoring: string; pointsCurve: unknown },
+  match: { scoring: string; pointsCurve: unknown; replayCounting: string; doubleFailedRuns: boolean },
 ): { a: number; b: number } {
   return tallyUnder(
     maps.map((m) => ({ isTiebreaker: m.isTiebreaker, perfectAcc: null, attempts: m.attempts })),
@@ -48,4 +54,4 @@ export function tallyMaps(
 }
 
 /** A select for what `tallyMaps` needs of a match's maps. */
-export const TALLY_ATTEMPTS = { select: { teamId: true, playerId: true, score: true, accuracy: true } } as const;
+export const TALLY_ATTEMPTS = { select: { teamId: true, playerId: true, score: true, accuracy: true, attempt: true, failed: true } } as const;

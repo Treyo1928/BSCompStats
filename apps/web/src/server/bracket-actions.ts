@@ -7,7 +7,7 @@ import { assertCan, can } from '@bscs/core/match';
 import { generateBracket, parseBracketFormat, shuffle, BRACKET_FORMAT_NAMES } from '@bscs/core/bracket';
 import { getActor } from './session';
 import { failBack } from './form-errors';
-import { openMatch } from './custom-teams';
+import { openMatch, parseCoinFlip } from './custom-teams';
 import { announceMatchChange } from '@/lib/redis';
 import { finishingOrder, loadBracket } from './brackets';
 import { nameSlots } from '@/lib/bracket-layout';
@@ -161,9 +161,11 @@ export async function startBracketMatch(formData: FormData): Promise<void> {
     poolId: view.pool.id,
     teamAId: slot.teamA.id,
     teamBId: slot.teamB.id,
-    coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+    coinFlip: parseCoinFlip(formData.get('coinFlip')),
     blindLineups: formData.get('blindLineups') === 'on',
-    name: `${view.name} · ${nameSlots(view.slots).slots.get(slot.key) ?? 'Match'}: ${slot.teamA.name} vs ${slot.teamB.name}`,
+    name:
+      String(formData.get('name') ?? '').trim().slice(0, 80) ||
+      `${view.name} · ${nameSlots(view.slots).slots.get(slot.key) ?? 'Match'}: ${slot.teamA.name} vs ${slot.teamB.name}`,
     scoring: formData.get('scoring') ? String(formData.get('scoring')) : null,
   });
   if ('error' in opened) failBack(back, opened.error);

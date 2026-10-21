@@ -179,6 +179,20 @@ export function choose(target: PullTarget, runs: PlayerRuns[]): PullResult {
  * A score someone typed in is theirs to change: a pull never overwrites one.
  * Returns the players actually written.
  */
+function hasNoFail(modifiers: string): boolean {
+  return modifiers.split(',').some((m) => m.trim().toUpperCase() === 'NF');
+}
+
+/** What a run counts for in a match: as scored, or a No Fail fail doubled back. */
+export function countedRun(run: PulledRun, maxScore: number): { score: number; accuracy: number; failed: boolean } {
+  const failed = hasNoFail(run.modifiers);
+  const shown = Math.max(0, Math.round(run.baseScore));
+  const score = failed ? (maxScore > 0 ? Math.min(maxScore, shown * 2) : shown * 2) : shown;
+  const accuracy =
+    maxScore > 0 ? Math.min(1, score / maxScore) : failed ? Math.min(1, run.accuracy * 2) : run.accuracy;
+  return { score, accuracy, failed };
+}
+
 export async function writeRuns(
   target: PullTarget,
   chosen: ReadonlyArray<{ playerId: string; run: PulledRun }>,
@@ -191,14 +205,17 @@ export async function writeRuns(
   const written = new Set<string>();
   const writes = [];
   for (const { playerId, run } of chosen) {
-    const score = Math.max(0, Math.round(run.baseScore));
-    const accuracy = target.maxScore > 0 ? Math.min(1, score / target.maxScore) : run.accuracy;
+    // BeatLeader tags a run NF only when No Fail kicked in - the player died -
+    // and the score it holds is already halved. Matches are played with No
+    // Fail on, so the run counts doubled back, flagged as a fail.
+    const { score, accuracy, failed } = countedRun(run, target.maxScore);
     for (const lineup of target.lineups) {
       if (!lineup.playerIds.includes(playerId) || isTyped(lineup.teamId, playerId)) continue;
       written.add(playerId);
       const data = {
         score,
         accuracy,
+        failed,
         source: 'AUTO',
         beatLeaderScoreId: run.source === 'SCORE' ? run.id : null,
         beatLeaderAttemptId: run.source === 'RUN' ? run.id : null,

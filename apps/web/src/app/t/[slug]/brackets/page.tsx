@@ -126,7 +126,9 @@ export default async function BracketsPage({
                 <Field label="Format">
                   <select name="format" className={inputClass} defaultValue="SINGLE_ELIM">
                     {(['ROUND_ROBIN', 'SINGLE_ELIM', 'DOUBLE_ELIM'] as const).map((f) => (
-                      <option key={f} value={f}>
+                      // data-round-robin: what the form's CSS looks for to hide seeding (an underscore in
+                      // the value would not survive Tailwind's arbitrary-variant syntax).
+                      <option key={f} value={f} data-round-robin={f === 'ROUND_ROBIN' ? '' : undefined}>
                         {BRACKET_FORMAT_NAMES[parseBracketFormat(f)]}
                         {f === 'DOUBLE_ELIM' ? ' (with a losers bracket)' : ''}
                       </option>
@@ -155,17 +157,24 @@ export default async function BracketsPage({
                   </span>
                 </label>
                 <div className="ml-6 space-y-2">
+                  {/* Seeding is for elimination. In a round robin everyone plays everyone once, so
+                      it is hidden as soon as Round robin is chosen - in CSS, so it needs no script. */}
+                  <p className="hidden text-xs text-faint [form:has(option[data-round-robin]:checked)_&]:block">
+                    Round robin: every team plays every other team once, so there is no seeding.
+                  </p>
+                  <div className="[form:has(option[data-round-robin]:checked)_&]:hidden">
                   <Field label="Seeding">
                     <select name="seeding" className={inputClass} defaultValue="MANUAL">
-                      <option value="MANUAL">By the numbers below (1 is the top seed)</option>
+                      <option value="MANUAL">Custom seeding (the numbers below, 1 is the top seed)</option>
                       <option value="RANDOM">At random</option>
                       <option value="PP">By their players&apos; average BeatLeader pp</option>
                     </select>
                   </Field>
+                  </div>
                   <div className="max-w-xl overflow-hidden rounded-lg border border-edge">
-                    <div className="grid grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 border-b border-edge bg-surface/60 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-faint">
+                    <div className="grid grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 border-b border-edge bg-surface/60 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-faint [form:has(option[data-round-robin]:checked)_&]:grid-cols-[2.5rem_minmax(0,1fr)_5rem]">
                       <span>In</span>
-                      <span>Seed</span>
+                      <span className="[form:has(option[data-round-robin]:checked)_&]:hidden">Seed</span>
                       <span>Team</span>
                       <span className="text-right">Players</span>
                     </div>
@@ -174,7 +183,7 @@ export default async function BracketsPage({
                         <li key={team.id}>
                           {/* The whole row is the checkbox's label: tap anywhere on a team to include or drop it. */}
                           <label
-                            className="grid cursor-pointer grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-raised/70 has-[:checked]:bg-raised/30"
+                            className="grid cursor-pointer grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-raised/70 has-[:checked]:bg-raised/30 [form:has(option[data-round-robin]:checked)_&]:grid-cols-[2.5rem_minmax(0,1fr)_5rem]"
                             style={{ borderLeft: `3px solid ${team.color}` }}
                           >
                             <input type="checkbox" name="teamId" value={team.id} defaultChecked className="h-4 w-4" />
@@ -183,7 +192,7 @@ export default async function BracketsPage({
                               inputMode="numeric"
                               defaultValue={i + 1}
                               aria-label={`${team.name}'s seed`}
-                              className="h-8 w-14 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none"
+                              className="h-8 w-14 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none [form:has(option[data-round-robin]:checked)_&]:hidden"
                             />
                             <span
                               className="truncate font-medium"
@@ -198,7 +207,7 @@ export default async function BracketsPage({
                       ))}
                     </ul>
                   </div>
-                  <p className="text-xs text-faint">Seed numbers are used when seeding is &ldquo;by the numbers&rdquo;.</p>
+                  <p className="text-xs text-faint [form:has(option[data-round-robin]:checked)_&]:hidden">Seed numbers are used with custom seeding.</p>
                 </div>
 
                 {brackets.length > 0 && (

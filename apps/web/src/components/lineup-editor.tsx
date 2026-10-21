@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { saveLineup } from '@/server/match-actions';
 import type { MatchScore } from '@/server/matches';
+import { goName } from '@/lib/goes';
 import { Avatar, Button, pct, num, teamInk } from './ui';
 
 /**
@@ -18,10 +19,13 @@ export function LineupEditor({
   selected,
   playersPerMap,
   scores,
+  goCount = 1,
+  doubleFails = false,
   canEdit,
   canOverride,
   hidden,
   ruleBreaks,
+  reveal,
 }: {
   matchId: string;
   matchMapId: string | null;
@@ -35,12 +39,18 @@ export function LineupEditor({
   selected: string[];
   playersPerMap: number;
   scores: MatchScore[];
+  /** Goes at the map so far: above 1, each score says which go it is from. */
+  goCount?: number;
+  /** A fail counts doubled back from No Fail's halving. */
+  doubleFails?: boolean;
   canEdit: boolean;
   canOverride: boolean;
   /** The rules this saved lineup was pushed through in spite of, if any. */
   ruleBreaks?: string;
   /** Set when this team's lineup is being kept from the viewer; says why. */
   hidden?: string;
+  /** For an organiser playing in the match: a deliberate look at the hidden card. */
+  reveal?: { href: string; label: string };
 }) {
   const [chosen, setChosen] = useState<string[]>(selected);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +89,15 @@ export function LineupEditor({
       </div>
 
       {hidden && <p className="px-1 py-2 text-xs text-muted">{hidden}</p>}
+      {hidden && reveal && (
+        <a
+          href={reveal.href}
+          className="block px-1 pb-1 text-[11px] text-amber-300 underline decoration-amber-300/40 underline-offset-2 hover:decoration-amber-300"
+          title="For correcting a mistake."
+        >
+          {reveal.label}
+        </a>
+      )}
       {ruleBreaks && !hidden && (
         <p
           className="mb-1 rounded-md bg-amber-500/12 px-2 py-1 text-[11px] text-amber-200"
@@ -119,12 +138,26 @@ export function LineupEditor({
                   title={[
                     score.source === 'AUTO' ? 'From BeatLeader' : 'Entered by hand',
                     score.endType && score.endType !== 'CLEAR' ? `run ${score.endType.toLowerCase()}` : null,
+                    score.failed
+                      ? doubleFails
+                        ? 'Failed: No Fail halved it, so it counts doubled'
+                        : 'Failed: No Fail kicked in; it counts as scored'
+                      : null,
+                    goCount > 1 ? `Counted from the ${goName(score.attempt, goCount).toLowerCase()}` : null,
                   ]
                     .filter(Boolean)
                     .join(' · ')}
                 >
+                  {goCount > 1 && (
+                    <span className="mr-1.5 rounded bg-edge px-1 text-[10px] font-semibold text-muted">{goName(score.attempt, goCount)}</span>
+                  )}
                   {score.points != null && <span className="mr-1.5 font-semibold text-ink">{score.points.toFixed(2)}</span>}
                   {num(score.score)} <span className="opacity-70">{pct(score.accuracy)}</span>
+                  {score.failed && (
+                    <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10px] font-semibold text-amber-300">
+                      {doubleFails ? 'NF ×2' : 'NF'}
+                    </span>
+                  )}
                   {score.endType && score.endType !== 'CLEAR' && <span className="ml-1 text-lose">✗</span>}
                 </span>
               )}

@@ -3,7 +3,6 @@ import { loadScores, runsPulse, scoreSaberPulse, type ScoreSource } from './scor
 import {
   applyScope,
   buildPlayerProfiles,
-  classifyFails,
   statsScopeSchema,
   DEFAULT_STATS_SCOPE,
   type PlayerProfile,
@@ -24,12 +23,6 @@ import {
 export interface TournamentData {
   profiles: Record<string, PlayerProfile>;
   scope: StatsScope;
-  /**
-   * Scores classified as abandoned runs, keyed by `failKey`. The one source of
-   * truth: the board reads this rather than re-deriving it. A low score on a
-   * map beyond the player is not in here.
-   */
-  failKeys: Set<string>;
   /** Why scores were left out of view. */
   excluded: Record<string, number>;
   scoreCount: number;
@@ -103,22 +96,12 @@ export async function buildTournamentData(
     const maxScores: Record<string, number> = {};
     for (const s of scores) maxScores[s.leaderboardId] = s.leaderboard.maxScore;
 
-    // Abandoned runs are classified over everything fetched, before scoping:
-    // the test compares a score with the player's own norm and with the rest
-    // of its map's column, and trimming either first would move the yardstick.
-    const flags = classifyFails(
-      scores.map((s) => ({ playerId: s.playerId, leaderboardId: s.leaderboardId, acc: s.accuracy })),
-    );
-    const failKeys = new Set<string>();
-    scores.forEach((s, i) => {
-      if (flags[i]) failKeys.add(failKey(s.playerId, s.leaderboardId));
-    });
-
+    // Every score counts as it was set, however low: nothing is set aside as
+    // an "abandoned run" (the user's rule - a bad run is still a run).
     const scoped: ScopedScore[] = scores.map((s) => ({
       playerId: s.playerId,
       leaderboardId: s.leaderboardId,
       acc: s.accuracy,
-      isDnf: failKeys.has(failKey(s.playerId, s.leaderboardId)),
       timeset: s.timeset,
       inPool: poolLeaderboardIds.has(s.leaderboardId),
       ranked: s.leaderboard.ranked,
@@ -130,14 +113,13 @@ export async function buildTournamentData(
         ? 0
         : await prisma.player.count({ where: { id: { in: playerIds }, attemptsPublic: true } });
 
-    const inView = new Set(observations.map((o) => failKey(o.playerId, o.leaderboardId)));
+    const inView = new Set(observations.map((o) => scoreKey(o.playerId, o.leaderboardId)));
     const detailed: ScoreDetail[] = scores
-      .filter((s) => inView.has(failKey(s.playerId, s.leaderboardId)))
+      .filter((s) => inView.has(scoreKey(s.playerId, s.leaderboardId)))
       .map((s) => ({
         playerId: s.playerId,
         leaderboardId: s.leaderboardId,
         acc: s.accuracy,
-        isDnf: failKeys.has(failKey(s.playerId, s.leaderboardId)),
         missedNotes: s.missedNotes,
         badCuts: s.badCuts,
         fullCombo: s.fullCombo,
@@ -151,7 +133,6 @@ export async function buildTournamentData(
     const built: TournamentData = {
       profiles,
       scope,
-      failKeys,
       excluded,
       scoreCount: observations.length,
       runsKnownFor,
@@ -174,5 +155,6 @@ export async function buildTournamentData(
   }
 }
 
-export const failKey = (playerId: string, leaderboardId: string): string =>
+/** One player's score on one map, as a key. */
+export const scoreKey = (playerId: string, leaderboardId: string): string =>
   `${playerId}::${leaderboardId}`;

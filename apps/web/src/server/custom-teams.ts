@@ -1,6 +1,7 @@
+import { randomInt } from 'node:crypto';
 import { prisma, type Prisma } from '@bscs/db';
 import { assertPoolIsBigEnough, parseFormat, PickBanError } from './match-helpers';
-import { parsePointsCurve, parseScoringMode } from '@bscs/core/match';
+import { parsePointsCurve, parseReplayCounting, parseScoringMode } from '@bscs/core/match';
 
 /**
  * Match-only ("ad hoc") teams, and the one way a match gets opened.
@@ -104,12 +105,20 @@ export async function cleanUpAdHocTeams(teamIds: readonly string[]): Promise<voi
  * pool can carry the format's pick/ban to the end, rather than stranding two
  * captains halfway through with nothing left to pick.
  */
+export type CoinFlip = 'A' | 'B' | 'RANDOM';
+
+/** A form's coin flip field: "A", "B", or "RANDOM" for the server to flip. Anything else is A. */
+export function parseCoinFlip(value: FormDataEntryValue | null): CoinFlip {
+  return value === 'B' ? 'B' : value === 'RANDOM' ? 'RANDOM' : 'A';
+}
+
 export async function openMatch(input: {
   tournamentId: string;
   poolId: string;
   teamAId: string;
   teamBId: string;
-  coinFlip: 'A' | 'B';
+  /** Who won the coin flip, or RANDOM to have the server flip it. */
+  coinFlip: CoinFlip;
   blindLineups: boolean;
   name?: string;
   /** "ACCURACY" or "MATCH_POINTS"; the tournament's default where not given, and always where it is locked. */
@@ -125,7 +134,7 @@ export async function openMatch(input: {
     }),
     prisma.tournament.findUnique({
       where: { id: tournamentId },
-      select: { defaultFormat: true, matchScoring: true, scoringLocked: true, pointsCurve: true },
+      select: { defaultFormat: true, matchScoring: true, scoringLocked: true, pointsCurve: true, replayCounting: true, doubleFailedRuns: true },
     }),
     prisma.team.findMany({
       where: { id: { in: [teamAId, teamBId] }, division: { tournamentId }, playerPool: false },
@@ -162,7 +171,8 @@ export async function openMatch(input: {
       teamAId,
       teamBId,
       // "A" or "B" rather than a team id, so a form cannot name a third team.
-      coinFlipWinnerId: input.coinFlip === 'B' ? teamBId : teamAId,
+      // RANDOM is flipped here, not in the browser, so neither side can rig it.
+      coinFlipWinnerId: (input.coinFlip === 'RANDOM' ? (randomInt(2) === 0 ? 'A' : 'B') : input.coinFlip) === 'B' ? teamBId : teamAId,
       name: input.name?.trim() || `${teamA.name} vs ${teamB.name}`,
       state: 'PICKBAN',
       startedAt: new Date(),
@@ -173,6 +183,9 @@ export async function openMatch(input: {
       // The curve as it stands now, kept with the match: retuning it later
       // must not rewrite a result that was already played.
       pointsCurve: parsePointsCurve(tournament.pointsCurve),
+      // Kept with the match too, so the result it was played under stands.
+      replayCounting: parseReplayCounting(tournament.replayCounting),
+      doubleFailedRuns: tournament.doubleFailedRuns,
     },
     select: { id: true },
   });

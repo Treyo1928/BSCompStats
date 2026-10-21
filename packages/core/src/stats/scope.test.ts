@@ -14,7 +14,6 @@ const daysAgo = (d: number) => NOW - d * 86_400;
 
 const score = (over: Partial<ScopedScore> & { playerId: string; leaderboardId: string }): ScopedScore => ({
   acc: 0.95,
-  isDnf: false,
   timeset: daysAgo(10),
   inPool: true,
   ranked: false,

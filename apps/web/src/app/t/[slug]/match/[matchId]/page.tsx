@@ -37,10 +37,15 @@ import {
   reopenMatch,
   closeMapScores,
   reopenMapScores,
+  setMatchUnlisted,
 } from '@/server/match-actions';
+import { RenameForm } from '@/components/rename-form';
+import { renameMatch } from '@/server/rename-actions';
 import { LineupEditor } from '@/components/lineup-editor';
+import { goName } from '@/lib/goes';
+import { MatchSummaryTable } from '@/components/match-summary-table';
 import { PullScores } from '@/components/pull-scores';
-import { PointsCalculator } from '@/components/points-calculator';
+import { CalculatorButton } from '@/components/calculator-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,13 +75,17 @@ export default async function MatchPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; matchId: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; reveal?: string; view?: string }>;
 }) {
   const { slug, matchId } = await params;
-  const { error: formError } = await searchParams;
+  const { error: formError, reveal, view: viewParam } = await searchParams;
+  // Summary: the whole match in one table. Detailed: a card per map, where
+  // lineups are set and scores pulled. A finished match opens on its summary.
+  const viewChosen = viewParam === 'summary' || viewParam === 'detailed' ? viewParam : null;
 
   const match = await loadMatch(matchId);
   if (!match || match.tournament.slug !== slug) notFound();
+  const view = viewChosen ?? (match.state === 'COMPLETE' ? 'summary' : 'detailed');
 
   const actor = await getActorOrAnonymous(match.tournament.id);
   if (!can(actor, 'VIEW', { isPublic: match.tournament.isPublic })) notFound();
@@ -101,7 +110,8 @@ export default async function MatchPage({
         : null;
 
   // Hidden lineups: until both teams have set every map, each side sees only
-  // its own. Organisers see and set both, even when playing in the match.
+  // its own. That holds for an organiser playing in the match too - unless
+  // they choose to look, for a correction; staff with no side see everything.
   const rosterSpots = actor.userId
     ? await prisma.teamMember.findMany({
         where: { teamId: { in: [match.teamA.id, match.teamB.id] }, player: { userId: actor.userId } },
@@ -121,8 +131,10 @@ export default async function MatchPage({
       ),
     );
   const lineupsRevealed = !match.blindLineups || everyLineupSet || match.state === 'COMPLETE';
-  // Organisers see and set both cards, even while playing in the match themselves.
-  const canSeeLineup = (teamId: string) => lineupsRevealed || isStaff(actor) || mySides.has(teamId);
+  const revealing = reveal === '1' && isStaff(actor) && mySides.size > 0 && !lineupsRevealed;
+  const canSeeLineup = (teamId: string) =>
+    lineupsRevealed || (mySides.size > 0 ? mySides.has(teamId) || revealing : isStaff(actor));
+  const mayReveal = isStaff(actor) && mySides.size > 0 && !lineupsRevealed;
 
   const replaysUsed = new Map<string, number>();
   for (const pm of match.plannedMaps) {
@@ -130,6 +142,10 @@ export default async function MatchPage({
   }
 
   const coverOf = new Map(match.pool.maps.map((m) => [m.poolMapId, m.coverImage]));
+  // Shown at the end of the pick and ban list, so nobody takes it for a pick.
+  const tiebreaker =
+    match.plannedMaps.find((m) => m.isTiebreaker)?.map ??
+    (match.format.tiebreaker === 'DESIGNATED' ? (match.pool.maps.find((m) => m.isTiebreaker) ?? null) : null);
   const stateLabel: Record<string, string> = {
     SETUP: 'Setup',
     PICKBAN: 'Pick / ban',
@@ -137,8 +153,27 @@ export default async function MatchPage({
     COMPLETE: 'Final',
   };
 
+  // Links between the two views keep an organiser's reveal.
+  const viewHref = (v: 'summary' | 'detailed') => {
+    const q = new URLSearchParams({ view: v });
+    if (reveal === '1') q.set('reveal', '1');
+    const qs = q.toString();
+    return `/t/${slug}/match/${match.id}${qs ? `?${qs}` : ''}`;
+  };
+  // What the calculator can work on: the maps being played, or the pool before any are picked.
+  const calcMaps = (match.plannedMaps.length > 0 ? match.plannedMaps.map((pm) => pm.map) : match.pool.maps).map((m) => ({
+    id: m.poolMapId,
+    name: m.name,
+    difficulty: m.difficultyLabel,
+    maxScore: m.maxScore,
+    perfectAcc: m.perfectAcc,
+  }));
+  // In the summary, pick and ban shows only while there is one to make.
+  const showPickBan = view === 'detailed' || match.pending != null;
+
   return (
-    <div className="space-y-6">
+    // data-wide: the match page may use the full width of a large screen (see the root layout).
+    <div data-wide className="space-y-6">
       <MatchLive matchId={match.id} />
       <PageHeader
         crumbs={[{ label: match.tournament.name, href: `/t/${slug}` }]}
@@ -152,11 +187,44 @@ export default async function MatchPage({
                 {match.coinFlipWinnerId === match.teamA.id ? match.teamA.name : match.teamB.name}
               </>
             )}
+            <ScoringNote match={match} />
           </>
         }
         actions={
           <>
             <LiveBadge poolId={match.pool.id} />
+            {/* In the detailed view each map has its own. */}
+            {(view === 'summary' || match.plannedMaps.length === 0) && (
+              <CalculatorButton
+                maps={calcMaps}
+                curve={match.scoring.curve}
+                showPoints={match.scoring.mode === 'MATCH_POINTS'}
+                className="h-9 px-3 text-sm"
+              />
+            )}
+            {match.unlisted && (
+              <Badge title="Left off the tournament's match lists. Anyone with the link can still open it.">Unlisted</Badge>
+            )}
+            {can(actor, 'MANAGE_TOURNAMENT') && (
+              <>
+                <RenameForm action={renameMatch} idName="matchId" id={match.id} name={match.name} />
+                <form action={setMatchUnlisted}>
+                  <input type="hidden" name="matchId" value={match.id} />
+                  {!match.unlisted && <input type="hidden" name="unlisted" value="on" />}
+                  <Button
+                    variant="ghost"
+                    type="submit"
+                    title={
+                      match.unlisted
+                        ? 'Show it in the tournament\'s match lists again'
+                        : 'Leave it off the match lists: only staff, the two teams and anyone with the link will see it'
+                    }
+                  >
+                    {match.unlisted ? 'List' : 'Unlist'}
+                  </Button>
+                </form>
+              </>
+            )}
             {can(actor, 'CREATE_MATCH') && (
               <form action={deleteMatch}>
                 <input type="hidden" name="matchId" value={match.id} />
@@ -174,6 +242,14 @@ export default async function MatchPage({
 
       {/* Score and replay actions report back here; without this the page just reloaded and the message was lost. */}
       <FormError message={formError} />
+      {revealing && (
+        <p className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+          You are seeing both teams&apos; hidden lineups as an organiser, to make a correction.{' '}
+          <Link href={`/t/${slug}/match/${match.id}`} scroll={false} className="underline underline-offset-2">
+            Hide them again
+          </Link>
+        </p>
+      )}
 
       {/* Scoreboard */}
       <section
@@ -214,7 +290,40 @@ export default async function MatchPage({
         </p>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_21rem]">
+      <nav aria-label="Layout" className="flex items-center gap-2 text-xs">
+        <span className="text-faint">Layout</span>
+        <span className="inline-flex rounded-lg border border-edge bg-panel p-0.5">
+          {(
+            [
+              ['summary', 'Summary', 'Every map, lineup and score in one table'],
+              ['detailed', 'Detailed', 'A card per map: set lineups, pull and enter scores'],
+            ] as const
+          ).map(([v, label, title]) => (
+            <Link
+              key={v}
+              href={viewHref(v)}
+              scroll={false}
+              title={title}
+              aria-current={view === v ? 'page' : undefined}
+              className={`rounded-md px-3 py-1.5 font-medium transition ${
+                view === v ? 'bg-accent/20 text-ink ring-1 ring-inset ring-accent/40' : 'text-muted hover:text-ink'
+              }`}
+            >
+              {label}
+            </Link>
+          ))}
+        </span>
+      </nav>
+
+      {view === 'summary' && (
+        <MatchSummaryTable
+          match={match}
+          visible={new Set([match.teamA.id, match.teamB.id].filter(canSeeLineup))}
+          detailHref={viewHref('detailed')}
+        />
+      )}
+
+      {showPickBan && (
         <div className="space-y-6">
           {/* Pick / ban */}
           <Panel
@@ -235,7 +344,7 @@ export default async function MatchPage({
               ) : null
             }
           >
-            {match.actions.length === 0 ? (
+            {match.actions.length === 0 && !tiebreaker ? (
               <p className="text-sm text-muted">Nothing picked yet.</p>
             ) : (
               <ol className="flex flex-wrap gap-2">
@@ -282,6 +391,25 @@ export default async function MatchPage({
                     </li>
                   );
                 })}
+                {tiebreaker && (
+                  // Nobody picks it: it is what was left over, or the map the pool sets aside.
+                  <li
+                    className="flex items-center gap-2.5 rounded-lg border border-amber-400/40 bg-amber-500/10 py-1.5 pl-1.5 pr-3"
+                    title={
+                      match.format.tiebreaker === 'DESIGNATED'
+                        ? "The pool's tiebreaker map, set aside before pick and ban"
+                        : 'The map left after every pick and ban. Played only if the match is level.'
+                    }
+                  >
+                    <MapCover src={tiebreaker.coverImage} size={36} />
+                    <span className="leading-tight">
+                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+                        Tiebreaker
+                      </span>
+                      <span className="block text-sm font-medium">{tiebreaker.name}</span>
+                    </span>
+                  </li>
+                )}
               </ol>
             )}
 
@@ -339,7 +467,7 @@ export default async function MatchPage({
           </Panel>
 
           {/* Maps and lineups */}
-          {match.plannedMaps.length > 0 && (
+          {view === 'detailed' && match.plannedMaps.length > 0 && (
             <Panel
               title="Maps"
               subtitle="Set each team's players, then enter what they scored"
@@ -364,7 +492,8 @@ export default async function MatchPage({
                 </div>
               }
             >
-              <div className="space-y-4">
+              {/* Two to a row on a wide screen, so a whole match fits with less scrolling. */}
+              <div className="grid gap-4 xl:grid-cols-2">
                 {match.plannedMaps.map((planned) => {
                   const result = planned.result;
                   const winner =
@@ -380,7 +509,8 @@ export default async function MatchPage({
                   return (
                     <article
                       key={planned.poolMapId}
-                      className="overflow-hidden rounded-xl border border-edge"
+                      id={`map-${planned.poolMapId}`}
+                      className="scroll-mt-20 self-start overflow-hidden rounded-xl border border-edge"
                     >
                       {/* Cover art as the banner, blurred out so text stays readable. */}
                       <div className="relative">
@@ -426,9 +556,17 @@ export default async function MatchPage({
                             </div>
                           </div>
 
-                          {result.decided && (
-                            <MapScore match={match} planned={planned} winner={winner} loser={loser} />
-                          )}
+                          <div className="flex items-start gap-3">
+                            {result.decided && (
+                              <MapScore match={match} planned={planned} winner={winner} loser={loser} />
+                            )}
+                            <CalculatorButton
+                              maps={calcMaps}
+                              mapId={planned.poolMapId}
+                              curve={match.scoring.curve}
+                              showPoints={match.scoring.mode === 'MATCH_POINTS'}
+                            />
+                          </div>
                         </div>
                       </div>
 
@@ -451,6 +589,8 @@ export default async function MatchPage({
                             selected={canSeeLineup(team.id) ? (planned.lineups[team.id] ?? []) : []}
                             playersPerMap={match.format.playersPerMap}
                             scores={canSeeLineup(team.id) ? (planned.scores[team.id] ?? []) : []}
+                            goCount={Math.max(1, ...Object.values(planned.goes).map((g) => g.length))}
+                            doubleFails={match.scoring.doubleFails}
                             hidden={
                               canSeeLineup(team.id)
                                 ? undefined
@@ -461,9 +601,18 @@ export default async function MatchPage({
                             canEdit={canSeeLineup(team.id) && can(actor, 'SET_LINEUP', { teamId: team.id })}
                             canOverride={can(actor, 'OVERRIDE_RULES', { teamId: team.id })}
                             ruleBreaks={canSeeLineup(team.id) ? planned.ruleBreaks[team.id] : undefined}
+                            reveal={
+                              !canSeeLineup(team.id) && mayReveal
+                                ? { href: `/t/${slug}/match/${match.id}?reveal=1`, label: `Reveal ${team.name}'s lineup (organiser)` }
+                                : undefined
+                            }
                           />
                         ))}
                       </div>
+
+                      {Object.values(planned.goes).some((g) => g.length > 1) && (
+                        <RunsBreakdown match={match} planned={planned} visible={canSeeLineup} />
+                      )}
 
                       {/* Scores and replays */}
                       {planned.matchMapId && (
@@ -477,7 +626,7 @@ export default async function MatchPage({
                               ))}
                               <span>
                                 Both teams play the map again; pull or enter the new scores once it is
-                                over. Each player&apos;s best run counts.
+                                over. {replayRule(match)}
                               </span>
                               {can(actor, 'UNDO_ACTION') && match.state !== 'COMPLETE' && (
                                 <form action={cancelReplay}>
@@ -633,20 +782,41 @@ export default async function MatchPage({
                                             <div key={playerId} className="flex items-center gap-2 text-xs">
                                               <span className="w-20 shrink-0 truncate text-muted sm:w-24">{name}</span>
                                               {runLabels.map((label, index) => (
-                                                <input
-                                                  key={label}
-                                                  name={`score:${playerId}:${index + 1}`}
-                                                  inputMode="numeric"
-                                                  autoComplete="off"
-                                                  defaultValue={entered[playerId]?.[index + 1] ?? ''}
-                                                  placeholder="Score"
-                                                  aria-label={`${name}, ${label.toLowerCase()}`}
-                                                  className={`${inputClass} h-8 min-w-0 flex-1 tabular`}
-                                                />
+                                                <span key={label} className="flex min-w-0 flex-1 items-center gap-1">
+                                                  <input
+                                                    name={`score:${playerId}:${index + 1}`}
+                                                    inputMode="numeric"
+                                                    autoComplete="off"
+                                                    defaultValue={entered[playerId]?.[index + 1]?.shown ?? ''}
+                                                    placeholder="Score"
+                                                    aria-label={`${name}, ${label.toLowerCase()}`}
+                                                    className={`${inputClass} h-8 min-w-0 flex-1 tabular`}
+                                                  />
+                                                  <label
+                                                    className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 text-[10px] font-medium text-muted has-[:checked]:text-amber-300"
+                                                    title={
+                                                      match.scoring.doubleFails
+                                                        ? 'They failed: No Fail halved the score on the results screen, so it counts double'
+                                                        : 'They failed: No Fail kicked in. The score counts as shown'
+                                                    }
+                                                  >
+                                                    <input
+                                                      type="checkbox"
+                                                      name={`failed:${playerId}:${index + 1}`}
+                                                      defaultChecked={entered[playerId]?.[index + 1]?.failed ?? false}
+                                                      aria-label={`${name} failed, ${label.toLowerCase()}`}
+                                                    />
+                                                    Failed
+                                                  </label>
+                                                </span>
                                               ))}
                                             </div>
                                           );
                                         })}
+                                        <p className="text-[11px] text-faint">
+                                          Type the score from the results screen. Tick Failed if they died
+                                          {match.scoring.doubleFails ? ': No Fail halved it, so it counts double.' : '.'}
+                                        </p>
                                         <Button variant="ghost" type="submit" className="h-8">
                                           Save {team.name} scores
                                         </Button>
@@ -659,8 +829,8 @@ export default async function MatchPage({
                                         <input type="hidden" name="matchMapId" value={planned.matchMapId!} />
                                         <input type="hidden" name="teamId" value={team.id} />
                                         <ConfirmButton
-                                          question={`Use ${team.name}'s replay on ${planned.map.name}?\n\nBoth teams play the map again. Each player's best run counts. ${team.name} ${match.format.rules.replaysPerTeam === 1 ? 'only gets one replay' : `gets ${match.format.rules.replaysPerTeam} replays`} this match.`}
-                                          title={`Spend ${team.name}'s replay on this map. Both teams play it again and each player's best run counts.`}
+                                          question={`Use ${team.name}'s replay on ${planned.map.name}?\n\nBoth teams play the map again. ${replayRule(match)} ${team.name} ${match.format.rules.replaysPerTeam === 1 ? 'only gets one replay' : `gets ${match.format.rules.replaysPerTeam} replays`} this match.`}
+                                          title={`Spend ${team.name}'s replay on this map. Both teams play it again. ${replayRule(match)}`}
                                           className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
                                         >
                                           Call {team.name}&apos;s replay on this map
@@ -681,26 +851,7 @@ export default async function MatchPage({
             </Panel>
           )}
         </div>
-
-        <aside className="space-y-6">
-          <ScoringPanel match={match} />
-          {match.plannedMaps.length > 0 || match.pool.maps.length > 0 ? (
-            <Panel title="Calculator" subtitle="Score, accuracy and points, each from the others">
-              <PointsCalculator
-                maps={(match.plannedMaps.length > 0 ? match.plannedMaps.map((pm) => pm.map) : match.pool.maps).map((m) => ({
-                  id: m.poolMapId,
-                  name: m.name,
-                  difficulty: m.difficultyLabel,
-                  maxScore: m.maxScore,
-                  perfectAcc: m.perfectAcc,
-                }))}
-                curve={match.scoring.curve}
-                showPoints={match.scoring.mode === 'MATCH_POINTS'}
-              />
-            </Panel>
-          ) : null}
-        </aside>
-      </div>
+      )}
     </div>
   );
 }
@@ -752,32 +903,29 @@ function TeamScore({
 /** The name match points go by for now. */
 const POINTS_NAME = 'match points';
 
-/** How the match is scored, said once. */
-function ScoringPanel({ match }: { match: MatchView }) {
+/** How the match is scored, in a line under its title. */
+function ScoringNote({ match }: { match: MatchView }) {
   const { mode, curve } = match.scoring;
   const missing = match.plannedMaps.filter((pm) => pm.map.perfectAcc == null).length;
+  if (mode !== 'MATCH_POINTS') {
+    return (
+      <span className="mt-1 block text-xs text-faint">
+        Scored on average accuracy: each team&apos;s mean accuracy decides a map.
+      </span>
+    );
+  }
   return (
-    <Panel title="Scoring" subtitle={mode === 'MATCH_POINTS' ? 'Match points' : 'Average accuracy'}>
-      {mode === 'MATCH_POINTS' ? (
-        <div className="space-y-2 text-sm text-muted">
-          <p>
-            Each player&apos;s accuracy is turned into {POINTS_NAME} on a curve first, and then the team&apos;s
-            points are averaged. Near 100% every point of accuracy is worth more, so a strong player carrying a
-            newer one is not dragged down by the gap alone.
-          </p>
-          <p className="text-xs text-faint">
-            A score at a map&apos;s perfect % is worth {curve.perfectPoints} points. Curve: padding {curve.padding},
-            slope {curve.slope}.
-            {missing > 0 &&
-              ` ${missing === 1 ? 'One map has' : `${missing} maps have`} no perfect % set, so ${missing === 1 ? 'it shows' : 'they show'} accuracy instead of points; the curve still decides ${missing === 1 ? 'it' : 'them'}.`}
-          </p>
-        </div>
-      ) : (
-        <p className="text-sm text-muted">
-          Each team&apos;s average accuracy on a map decides it, as the league sheets always have.
-        </p>
-      )}
-    </Panel>
+    <span className="mt-1 block text-xs text-faint">
+      <span
+        className="cursor-help underline decoration-dotted decoration-faint underline-offset-2"
+        title={`Near 100% every point of accuracy is worth more, so a strong player carrying a newer one is not dragged down by the gap alone. A score at a map's perfect % is worth ${curve.perfectPoints} points. Curve: padding ${curve.padding}, slope ${curve.slope}.`}
+      >
+        Scored on {POINTS_NAME}
+      </span>
+      : each player&apos;s accuracy goes through the curve, then the team&apos;s points are averaged.
+      {missing > 0 &&
+        ` ${missing === 1 ? 'One map has' : `${missing} maps have`} no perfect % set, so ${missing === 1 ? 'it shows' : 'they show'} accuracy instead of points.`}
+    </span>
   );
 }
 
@@ -808,6 +956,10 @@ function MapScore({
     </span>
   );
   const catchUp = planned.result.catchUp;
+  const loserId = winner ? (winner.id === match.teamA.id ? match.teamB.id : match.teamA.id) : null;
+  const alone = loserId
+    ? (planned.scores[loserId] ?? []).map((s) => ({ name: s.playerName, needed: planned.result.catchUpAlone[s.playerId] ?? null }))
+    : [];
   return (
     <div className="text-right">
       <p className="text-base tabular">
@@ -831,6 +983,107 @@ function MapScore({
           </span>
         )}
       </p>
+      {winner && loser && alone.length > 1 && (
+        <p
+          className="text-[11px] tabular text-faint"
+          title={`What each player on ${loser.name} would have needed to add on their own, the other${alone.length > 2 ? 's' : ''}' runs as they were.`}
+        >
+          Alone:{' '}
+          {alone.map((a, i) => (
+            <span key={a.name}>
+              {i > 0 && ' · '}
+              {a.name} {a.needed == null ? 'out of reach' : `+${pct(a.needed)}`}
+            </span>
+          ))}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How replays are counted, as a sentence. */
+function replayRule(match: MatchView): string {
+  return match.scoring.replays === 'BEST_EACH'
+    ? "Each player's best run counts, whichever go it came from."
+    : "Each team's best run as a pair counts - both players' scores from the same go.";
+}
+
+/**
+ * Every go at a replayed map, side by side: each player's score on it, what
+ * the team made of it together, and which go counted.
+ */
+function RunsBreakdown({
+  match,
+  planned,
+  visible,
+}: {
+  match: MatchView;
+  planned: MatchView['plannedMaps'][number];
+  visible: (teamId: string) => boolean;
+}) {
+  const points = match.scoring.mode === 'MATCH_POINTS';
+  const goCount = Math.max(1, ...Object.values(planned.goes).map((g) => g.length));
+  const counted = new Map((Object.values(planned.scores).flat()).map((s) => [`${s.playerId}:${s.attempt}`, true]));
+  return (
+    <div className="border-t border-edge p-3">
+      <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-faint">
+        Every run · {match.scoring.replays === 'BEST_EACH' ? 'each player’s best counts' : 'the best pair run counts'}
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {[match.teamA, match.teamB].map((team) => {
+          const goes = planned.goes[team.id] ?? [];
+          if (!visible(team.id) || goes.length === 0) return <div key={team.id} />;
+          return (
+            <div key={team.id} className="min-w-0 border-l-2 pl-2" style={{ borderColor: team.color }}>
+              <p className="mb-1 text-xs font-semibold" style={{ color: teamInk(team.color, team.colorSecondary) }}>
+                {team.name}
+              </p>
+              <ul className="space-y-1.5">
+                {goes.map((go) => (
+                  <li
+                    key={go.attempt}
+                    className={`rounded-md px-2 py-1 text-xs ${go.counted ? 'bg-accent/15 ring-1 ring-inset ring-accent/40' : 'bg-raised/40'}`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-medium">
+                        {goName(go.attempt, goCount)}
+                        {go.counted && <span className="ml-1.5 text-[10px] font-semibold uppercase text-accent">Counted</span>}
+                        {!go.complete && <span className="ml-1.5 text-[10px] text-faint">not everyone yet</span>}
+                      </span>
+                      <span className="tabular font-semibold" title={points ? 'Mean match points for this run' : 'Mean accuracy for this run'}>
+                        {points && go.points != null ? go.points.toFixed(2) : pct(go.accEquivalent)}
+                        {points && go.points != null && <span className="ml-1 font-normal text-faint">≈ {pct(go.accEquivalent)}</span>}
+                      </span>
+                    </div>
+                    <ul className="mt-0.5 space-y-0.5 text-muted">
+                      {go.runs.map((r) => {
+                        const isCounted = match.scoring.replays === 'BEST_EACH' && counted.has(`${r.playerId}:${r.attempt}`);
+                        return (
+                          <li key={r.playerId} className="flex items-baseline justify-between gap-2">
+                            <span className={`min-w-0 truncate ${isCounted ? 'text-ink' : ''}`}>
+                              {r.playerName}
+                              {isCounted && <span className="ml-1 text-[10px] font-semibold uppercase text-accent">counted</span>}
+                            </span>
+                            <span className="shrink-0 tabular">
+                              {r.points != null && <span className="mr-1.5">{r.points.toFixed(2)}</span>}
+                              {pct(r.accuracy)}
+                              {r.failed && (
+                                <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10px] font-semibold text-amber-300">
+                                  {match.scoring.doubleFails ? 'NF ×2' : 'NF'}
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

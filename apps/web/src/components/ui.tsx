@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
+import { AvatarImg } from './avatar-img';
 
 /** Shared primitives. The data is the interface; these just stay out of its way. */
 
@@ -221,17 +222,7 @@ export function MapCover({
         <circle cx="6.5" cy="18" r="2.5" />
         <circle cx="16.5" cy="16" r="2.5" />
       </svg>
-      {src && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={src}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="no-referrer"
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      )}
+      {src && <AvatarImg key={src} src={src} />}
     </span>
   );
 }
@@ -260,17 +251,7 @@ export function Avatar({
       title={name}
     >
       {name.slice(0, 1)}
-      {src && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={src}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="no-referrer"
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      )}
+      {src && <AvatarImg key={src} src={src} />}
     </span>
   );
 }

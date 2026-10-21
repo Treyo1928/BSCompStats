@@ -114,6 +114,14 @@ export const authConfig: NextAuthConfig = {
         await prisma.user.update({ where: { id: user.id }, data: { role: 'ADMIN' } });
       }
 
+      // The picture is saved when the account is made and Auth.js never
+      // touches it again, so someone who changed their Discord picture was
+      // left with a dead address. Every Discord sign-in brings it up to date.
+      if (account?.provider === 'discord') {
+        const image = discordAvatar(profile);
+        if (image !== undefined) await prisma.user.update({ where: { id: user.id }, data: { image } });
+      }
+
       // Signing in with BeatLeader is a claim of ownership over that profile,
       // so link (or create) the Player record it refers to.
       if (account?.provider === 'beatleader' && account.providerAccountId) {
@@ -154,6 +162,24 @@ function isBootstrapAdmin(provider: string, providerAccountId: string, profile: 
 }
 
 /**
+ * The Discord picture's address from the profile Discord returned, the way
+ * Auth.js builds it when the account is first made. Undefined when the
+ * profile is not a Discord one; Discord's default picture when they have none.
+ */
+function discordAvatar(profile: unknown): string | undefined {
+  const p = (profile ?? {}) as { id?: unknown; avatar?: unknown; discriminator?: unknown };
+  if (typeof p.id !== 'string') return undefined;
+  if (typeof p.avatar === 'string' && p.avatar) {
+    const format = p.avatar.startsWith('a_') ? 'gif' : 'png';
+    return `https://cdn.discordapp.com/avatars/${p.id}/${p.avatar}.${format}`;
+  }
+  const index = p.discriminator === '0' || p.discriminator == null
+    ? Number((BigInt(p.id) >> 22n) % 6n)
+    : Number(p.discriminator) % 5;
+  return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
+}
+
+/**
  * BeatLeader's identity endpoint returns an id and a name and nothing else, so
  * the picture has to be asked for separately. Best effort: signing in must not
  * fail because a profile lookup was slow.
@@ -179,10 +205,12 @@ async function linkBeatLeaderPlayer(
 ): Promise<void> {
   details = { ...details, avatar: details.avatar ?? (await fetchBeatLeaderAvatar(beatLeaderId)) };
 
-  // Someone with no Discord picture gets their BeatLeader one.
+  // Someone who does not sign in with Discord shows their BeatLeader picture,
+  // kept current: BeatLeader's address changes with the picture (…R2.png,
+  // …R3.png) and the old one stops working. A Discord picture is left alone.
   if (details.avatar) {
     await prisma.user.updateMany({
-      where: { id: userId, image: null },
+      where: { id: userId, accounts: { none: { provider: 'discord' } } },
       data: { image: details.avatar },
     });
   }

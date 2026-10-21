@@ -20,12 +20,13 @@ import {
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
-import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls } from '@/components/roster-controls';
+import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls, RemoveFromPool } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
 import { createPlayerPool, makeDuosFromPool } from '@/server/pool-actions';
 import { RunsVisibilityPanel } from '@/components/runs-visibility';
 import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
+import { buildPoolBoard } from '@/server/board';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,10 +53,10 @@ export default async function TeamsPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ error?: string; show?: string }>;
+  searchParams: Promise<{ error?: string; show?: string; seedBy?: string }>;
 }) {
   const { slug } = await params;
-  const { error, show } = await searchParams;
+  const { error, show, seedBy } = await searchParams;
 
   const tournament = await prisma.tournament.findUnique({
     where: { slug },
@@ -123,6 +124,29 @@ export default async function TeamsPage({
   const showing = show === 'match-only' && matchOnly.length > 0 ? 'adHoc' : 'entered';
   const listed = showing === 'adHoc' ? matchOnly : entered;
 
+  // The pool's seeds start in BeatLeader pp order, or in order of accuracy on
+  // one of the map pools: each player's mean over the maps they have played
+  // there. Nobody with a score there goes after everyone who has one.
+  const seedPool = tournament.pools.find((p) => p.id === seedBy) ?? null;
+  const seedBoard = seedPool && playerPool && playerPool.members.length > 0 ? await buildPoolBoard(seedPool.id) : null;
+  const poolAcc = new Map(
+    (seedBoard?.teams ?? [])
+      .flatMap((t) => t.rows)
+      .filter((r) => r.teamId === playerPool?.id && r.meanAcc != null)
+      .map((r) => [r.playerId, { acc: r.meanAcc!, played: r.played }]),
+  );
+  const poolMapCount = seedBoard?.maps.length ?? 0;
+  const seededPool = playerPool
+    ? [...playerPool.members].sort((a, b) => {
+        if (seedPool) {
+          const x = poolAcc.get(a.player.id)?.acc ?? -1;
+          const y = poolAcc.get(b.player.id)?.acc ?? -1;
+          if (x !== y) return y - x;
+        }
+        return b.player.pp - a.player.pp;
+      })
+    : [];
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -165,52 +189,95 @@ export default async function TeamsPage({
               ) : (
                 <form action={makeDuosFromPool} className="space-y-3">
                   <input type="hidden" name="tournamentId" value={tournament.id} />
-                  <ul className="grid gap-1.5 sm:grid-cols-2">
-                    {[...playerPool.members]
-                      .sort((a, b) => b.player.pp - a.player.pp)
-                      .map((member, i) => (
-                        <li key={member.id} className="flex items-center gap-2 text-sm">
+                  {canManage && playerPool.members.length >= 2 && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="mr-1 text-faint">Seed by</span>
+                      {[{ id: null, label: 'BeatLeader pp' }, ...tournament.pools.map((p) => ({ id: p.id, label: `Accuracy on ${p.name}` }))].map(
+                        (option) => {
+                          const active = (seedPool?.id ?? null) === option.id;
+                          return (
+                            <Link
+                              key={option.id ?? 'pp'}
+                              href={option.id ? `/t/${slug}/teams?seedBy=${option.id}` : `/t/${slug}/teams`}
+                              scroll={false}
+                              aria-current={active ? 'true' : undefined}
+                              className={`inline-flex h-8 max-w-full items-center truncate rounded-full border px-3 font-medium transition ${
+                                active
+                                  ? 'border-accent bg-accent/15 text-ink'
+                                  : 'border-edge-strong text-muted hover:border-faint hover:text-ink'
+                              }`}
+                            >
+                              {option.label}
+                            </Link>
+                          );
+                        },
+                      )}
+                    </div>
+                  )}
+                  <ul className="grid gap-1 sm:grid-cols-2 sm:gap-x-4">
+                    {seededPool.map((member, i) => {
+                      const acc = poolAcc.get(member.player.id);
+                      return (
+                        <li key={member.id} className="flex min-w-0 items-center gap-2 text-sm">
                           {canManage && (
                             <input
+                              // Keyed by the order shown, so switching what seeds them resets the numbers.
+                              key={`${seedPool?.id ?? 'pp'}:${i}`}
                               name={`seed:${member.player.id}`}
                               inputMode="numeric"
                               defaultValue={i + 1}
                               aria-label={`${member.player.name}'s seed`}
                               title="Seed: 1 is the strongest. Seeded duos pair 1 with the last seed, 2 with the second-last..."
-                              className="h-8 w-[3.25rem] shrink-0 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none"
+                              className="h-8 w-11 shrink-0 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none"
                             />
                           )}
-                          <PlayerLink playerId={member.player.id} name={member.player.name} className="flex min-w-0 flex-1 items-center gap-2 hover:underline">
+                          <PlayerLink
+                            playerId={member.player.id}
+                            name={member.player.name}
+                            className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
+                          >
                             <Avatar src={member.player.avatar} name={member.player.name} size={24} />
-                            <span className="truncate">{member.player.name}</span>
+                            <span className="truncate" title={member.player.name}>
+                              {member.player.name}
+                            </span>
                           </PlayerLink>
-                          <span className="text-xs tabular text-muted">
-                            {member.player.pp > 0 ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp` : '—'}
+                          <span
+                            className="shrink-0 text-right text-xs tabular text-muted"
+                            title={acc ? `Mean accuracy over the ${acc.played} of ${poolMapCount} maps they have played in ${seedPool!.name}` : undefined}
+                          >
+                            {seedPool
+                              ? acc
+                                ? `${(acc.acc * 100).toFixed(2)}% · ${acc.played}/${poolMapCount}`
+                                : 'no scores'
+                              : member.player.pp > 0
+                                ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp`
+                                : '—'}
                           </span>
                           {canManage && (
-                            <MemberControls
-                              memberId={member.id}
-                              playerName={member.player.name}
-                              teamName="the player pool"
-                              isCaptain={false}
-                              isSub={member.isSub}
-                              available={member.available}
-                              canManage
-                            />
+                            // In the pool the only thing to do to a player is take them out of it.
+                            <RemoveFromPool memberId={member.id} playerName={member.player.name} />
                           )}
                         </li>
-                      ))}
+                      );
+                    })}
                   </ul>
                   {canManage && playerPool.members.length >= 2 && (
-                    <div className="flex flex-wrap items-center gap-2 border-t border-edge pt-3">
-                      <select name="method" defaultValue="SEEDED" className={`${inputClass} w-auto`}>
-                        <option value="SEEDED">Seeded duos: 1 with the last seed, 2 with the second-last…</option>
-                        <option value="RANDOM">Random duos</option>
-                      </select>
-                      <Button type="submit">Make duos</Button>
-                      <span className="text-xs text-faint">
-                        Seeds start in BeatLeader pp order; change the numbers to seed by hand. An odd player out stays here.
-                      </span>
+                    <div className="space-y-2 border-t border-edge pt-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select name="method" defaultValue="SEEDED" className={`${inputClass} w-auto min-w-0 flex-1 sm:flex-none`}>
+                          <option value="SEEDED">Seeded</option>
+                          <option value="RANDOM">Random</option>
+                        </select>
+                        <Button type="submit">Make duos</Button>
+                      </div>
+                      <p className="text-xs text-faint">
+                        Seeded pairs seed 1 with the last seed, 2 with the second-last, and so on.{' '}
+                        {seedPool
+                          ? `Seeds are in order of mean accuracy on ${seedPool.name}; players with no scores there come last, by pp.`
+                          : 'Seeds are in BeatLeader pp order.'}{' '}
+                        Change the numbers to seed by hand. An odd player out stays here. Both players of a duo are
+                        made its captains.
+                      </p>
                     </div>
                   )}
                 </form>
@@ -406,7 +473,15 @@ export default async function TeamsPage({
         </div>
       )}
 
-      <RunsVisibilityPanel tournamentId={tournament.id} />
+      <RunsVisibilityPanel
+        tournamentId={tournament.id}
+        canCheck={canManage}
+        myPlayerIds={
+          actor.userId
+            ? teams.flatMap((t) => t.members.filter((m) => m.player.userId === actor.userId).map((m) => m.player.id))
+            : []
+        }
+      />
     </div>
   );
 }

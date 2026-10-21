@@ -454,6 +454,8 @@ model Tournament {
   name      String
   description String?
   isPublic  Boolean @default(true)
+  /// Public but left off the tournament list: anyone with the link can open it.
+  unlisted  Boolean @default(false)
 
   ownerId String
   owner   User   @relation("TournamentOwner", fields: [ownerId], references: [id])
@@ -480,6 +482,11 @@ model Tournament {
   perfectFromBeatLeader Boolean @default(true)
   /// Pulling scores from BeatLeader: { lookbackMinutes, toleranceSeconds }. Null is the defaults.
   scorePull     Json?
+  /// Which runs of a replayed map count: "BEST_PAIR" (the team's best go
+  /// together) or "BEST_EACH" (each player's own best). See core match/scoring.
+  replayCounting String @default("BEST_PAIR")
+  /// A failed run counts doubled back from No Fail's halving. Off: as scored.
+  doubleFailedRuns Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -684,10 +691,18 @@ model Match {
   /// Each team's lineups stay hidden from the other until both have set every map.
   blindLineups Boolean @default(false)
 
+  /// Left off the tournament's match lists for anyone but staff and the two
+  /// teams; the match page itself opens for anyone with the link.
+  unlisted Boolean @default(false)
+
   /// "ACCURACY" or "MATCH_POINTS", fixed when the match is made.
   scoring     String @default("ACCURACY")
   /// The curve as it stood when the match was made, so retuning it later does not rewrite results.
   pointsCurve Json?
+  /// "BEST_PAIR" or "BEST_EACH", taken from the tournament when the match is made.
+  replayCounting String @default("BEST_PAIR")
+  /// A failed run counts doubled back from No Fail's halving. Off: as scored.
+  doubleFailedRuns Boolean @default(false)
 
   scheduledAt DateTime?
   startedAt   DateTime?
@@ -757,7 +772,7 @@ model MatchMap {
   pickedBy   Team?   @relation("PickedBy", fields: [pickedById], references: [id], onDelete: SetNull)
 
   /// Teams that have spent a replay on this map. Each entry is one more run of
-  /// the map by both sides; a player's best run is the one that counts.
+  /// the map by both sides; which runs count is the match's `replayCounting`.
   replayCalledByTeamIds String[] @default([])
 
   /// When the run being played opened: the map being picked, or the latest
@@ -827,6 +842,11 @@ model MatchMapAttempt {
 
   score    Int
   accuracy Float @default(0)
+  /// The player failed and No Fail halved what they scored. `score` and
+  /// `accuracy` hold it doubled back, and this says so, so the figure shown
+  /// in game can still be shown and typed. Whether the doubled figure counts
+  /// is the match's `doubleFailedRuns`.
+  failed   Boolean @default(false)
 
   /// AUTO when pulled from BeatLeader, MANUAL when someone typed it.
   source            String  @default("AUTO")

@@ -20,10 +20,10 @@ import { buildPickBanContext } from './matches';
 import { getActor, realUser } from './session';
 import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
-import { cleanUpAdHocTeams, openMatch } from './custom-teams';
+import { cleanUpAdHocTeams, openMatch, parseCoinFlip } from './custom-teams';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
 import { aggregateTotals } from '@bscs/core/match';
-import { choose, fetchRuns, loadPullTarget, writeRuns } from './score-pull';
+import { choose, countedRun, fetchRuns, loadPullTarget, writeRuns } from './score-pull';
 
 /**
  * Match mutations.
@@ -67,7 +67,7 @@ export async function createMatch(formData: FormData): Promise<void> {
     poolId: String(formData.get('poolId')),
     teamAId: String(formData.get('teamAId')),
     teamBId: String(formData.get('teamBId')),
-    coinFlip: formData.get('coinFlip') === 'B' ? 'B' : 'A',
+    coinFlip: parseCoinFlip(formData.get('coinFlip')),
     blindLineups: formData.get('blindLineups') === 'on',
     name: String(formData.get('name') ?? ''),
     scoring: formData.get('scoring') ? String(formData.get('scoring')) : null,
@@ -374,22 +374,31 @@ export async function saveScores(formData: FormData): Promise<void> {
         continue;
       }
 
-      const score = Number(raw);
-      if (!Number.isInteger(score) || score < 0) {
+      const typed = Number(raw);
+      if (!Number.isInteger(typed) || typed < 0) {
         failBack(back, `"${raw}" is not a score. Enter the number shown on the results screen.`);
       }
+      // Ticked "failed": No Fail halved what the results screen shows, so it counts double.
+      const failed = formData.get(`failed:${playerId}:${attempt}`) === 'on';
+      const score = failed ? typed * 2 : typed;
       if (maxScore > 0 && score > maxScore) {
-        failBack(back, `${score.toLocaleString('en-US')} is more than this map's maximum of ${maxScore.toLocaleString('en-US')}.`);
+        failBack(
+          back,
+          failed
+            ? `${typed.toLocaleString('en-US')} doubled for a fail is more than this map's maximum of ${maxScore.toLocaleString('en-US')}. Untick "failed" if they did not.`
+            : `${typed.toLocaleString('en-US')} is more than this map's maximum of ${maxScore.toLocaleString('en-US')}.`,
+        );
       }
 
       const accuracy = maxScore > 0 ? score / maxScore : 0;
       writes.push(
         prisma.matchMapAttempt.upsert({
           where: key,
-          create: { matchMapId, teamId, playerId, attempt, score, accuracy, source: 'MANUAL' },
+          create: { matchMapId, teamId, playerId, attempt, score, accuracy, failed, source: 'MANUAL' },
           update: {
             score,
             accuracy,
+            failed,
             source: 'MANUAL',
             beatLeaderScoreId: null,
             beatLeaderAttemptId: null,
@@ -639,6 +648,21 @@ export async function completeMatch(formData: FormData): Promise<void> {
   await matchChanged(match.tournament.slug, matchId);
 }
 
+/**
+ * List or unlist a match. Unlisted, it is left off the tournament's match lists
+ * for everyone but staff and the two teams; anyone with the link can still
+ * open it. Staff only.
+ */
+export async function setMatchUnlisted(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+  await prisma.match.update({ where: { id: matchId }, data: { unlisted: formData.get('unlisted') === 'on' } });
+  revalidatePath(`/t/${match.tournament.slug}`, 'layout');
+}
+
 /** Remove a match and everything recorded in it. Staff only. */
 export async function deleteMatch(formData: FormData): Promise<void> {
   const matchId = String(formData.get('matchId'));
@@ -688,8 +712,11 @@ export interface PullReviewRun {
   timeset: number;
   /** Seconds into the song it ended. */
   time: number;
+  /** What it counts for: a No Fail run doubled back. */
   score: number;
   accuracy: number;
+  /** They died and No Fail halved it; `score` is doubled back. */
+  failed: boolean;
 }
 
 export interface PullPlayer {
@@ -810,8 +837,7 @@ export async function pullMapScores(matchId: string, matchMapId: string): Promis
         endType: run.endType,
         timeset: run.timeset,
         time: run.time,
-        score: Math.round(run.baseScore),
-        accuracy: target.maxScore > 0 ? Math.min(1, run.baseScore / target.maxScore) : run.accuracy,
+        ...countedRun(run, target.maxScore),
       })),
       notes: pick.status === 'MATCHED' && !written.has(pick.playerId)
         ? ['Their score was typed in by hand, so it was left as it is.', ...pick.notes]

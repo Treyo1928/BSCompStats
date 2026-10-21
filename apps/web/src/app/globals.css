@@ -71,14 +71,6 @@ body {
 /* Thin, quiet scrollbars - the board scrolls sideways on small screens. */
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
-/* An abandoned run: hatched, so it reads as "void" rather than "very bad". */
-.cell-void {
-  background:
-    repeating-linear-gradient(135deg, rgb(248 113 113 / 0.16) 0 6px, transparent 6px 12px),
-    rgb(127 29 29 / 0.35);
-  color: #fecaca;
-}
-
 /* ---------------------------------------------------------------------------
  *  Phones
  *

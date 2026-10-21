@@ -39,6 +39,7 @@ export default async function TournamentLayout({
       ? [{ href: `/t/${slug}/brackets`, label: 'Brackets', deep: true }]
       : []),
     ...(can(actor, 'CREATE_MATCH') ? [{ href: `/t/${slug}/custom`, label: 'Custom match' }] : []),
+    ...(can(actor, 'MANAGE_TOURNAMENT') ? [{ href: `/t/${slug}/settings`, label: 'Settings' }] : []),
   ];
 
   return (

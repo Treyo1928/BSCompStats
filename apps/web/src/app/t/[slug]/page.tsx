@@ -10,7 +10,6 @@ import {
   Empty,
   Button,
   Field,
-  Avatar,
   FormError,
   FieldAction,
   inputClass,
@@ -29,11 +28,6 @@ import {
   importPoolAction,
   createTeam,
   triggerRefresh,
-  setTournamentVisibility,
-  setMatchRules,
-  addTournamentMember,
-  removeTournamentMember,
-  deleteTournament,
 } from '@/server/actions';
 
 export const dynamic = 'force-dynamic';
@@ -83,16 +77,10 @@ export default async function TournamentPage({
       slug: true,
       description: true,
       isPublic: true,
-      captainsEnterScores: true,
-      captainsPullScores: true,
+      unlisted: true,
       captainsCreateMatches: true,
       matchScoring: true,
       scoringLocked: true,
-      perfectFromBeatLeader: true,
-      members: {
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, role: true, user: { select: { name: true, image: true } } },
-      },
       pools: {
         orderBy: { createdAt: 'asc' },
         select: {
@@ -151,8 +139,11 @@ export default async function TournamentPage({
           state: true,
           winnerId: true,
           completedAt: true,
+          unlisted: true,
           scoring: true,
           pointsCurve: true,
+          replayCounting: true,
+          doubleFailedRuns: true,
           teamAId: true,
           teamBId: true,
           teamA: { select: matchTeamSelect },
@@ -163,7 +154,7 @@ export default async function TournamentPage({
             select: {
               isTiebreaker: true,
               poolMap: { select: { leaderboard: { select: { map: { select: { coverImage: true } } } } } },
-              attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true } },
+              attempts: { select: { teamId: true, playerId: true, score: true, accuracy: true, attempt: true, failed: true } },
             },
           },
         },
@@ -177,10 +168,23 @@ export default async function TournamentPage({
   if (!can(actor, 'VIEW', { isPublic: tournament.isPublic })) notFound();
 
   const canManage = can(actor, 'MANAGE_TEAMS');
-  const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
   const teams = tournament.divisions.flatMap((d) => d.teams);
-  const currentMatches = tournament.matches.filter((m) => m.state !== 'COMPLETE');
-  const finishedMatches = tournament.matches
+  // Unlisted matches are listed only for staff and the two teams in them.
+  const myTeamIds = new Set(
+    actor.userId
+      ? (
+          await prisma.teamMember.findMany({
+            where: { player: { userId: actor.userId }, team: { division: { tournamentId: tournament.id } } },
+            select: { teamId: true },
+          })
+        ).map((m) => m.teamId)
+      : [],
+  );
+  const listed = tournament.matches.filter(
+    (m) => !m.unlisted || canManage || myTeamIds.has(m.teamAId) || myTeamIds.has(m.teamBId),
+  );
+  const currentMatches = listed.filter((m) => m.state !== 'COMPLETE');
+  const finishedMatches = listed
     .filter((m) => m.state === 'COMPLETE')
     .sort((x, y) => (y.completedAt?.getTime() ?? 0) - (x.completedAt?.getTime() ?? 0));
 
@@ -191,20 +195,14 @@ export default async function TournamentPage({
         title={tournament.name}
         meta={
           tournament.description ??
-          `${tournament.pools.length} pools · ${teams.length} teams · ${tournament.matches.length} matches`
+          `${tournament.pools.length} pools · ${teams.length} teams · ${listed.length} matches`
         }
         actions={
           <>
-            {!tournament.isPublic && <Badge>Private</Badge>}
-            {can(actor, 'MANAGE_TOURNAMENT') && (
-              <form action={setTournamentVisibility}>
-                <input type="hidden" name="tournamentId" value={tournament.id} />
-                {/* Absent means private, matching how a checkbox submits. */}
-                {!tournament.isPublic && <input type="hidden" name="isPublic" value="on" />}
-                <Button variant="ghost" type="submit">
-                  {tournament.isPublic ? 'Make private' : 'Make public'}
-                </Button>
-              </form>
+            {!tournament.isPublic ? (
+              <Badge>Private</Badge>
+            ) : (
+              tournament.unlisted && <Badge title="Opens for anyone with the link; not on the front page">Unlisted</Badge>
             )}
             {actor.userId && (
               <form action={triggerRefresh}>
@@ -490,138 +488,6 @@ export default async function TournamentPage({
         </Panel>
       </div>
 
-      {can(actor, 'MANAGE_TOURNAMENT') && (
-        <Panel title="Match rules" subtitle="Who may do what on match night, and how maps are scored">
-          <form action={setMatchRules} className="space-y-3 text-sm">
-            <input type="hidden" name="tournamentId" value={tournament.id} />
-            <fieldset className="space-y-2">
-              <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Captains may</legend>
-              <RuleBox name="captainsCreateMatches" checked={tournament.captainsCreateMatches}>
-                Set up matches for their own team
-                <RuleNote>Otherwise only tournament admins can.</RuleNote>
-              </RuleBox>
-              <RuleBox name="captainsPullScores" checked={tournament.captainsPullScores}>
-                Pull their match&apos;s scores from BeatLeader
-                <RuleNote>Fills both teams&apos; scores for a map in from everyone&apos;s latest run.</RuleNote>
-              </RuleBox>
-              <RuleBox name="captainsEnterScores" checked={tournament.captainsEnterScores}>
-                Type their own team&apos;s scores in by hand
-                <RuleNote>The override for when BeatLeader cannot say. Admins always can.</RuleNote>
-              </RuleBox>
-            </fieldset>
-            <fieldset className="space-y-2 border-t border-edge pt-3">
-              <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Scoring</legend>
-              <Field label="New matches are scored on">
-                <select name="matchScoring" className={inputClass} defaultValue={tournament.matchScoring}>
-                  <option value="ACCURACY">Average accuracy</option>
-                  <option value="MATCH_POINTS">Match points (the curve)</option>
-                </select>
-              </Field>
-              <RuleBox name="scoringLocked" checked={tournament.scoringLocked}>
-                Every match uses this
-                <RuleNote>Otherwise whoever sets a match up can choose.</RuleNote>
-              </RuleBox>
-              <RuleBox name="perfectFromBeatLeader" checked={tournament.perfectFromBeatLeader}>
-                Use BeatLeader&apos;s predicted accuracy as a map&apos;s perfect % until one is set
-                <RuleNote>Perfect % only sizes a map&apos;s points; it never decides who wins it. Set it per map on the pool page.</RuleNote>
-              </RuleBox>
-            </fieldset>
-            <Button type="submit">Save rules</Button>
-          </form>
-        </Panel>
-      )}
-
-      {can(actor, 'MANAGE_TOURNAMENT') && (
-        <Panel
-          title="People"
-          subtitle={
-            tournament.isPublic
-              ? 'Tournament admins can do everything inside this tournament'
-              : 'Tournament admins run it; viewers are who else can see this private tournament'
-          }
-        >
-          <ul className="divide-y divide-edge text-sm">
-            {tournament.members.map((member) => (
-              <li key={member.id} className="flex items-center gap-3 py-2">
-                <Avatar src={member.user.image} name={member.user.name ?? '?'} size={28} />
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {member.user.name ?? 'Unnamed user'}
-                </span>
-                <Badge tone={member.role === 'VIEWER' ? 'neutral' : 'accent'}>
-                  {member.role === 'OWNER'
-                    ? 'Owner'
-                    : member.role === 'ORGANIZER'
-                      ? 'Tournament admin'
-                      : member.role === 'VIEWER'
-                        ? 'Viewer'
-                        : member.role.toLowerCase()}
-                </Badge>
-                {member.role !== 'OWNER' && (member.role !== 'ORGANIZER' || grantsAdmin) && (
-                  <form action={removeTournamentMember}>
-                    <input type="hidden" name="memberId" value={member.id} />
-                    <button
-                      type="submit"
-                      className="text-xs text-muted underline decoration-faint underline-offset-2 hover:text-ink"
-                    >
-                      Remove
-                    </button>
-                  </form>
-                )}
-              </li>
-            ))}
-          </ul>
-
-          <form
-            action={addTournamentMember}
-            className="mt-3 flex flex-wrap items-start gap-3 border-t border-edge pt-3"
-          >
-            <input type="hidden" name="tournamentId" value={tournament.id} />
-            <div className="min-w-[12rem] flex-1">
-              <Field
-                label="Add someone"
-                hint="Their account name here, or their BeatLeader ID. They must have signed in once."
-              >
-                <input name="who" className={inputClass} required />
-              </Field>
-            </div>
-            <Field label="As">
-              <select name="role" className={inputClass} defaultValue={grantsAdmin ? 'ORGANIZER' : 'VIEWER'}>
-                {grantsAdmin && <option value="ORGANIZER">Tournament admin</option>}
-                <option value="VIEWER">Viewer</option>
-              </select>
-            </Field>
-            <FieldAction>
-              <Button type="submit">Add</Button>
-            </FieldAction>
-          </form>
-          <p className="mt-2 text-xs text-faint">
-            Players on a roster, and their captains, can already see a private tournament - they do
-            not need adding here.
-          </p>
-        </Panel>
-      )}
-
-      {grantsAdmin && (
-        <details className="rounded-xl border border-red-400/20 bg-red-500/5 p-4 text-sm">
-          <summary className="cursor-pointer font-medium text-red-200">Delete this tournament</summary>
-          <form action={deleteTournament} className="mt-3 flex flex-wrap items-start gap-3">
-            <input type="hidden" name="tournamentId" value={tournament.id} />
-            <div className="min-w-[14rem] flex-1">
-              <Field
-                label={`Type "${tournament.name}" to confirm`}
-                hint="Deletes its teams, rosters, pools and every match. Players and their scores are kept. This cannot be undone."
-              >
-                <input name="confirmName" className={inputClass} autoComplete="off" required />
-              </Field>
-            </div>
-            <FieldAction>
-              <Button type="submit" variant="danger">
-                Delete forever
-              </Button>
-            </FieldAction>
-          </form>
-        </details>
-      )}
     </div>
   );
 }
@@ -630,9 +496,12 @@ interface MatchCardData {
   id: string;
   name: string;
   state: string;
+  unlisted: boolean;
   winnerId: string | null;
   scoring: string;
   pointsCurve: unknown;
+  replayCounting: string;
+  doubleFailedRuns: boolean;
   teamAId: string;
   teamBId: string;
   teamA: MatchCardTeam;
@@ -641,7 +510,7 @@ interface MatchCardData {
   maps: Array<{
     isTiebreaker: boolean;
     poolMap: { leaderboard: { map: { coverImage: string | null } } };
-    attempts: Array<{ teamId: string; playerId: string; score: number; accuracy: number }>;
+    attempts: Array<{ teamId: string; playerId: string; score: number; accuracy: number; attempt: number; failed: boolean }>;
   }>;
 }
 
@@ -717,6 +586,7 @@ function MatchCard({ slug, match }: { slug: string; match: MatchCardData }) {
 
         <div className="flex items-center justify-between gap-2 border-t border-edge/70 bg-panel/60 px-4 py-2 text-xs text-muted">
           <span className="truncate">
+            {match.unlisted && <span className="mr-1 text-faint">Unlisted ·</span>}
             {match.name || 'Match'} · {match.pool.name}
           </span>
           {finished ? (
@@ -741,17 +611,4 @@ function MatchState({ state }: { state: string }) {
     COMPLETE: 'Final',
   };
   return <Badge tone={tone}>{label[state] ?? state}</Badge>;
-}
-
-function RuleBox({ name, checked, children }: { name: string; checked: boolean; children: React.ReactNode }) {
-  return (
-    <label className="flex items-start gap-2">
-      <input type="checkbox" name={name} defaultChecked={checked} className="mt-1" />
-      <span>{children}</span>
-    </label>
-  );
-}
-
-function RuleNote({ children }: { children: React.ReactNode }) {
-  return <span className="block text-xs text-faint">{children}</span>;
 }

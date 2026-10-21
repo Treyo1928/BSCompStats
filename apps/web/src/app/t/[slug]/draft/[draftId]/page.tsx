@@ -20,6 +20,8 @@ import { ConfirmButton } from '@/components/confirm-button';
 import { MatchLive } from '@/components/match-live';
 import { PlayerLink } from '@/components/player-card';
 import { MatchOptions } from '@/components/custom-match-builder';
+import { RenameForm } from '@/components/rename-form';
+import { renameDraft } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
 import { buildTournamentData } from '@/server/stats';
 import { getDraftSummary } from '@/server/summaries';
@@ -126,6 +128,9 @@ export default async function DraftPage({
         }
         actions={
           <>
+            {can(actor, 'CREATE_MATCH') && (
+              <RenameForm action={renameDraft} idName="draftId" id={draft.id} name={draft.name} />
+            )}
             {can(actor, 'UNDO_ACTION') && picked.length > 0 && !draft.matchId && (
               <form action={undoDraftPick}>
                 <input type="hidden" name="draftId" value={draft.id} />

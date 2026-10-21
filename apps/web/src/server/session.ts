@@ -68,7 +68,8 @@ export async function getActor(tournamentId?: string): Promise<Actor | null> {
   };
 
   if (tournamentId) {
-    const [membership, rosterSpots] = await Promise.all([
+    const [tournament, membership, rosterSpots] = await Promise.all([
+      prisma.tournament.findUnique({ where: { id: tournamentId }, select: { isPublic: true } }),
       prisma.tournamentMember.findUnique({
         where: { tournamentId_userId: { tournamentId, userId: user.id } },
         select: { role: true, teamId: true },
@@ -85,16 +86,19 @@ export async function getActor(tournamentId?: string): Promise<Actor | null> {
       }),
     ]);
 
+    // A roster spot is not membership: a private tournament is seen only by
+    // the people on its staff and viewers list. Captaincy from a roster still
+    // counts where the tournament is public, or for someone on that list.
+    const rosterCounts = tournament?.isPublic === true || membership != null;
     const teamIds = new Set(
-      rosterSpots.filter((spot) => spot.role === 'CAPTAIN').map((spot) => spot.teamId),
+      rosterCounts
+        ? rosterSpots.filter((spot) => spot.role === 'CAPTAIN').map((spot) => spot.teamId)
+        : [],
     );
     if (membership?.role === 'CAPTAIN' && membership.teamId) teamIds.add(membership.teamId);
 
     actor.captainOfTeamIds = [...teamIds];
-    actor.tournamentRole =
-      (membership?.role as TournamentRole | undefined) ??
-      // Being on a roster is membership enough to see a private tournament.
-      (teamIds.size > 0 ? 'CAPTAIN' : rosterSpots.length > 0 ? 'PLAYER' : null);
+    actor.tournamentRole = (membership?.role as TournamentRole | undefined) ?? null;
   }
 
   return actor;

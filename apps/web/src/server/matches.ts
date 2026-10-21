@@ -14,7 +14,7 @@ import {
   type LineupInput,
   type ValidationResult,
 } from './match-helpers';
-import { mapResult, type MapResult, type Scoring } from '@bscs/core/match';
+import { mapResult, type CountedRun, type MapResult, type Scoring } from '@bscs/core/match';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
 
 /** Everything the match room needs, assembled in one place. */
@@ -35,6 +35,8 @@ export interface MatchView {
   scoring: Scoring;
   /** Lineups stay hidden from the other side until both teams have set every map. */
   blindLineups: boolean;
+  /** Left off the tournament's match lists; the link still opens it. */
+  unlisted: boolean;
   /** Set when the match was completed with a winner; null for a draw or an unfinished match. */
   winnerId: string | null;
   format: MatchFormat;
@@ -67,12 +69,14 @@ export interface MatchView {
     pickedByTeamId: string | null;
     map: PoolMapView;
     lineups: Record<string, string[]>;
-    /** Each player's counted run - their best - per team. */
+    /** The runs that count, per team. */
     scores: Record<string, MatchScore[]>;
+    /** Every go at the map per team, scored as a whole, and which one counted. */
+    goes: Record<string, MatchGo[]>;
     /** team -> the rules its lineup here was saved in spite of, if any. */
     ruleBreaks: Record<string, string>;
-    /** Every run as entered: team -> player -> attempt number -> score. */
-    runs: Record<string, Record<string, Record<number, number>>>;
+    /** Every run as entered: team -> player -> attempt number -> the score shown in game, and whether they failed. */
+    runs: Record<string, Record<string, Record<number, { shown: number; failed: boolean }>>>;
     /** Teams that have spent a replay here; each adds one more run of the map. */
     replayCalledByTeamIds: string[];
     /** Someone has said this map's scores are final. */
@@ -83,9 +87,24 @@ export interface MatchView {
   scoreboard: { a: number; b: number };
 }
 
+/** One team's go at a map: first run, replay... */
+export interface MatchGo {
+  attempt: number;
+  accEquivalent: number;
+  points: number | null;
+  /** Everyone who has posted on the map posted on this go. */
+  complete: boolean;
+  /** This go's runs are the ones that count. */
+  counted: boolean;
+  runs: MatchScore[];
+}
+
 export interface MatchScore {
   playerId: string;
   playerName: string;
+  /** The go it was from: 1 for the first run, 2 for the first replay... */
+  attempt: number;
+  /** As it counts: a fail halved unless the match counts fails double. */
   score: number;
   accuracy: number;
   /** Match points, under MATCH_POINTS scoring where the map has a perfect accuracy. */
@@ -94,6 +113,8 @@ export interface MatchScore {
   source: string;
   /** How the run ended, where it came from BeatLeader. */
   endType: string | null;
+  /** They failed; No Fail halved it. Counted doubled back only under `scoring.doubleFails`. */
+  failed: boolean;
   /** BeatLeader's replay viewer for the run, where there is one. */
   replayUrl: string | null;
 }
@@ -221,7 +242,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     const matchMap = matchMapByPoolMap.get(entry.poolMapId);
     const map = poolMapById.get(entry.poolMapId)!;
     const lineups: Record<string, string[]> = {};
-    const runs: Record<string, Record<string, Record<number, number>>> = {};
+    const runs: Record<string, Record<string, Record<number, { shown: number; failed: boolean }>>> = {};
     const ruleBreaks: Record<string, string> = {};
 
     for (const lineup of matchMap?.lineups ?? []) {
@@ -231,29 +252,45 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
 
     const attempts = matchMap?.attempts ?? [];
     for (const attempt of attempts) {
-      ((runs[attempt.teamId] ??= {})[attempt.playerId] ??= {})[attempt.attempt] = attempt.score;
+      ((runs[attempt.teamId] ??= {})[attempt.playerId] ??= {})[attempt.attempt] = {
+        // A failed run is stored doubled; the results screen showed half.
+        shown: attempt.failed ? Math.round(attempt.score / 2) : attempt.score,
+        failed: attempt.failed,
+      };
     }
 
-    // A map replayed after a technical issue has a second run; each player's
-    // best counts, and the rules for that live in one place.
+    // A map replayed after a technical issue has more than one go; which
+    // runs count is the match's rule, and the rules for that live in one place.
     const result = mapResult(attempts, [match.teamAId, match.teamBId], scoring, map.perfectAcc);
+    const toScore = (teamId: string, counted: CountedRun): MatchScore => {
+      const run = attempts.find(
+        (a) => a.teamId === teamId && a.playerId === counted.playerId && a.attempt === counted.attempt,
+      )!;
+      return {
+        playerId: counted.playerId,
+        playerName: run.player.name,
+        attempt: counted.attempt,
+        score: counted.score,
+        accuracy: counted.accuracy,
+        points: counted.points,
+        source: run.source,
+        endType: run.endType,
+        failed: run.failed,
+        replayUrl: replayViewer(run),
+      };
+    };
     const scores: Record<string, MatchScore[]> = {};
+    const goes: Record<string, MatchGo[]> = {};
     for (const [teamId, team] of Object.entries(result.teams)) {
-      scores[teamId] = team.runs.map((counted) => {
-        const run = attempts.find(
-          (a) => a.teamId === teamId && a.playerId === counted.playerId && a.score === counted.score,
-        )!;
-        return {
-          playerId: counted.playerId,
-          playerName: run.player.name,
-          score: counted.score,
-          accuracy: counted.accuracy,
-          points: counted.points,
-          source: run.source,
-          endType: run.endType,
-          replayUrl: replayViewer(run),
-        };
-      });
+      scores[teamId] = team.runs.map((counted) => toScore(teamId, counted));
+      goes[teamId] = team.goes.map((go) => ({
+        attempt: go.attempt,
+        accEquivalent: go.accEquivalent,
+        points: go.points,
+        complete: go.complete,
+        counted: go.counted,
+        runs: go.runs.map((counted) => toScore(teamId, counted)),
+      }));
     }
 
     return {
@@ -266,6 +303,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
       lineups,
       ruleBreaks,
       scores,
+      goes,
       runs,
       replayCalledByTeamIds: matchMap?.replayCalledByTeamIds ?? [],
       scoresClosed: matchMap?.scoresClosedAt != null,
@@ -291,6 +329,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     tournament: match.tournament,
     scoring,
     blindLineups: match.blindLineups,
+    unlisted: match.unlisted,
     winnerId: match.winnerId,
     format,
     teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),

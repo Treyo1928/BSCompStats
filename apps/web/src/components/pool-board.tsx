@@ -12,8 +12,8 @@ import { PlayerLink } from './player-card';
  * for the job: team blocks down the side, maps across the top, a score and the
  * accuracy underneath it in each cell. What is new is everything a sheet could
  * not do - shading computed from the live field rather than typed in, the
- * runs behind a map nobody has cleared, abandoned runs called out instead of
- * sitting there as a number that drags an average down silently. A map a player
+ * runs behind a map nobody has cleared. Every score counts as it was set,
+ * however low. A map a player
  * has not played is left empty: nothing here is estimated.
  */
 
@@ -54,9 +54,7 @@ export function PoolBoardTable({
     const accs = board.teams
       .flatMap((t) => t.rows)
       .map((r) => r.cells.find((c) => c.leaderboardId === map.leaderboardId))
-      // An abandoned run is drawn in its own style, and would otherwise
-      // stretch the scale until every real score on the map looked identical.
-      .filter((c) => c != null && !c.isDnf)
+      .filter((c) => c != null)
       .map((c) => c?.acc)
       .filter((a): a is number => a != null);
     if (accs.length >= 2) {
@@ -283,7 +281,7 @@ function Cell({
           ✗
         </span>
       )}
-      {cell.rank === 1 && !cell.isDnf && (
+      {cell.rank === 1 && (
         <span className="absolute right-1 top-0.5 text-[9px] opacity-80" aria-label="Best on this map">
           ★
         </span>
@@ -326,9 +324,6 @@ function Cell({
           cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
           cell.noFail ? 'No Fail kicked in: they died partway and played the rest of the map on. The accuracy is without No Fail’s penalty.' : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
-          cell.isDnf
-            ? 'Abandoned or anomalous run - far below this player’s normal and everyone else on this map. Not counted.'
-            : null,
           cell.runs && cell.runs.total > 0
             ? `${cell.runs.total} ${cell.runs.total === 1 ? 'run' : 'runs'} recorded: ${cell.runs.finished} cleared, ${cell.runs.fails} failed` +
               (cell.runs.falseStarts ? `, ${cell.runs.falseStarts} false starts` : '')
@@ -339,8 +334,8 @@ function Cell({
       }
     >
       <div
-        className={`rounded-md transition hover:brightness-125 ${cell.isDnf ? 'cell-void' : ''} ${cell.isRun ? 'outline outline-1 outline-dashed outline-white/25' : ''}`}
-        style={cell.isDnf ? undefined : heat(t)}
+        className={`rounded-md transition hover:brightness-125 ${cell.isRun ? 'outline outline-1 outline-dashed outline-white/25' : ''}`}
+        style={heat(t)}
       >
         {cell.replayUrl ? (
           <a href={cell.replayUrl} target="_blank" rel="noreferrer noopener" className="block">

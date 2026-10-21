@@ -6,6 +6,9 @@ import { can } from '@bscs/core/match';
 import { BRACKET_FORMAT_NAMES } from '@bscs/core/bracket';
 import { Button, FormError, PageHeader, Panel, inputClass, teamInk, teamWash } from '@/components/ui';
 import { ConfirmButton } from '@/components/confirm-button';
+import { SlotMenu } from '@/components/slot-menu';
+import { RenameForm } from '@/components/rename-form';
+import { renameBracket } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
 import { loadBracket, type BracketSlotView, type BracketTeam, type BracketView } from '@/server/brackets';
 import { describeSide, layoutBracket, nameSlots } from '@/lib/bracket-layout';
@@ -44,6 +47,8 @@ export default async function BracketPage({
       name: true,
       isPublic: true,
       captainsCreateMatches: true,
+      matchScoring: true,
+      scoringLocked: true,
       pools: { orderBy: { createdAt: 'asc' }, select: { id: true, name: true } },
     },
   });
@@ -56,6 +61,8 @@ export default async function BracketPage({
       (teamId) => teamId && can(actor, 'CREATE_MATCH', { teamId, captainsCreateMatches: tournament.captainsCreateMatches }),
     );
 
+  // What a match started here is scored on unless whoever starts it says otherwise.
+  const scoring: StartScoring = { mode: tournament.matchScoring, locked: tournament.scoringLocked };
   const champion = bracket.teams.find((t) => t.id === bracket.championId);
 
   return (
@@ -77,6 +84,9 @@ export default async function BracketPage({
               'no pool set'
             )}
           </>
+        }
+        actions={
+          staff ? <RenameForm action={renameBracket} idName="bracketId" id={bracket.id} name={bracket.name} /> : undefined
         }
       />
       <FormError message={error} />
@@ -105,7 +115,7 @@ export default async function BracketPage({
                   {bracket.slots
                     .filter((s) => s.round === round)
                     .map((slot) => (
-                      <SlotCard key={slot.key} slug={slug} bracket={bracket} slot={slot} staff={staff} mayStart={mayStart(slot)} />
+                      <SlotCard key={slot.key} slug={slug} bracket={bracket} slot={slot} staff={staff} mayStart={mayStart(slot)} scoring={scoring} />
                     ))}
                 </div>
               </div>
@@ -121,6 +131,7 @@ export default async function BracketPage({
               sections={bracket.format === 'DOUBLE_ELIM' ? ['W', 'GF'] : ['W']}
               staff={staff}
               mayStart={mayStart}
+              scoring={scoring}
             />
           </Panel>
           {bracket.format === 'DOUBLE_ELIM' && (
@@ -129,7 +140,7 @@ export default async function BracketPage({
               subtitle="Everyone knocked out of the winners bracket drops in here; lose again and you are out. Its winner meets the winners bracket's in the grand final."
               flush
             >
-              <Tree slug={slug} bracket={bracket} sections={['L']} staff={staff} mayStart={mayStart} />
+              <Tree slug={slug} bracket={bracket} sections={['L']} staff={staff} mayStart={mayStart} scoring={scoring} />
             </Panel>
           )}
         </>
@@ -208,12 +219,14 @@ function Tree({
   sections,
   staff,
   mayStart,
+  scoring,
 }: {
   slug: string;
   bracket: BracketView;
   sections: Array<'W' | 'L' | 'GF'>;
   staff: boolean;
   mayStart: (slot: BracketSlotView) => boolean;
+  scoring: StartScoring;
 }) {
   const layout = layoutBracket(bracket.slots, sections);
   const x = (column: number) => column * (CARD_W + GAP_X);
@@ -222,7 +235,7 @@ function Tree({
   const height = y(layout.rows) - GAP_Y;
   return (
     <div className="overflow-x-auto p-3 sm:p-4">
-      <div className="relative" style={{ width, height: height + (staff ? 150 : 0) }}>
+      <div className="relative" style={{ width, height }}>
         {layout.headings.map((heading, i) => (
           <p
             key={i}
@@ -253,7 +266,7 @@ function Tree({
         </svg>
         {layout.placed.map(({ slot, column, row }) => (
           <div key={slot.key} className="absolute" style={{ left: x(column), top: y(row), width: CARD_W }}>
-            <SlotCard slug={slug} bracket={bracket} slot={slot} staff={staff} mayStart={mayStart(slot)} />
+            <SlotCard slug={slug} bracket={bracket} slot={slot} staff={staff} mayStart={mayStart(slot)} scoring={scoring} />
           </div>
         ))}
       </div>
@@ -261,18 +274,28 @@ function Tree({
   );
 }
 
+/** The tournament's default scoring, and whether every match must use it. */
+interface StartScoring {
+  mode: string;
+  locked: boolean;
+}
+
+const SCORING_NAMES: Record<string, string> = { ACCURACY: 'Average accuracy', MATCH_POINTS: 'Match points' };
+
 function SlotCard({
   slug,
   bracket,
   slot,
   staff,
   mayStart,
+  scoring,
 }: {
   slug: string;
   bracket: BracketView;
   slot: BracketSlotView;
   staff: boolean;
   mayStart: boolean;
+  scoring: StartScoring;
 }) {
   const byKey = new Map(bracket.slots.map((s) => [s.key, s]));
   const seeds = new Set(bracket.teams.map((t) => t.seed));
@@ -284,7 +307,10 @@ function SlotCard({
       <div className={`flex h-7 items-center justify-between gap-2 px-2 text-sm ${lost ? 'opacity-45' : ''}`}>
         {team ? (
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="w-4 shrink-0 text-right text-[10px] tabular text-faint">{team.seed}</span>
+            {/* Everyone meets everyone in a round robin, so a seed there means nothing. */}
+            {bracket.format !== 'ROUND_ROBIN' && (
+              <span className="w-4 shrink-0 text-right text-[10px] tabular text-faint">{team.seed}</span>
+            )}
             <TeamName team={team} />
           </span>
         ) : (
@@ -311,43 +337,105 @@ function SlotCard({
             </Link>
           )}
           {(canStart || canSet) && (
-            <details className="relative">
-              <summary className="cursor-pointer list-none text-accent hover:underline">{canStart ? 'start ▾' : 'result ▾'}</summary>
-              <div className="absolute right-0 top-4 z-20 w-60 space-y-2 rounded-lg border border-edge bg-panel p-2.5 text-xs text-ink shadow-2xl">
+            <SlotMenu
+              label={canStart ? 'start ▾' : 'result ▾'}
+              title={`${slot.teamA?.name ?? '?'} vs ${slot.teamB?.name ?? '?'}`}
+            >
                 {canStart && (
-                  <form action={startBracketMatch} className="space-y-1.5">
+                  <form action={startBracketMatch} className="space-y-3">
                     <input type="hidden" name="bracketId" value={bracket.id} />
                     <input type="hidden" name="key" value={slot.key} />
-                    <select name="coinFlip" aria-label="Coin flip winner" className={`${inputClass} h-8 px-2 text-xs`}>
-                      <option value="A">{slot.teamA!.name} won the flip</option>
-                      <option value="B">{slot.teamB!.name} won the flip</option>
-                    </select>
-                    <Button type="submit" className="h-8 w-full">
+                    <label className="block space-y-1">
+                      <span className="text-[11px] font-medium text-muted">Match name</span>
+                      <input
+                        name="name"
+                        maxLength={80}
+                        defaultValue={`${bracket.name} · ${names.slots.get(slot.key) ?? 'Match'}: ${slot.teamA!.name} vs ${slot.teamB!.name}`}
+                        className={`${inputClass} h-8 px-2 text-xs`}
+                      />
+                    </label>
+                    <fieldset className="space-y-1">
+                      <legend className="mb-1 text-[11px] font-medium text-muted">Coin flip</legend>
+                      {/* The server flips it, so neither side can say the browser was rigged. */}
+                      {(
+                        [
+                          ['RANDOM', 'Flip it for me'],
+                          ['A', `${slot.teamA!.name} won it`],
+                          ['B', `${slot.teamB!.name} won it`],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <label key={value} className="flex items-center gap-2">
+                          <input type="radio" name="coinFlip" value={value} defaultChecked={value === 'RANDOM'} />
+                          <span className="truncate">{label}</span>
+                        </label>
+                      ))}
+                      <p className="text-faint">The winner takes the first step of pick and ban.</p>
+                    </fieldset>
+                    {scoring.locked ? (
+                      <p className="text-faint">
+                        Scored on {SCORING_NAMES[scoring.mode] ?? scoring.mode}, as every match in this tournament is.
+                      </p>
+                    ) : (
+                      <label className="block space-y-1">
+                        <span className="text-[11px] font-medium text-muted">Scoring</span>
+                        <select name="scoring" defaultValue={scoring.mode} className={`${inputClass} h-8 px-2 text-xs`}>
+                          {Object.entries(SCORING_NAMES).map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                              {value === scoring.mode ? ' (default)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label className="flex items-start gap-2">
+                      <input type="checkbox" name="blindLineups" className="mt-0.5" />
+                      <span>
+                        Hide lineups until both teams are done
+                        <span className="block text-faint">Each team sees only its own picks of players until every map is set.</span>
+                      </span>
+                    </label>
+                    <Button type="submit" className="h-9 w-full">
                       Start match
                     </Button>
                   </form>
                 )}
-                {canSet && (
-                  <form action={setBracketResult} className={`space-y-1.5 ${canStart ? 'border-t border-edge pt-2' : ''}`}>
-                    <input type="hidden" name="bracketId" value={bracket.id} />
-                    <input type="hidden" name="key" value={slot.key} />
-                    <select name="winnerId" defaultValue={slot.winnerId ?? ''} className={`${inputClass} h-8 px-2 text-xs`}>
-                      <option value="">No result yet</option>
-                      <option value={slot.teamA!.id}>{slot.teamA!.name} went through</option>
-                      <option value={slot.teamB!.id}>{slot.teamB!.name} went through</option>
-                    </select>
-                    <Button type="submit" variant="ghost" className="h-8 w-full">
-                      Set result by hand
-                    </Button>
-                    <p className="text-faint">
-                      {slot.match
-                        ? 'Ends the match with this result - for a walkover, or one settled elsewhere. Clearing it reopens the match.'
-                        : 'For a walkover, or a result settled elsewhere.'}
-                    </p>
-                  </form>
-                )}
-              </div>
-            </details>
+                {canSet && (() => {
+                  const resultForm = (
+                    <form action={setBracketResult} className="space-y-1.5">
+                      <input type="hidden" name="bracketId" value={bracket.id} />
+                      <input type="hidden" name="key" value={slot.key} />
+                      <select name="winnerId" defaultValue={slot.winnerId ?? ''} className={`${inputClass} h-8 px-2 text-xs`}>
+                        <option value="">No result yet</option>
+                        <option value={slot.teamA!.id}>{slot.teamA!.name} went through</option>
+                        <option value={slot.teamB!.id}>{slot.teamB!.name} went through</option>
+                      </select>
+                      <Button type="submit" variant="ghost" className="h-8 w-full">
+                        Set result by hand
+                      </Button>
+                      <p className="text-faint">
+                        {slot.match
+                          ? 'Ends the match with this result - for a walkover, or one settled elsewhere. Clearing it reopens the match.'
+                          : 'For a walkover, or a result settled elsewhere.'}
+                      </p>
+                    </form>
+                  );
+                  // Beside "Start match" it is the exception, so it stays folded away: open,
+                  // it looked like one more thing to fill in. Opened from "result ▾" it is the
+                  // whole point, so it shows at once.
+                  return canStart ? (
+                    <details className="group border-t border-edge pt-2">
+                      <summary className="cursor-pointer list-none text-[11px] text-faint underline decoration-faint/50 underline-offset-2 hover:text-ink">
+                        <span className="group-open:hidden">Set the result by hand…</span>
+                        <span className="hidden group-open:inline">Set the result by hand</span>
+                      </summary>
+                      <div className="mt-2">{resultForm}</div>
+                    </details>
+                  ) : (
+                    resultForm
+                  );
+                })()}
+            </SlotMenu>
           )}
         </span>
       </div>

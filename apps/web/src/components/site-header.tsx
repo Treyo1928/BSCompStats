@@ -25,7 +25,7 @@ export async function SiteHeader() {
 
   return (
     <header className="sticky top-0 z-30 border-b border-edge bg-surface/80 pt-[env(safe-area-inset-top)] backdrop-blur-md">
-      <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-2 px-3 py-2.5 sm:gap-4 sm:px-4">
+      <div className="mx-auto flex w-full max-w-7xl items-center [body:has([data-wide])_&]:max-w-[100rem] justify-between gap-2 px-3 py-2.5 sm:gap-4 sm:px-4">
         <Link href="/" className="group flex shrink-0 items-center gap-2.5">
           <Logo />
           <span className="text-[15px] font-semibold tracking-tight">

@@ -26,6 +26,8 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { getPoolSummary } from '@/server/summaries';
 import { PerfectAccForm } from '@/components/perfect-acc-form';
+import { RenameForm } from '@/components/rename-form';
+import { renamePool } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
 import { deletePool, triggerRefresh } from '@/server/actions';
 
@@ -112,6 +114,9 @@ export default async function PoolPage({
         actions={
           <>
             <LiveBadge poolId={poolId} />
+            {can(actor, 'IMPORT_POOL') && (
+              <RenameForm action={renamePool} idName="poolId" id={poolId} name={board.poolName} />
+            )}
             {actor.userId && (
               <form action={triggerRefresh}>
                 <input type="hidden" name="poolId" value={poolId} />
@@ -223,9 +228,6 @@ export default async function PoolPage({
                 {board.data.runsKnownFor} of {board.data.playerCount}
               </Link>
             </Stat>
-            <Stat label="Abandoned runs" hint="Far below the player's own normal and everyone else's on the map. Shown, but left out of averages.">
-              {board.data.failKeys.size}
-            </Stat>
           </dl>
         </Panel>
       </div>
@@ -277,13 +279,6 @@ function Legend() {
         not played
       </span>
       <span className="text-ink/80">Tap a player&apos;s name for their overview and stats</span>
-      <span
-        className="flex items-center gap-1.5"
-        title="Far below that player's normal and far below everyone else on the map. Left out of averages. A low score on a map that is simply beyond a player is a real score and counts as one."
-      >
-        <span className="cell-void h-3 w-5 rounded" />
-        abandoned run, not counted
-      </span>
       <span>★ best on map</span>
       <span>FC full combo</span>
       <span title="No Fail kicked in: they died partway and played the rest of the map on. Matches are played with No Fail on, so this is a real result.">

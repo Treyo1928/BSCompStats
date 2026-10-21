@@ -1,6 +1,8 @@
 import { Button, Empty, Field, Panel, inputClass } from './ui';
 import { createMatch } from '@/server/match-actions';
 
+const SCORING_NAMES: Record<string, string> = { ACCURACY: 'Average accuracy', MATCH_POINTS: 'Match points' };
+
 /** Create a match. Lives on both the tournament page and the teams page. */
 export function NewMatchForm({
   tournamentId,
@@ -71,21 +73,27 @@ export function NewMatchForm({
           <select name="coinFlip" className={inputClass} defaultValue="A">
             <option value="A">Team A</option>
             <option value="B">Team B</option>
+            <option value="RANDOM">Flip it for me</option>
           </select>
         </Field>
         {scoring.locked ? (
           <p className="text-xs text-muted">
-            Scored on {scoring.mode === 'MATCH_POINTS' ? 'match points' : 'average accuracy'}, as every match in
-            this tournament is.
+            Scored on {scoring.mode === 'MATCH_POINTS' ? 'match points' : 'average accuracy'}, the tournament
+            default, which every match in this tournament uses.
           </p>
         ) : (
           <Field
             label="Scoring"
-            hint="Match points curve each player's accuracy before averaging, which evens out a strong player duoing with a newer one."
+            hint={`Uses the tournament default (${SCORING_NAMES[scoring.mode] ?? scoring.mode}) unless you choose otherwise here, for this match only. Match points curve each player's accuracy before averaging, which evens out a strong player duoing with a newer one.`}
           >
-            <select name="scoring" className={inputClass} defaultValue={scoring.mode}>
-              <option value="ACCURACY">Average accuracy</option>
-              <option value="MATCH_POINTS">Match points</option>
+            {/* Keyed by the default, so a changed default shows here at once rather than a stale choice. */}
+            <select key={scoring.mode} name="scoring" className={inputClass} defaultValue={scoring.mode}>
+              {Object.entries(SCORING_NAMES).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                  {value === scoring.mode ? ' (tournament default)' : ''}
+                </option>
+              ))}
             </select>
           </Field>
         )}

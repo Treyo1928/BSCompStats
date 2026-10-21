@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { maxScoreForNotes, notesHit, notesPassed, pickBestRun, runEvidence, runProgress, type Run } from './attempts.js';
-import { classifyFails, detectDnf } from './normalize.js';
-import fixture from './fixtures/msu-fall-2026.json' with { type: 'json' };
 
-const observations = fixture as Array<{ playerId: string; leaderboardId: string; acc: number }>;
 const spin = 'spin-eternally';
 /** A run that reached `notes` notes at this accuracy, scored as BeatLeader would have it. */
 const run = (over: Partial<Run> & { notes?: number }): Run => {
@@ -111,27 +108,5 @@ describe('what recorded runs say', () => {
     expect(runProgress({ time: 30, endType: 'FAIL' }, undefined)).toBeCloseTo(0.5, 6);
     expect(runProgress({ time: 30, endType: 'CLEAR' }, undefined)).toBe(1);
     expect(runProgress({ time: 30, endType: 'FAIL' }, 0)).toBeCloseTo(0.5, 6);
-  });
-});
-
-describe('what counts as an abandoned run', () => {
-  it('lets a bad score on a hard map stand', () => {
-    // PretzelBread on the fall 2026 board: 74.5% on Hush and 70.4% on Pedi
-    // against a median of 89%. Far below the column, and simply what he gets.
-    const flags = classifyFails(observations);
-    const flagged = observations.filter((_, i) => flags[i]).map((o) => `${o.playerId}/${o.leaderboardId}`);
-    expect(flagged).not.toContain('PretzelBread/hush');
-    expect(flagged).not.toContain('PretzelBread/pedi');
-    expect(flagged).toEqual([]);
-  });
-
-  it('flags a run that is a fraction of the player s normal, column or no column', () => {
-    // zolism's 0.08% on Pedi and 0.01% on buggin' - the latter on a map with one other score.
-    expect(detectDnf(0.0008, 0.97, [0.88, 0.91, 0.95, 0.70])).toBe(true);
-    expect(detectDnf(0.0001, 0.97, [0.81])).toBe(true);
-    // Alex's 20% on Madeleine, everyone else at 96-98.
-    expect(detectDnf(0.2036, 0.96, [0.96, 0.97, 0.98, 0.975])).toBe(true);
-    // Kadence's 50% on Spin Eternally, in a column that runs 50-92: real.
-    expect(detectDnf(0.5045, 0.88, [0.5153, 0.7097, 0.9046, 0.88, 0.92])).toBe(false);
   });
 });

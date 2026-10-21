@@ -13,13 +13,16 @@ export function PointsCalculator({
   maps,
   curve,
   showPoints,
+  initialMapId,
 }: {
   maps: Array<{ id: string; name: string; difficulty: string; maxScore: number; perfectAcc: number | null }>;
   curve: PointsCurve;
   /** Whether this match is scored in match points; accuracy alone otherwise. */
   showPoints: boolean;
+  /** The map to start on. */
+  initialMapId?: string;
 }) {
-  const [mapId, setMapId] = useState(maps[0]?.id ?? '');
+  const [mapId, setMapId] = useState(initialMapId ?? maps[0]?.id ?? '');
   // What was typed, and in which box: the other two are worked out from it.
   const [entry, setEntry] = useState<{ field: 'score' | 'acc' | 'points'; text: string }>({ field: 'acc', text: '' });
   const map = maps.find((m) => m.id === mapId) ?? maps[0];

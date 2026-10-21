@@ -1,6 +1,7 @@
 import { prisma } from '@bscs/db';
 import { Avatar, Panel } from './ui';
 import { PlayerLink } from './player-card';
+import { RecheckRuns } from './recheck-runs';
 
 /**
  * Who shows their runs on BeatLeader. The leaderboard keeps a best clear per
@@ -8,7 +9,17 @@ import { PlayerLink } from './player-card';
  * with "Show my stats publicly" on. This is the one place to see who does,
  * so a captain knows whose bad maps the board can and cannot see.
  */
-export async function RunsVisibilityPanel({ tournamentId }: { tournamentId: string }) {
+export async function RunsVisibilityPanel({
+  tournamentId,
+  canCheck,
+  myPlayerIds = [],
+}: {
+  tournamentId: string;
+  /** Organisers: may ask BeatLeader again about anyone. */
+  canCheck: boolean;
+  /** Players the viewer is: they may ask about themselves. */
+  myPlayerIds?: string[];
+}) {
   const members = await prisma.teamMember.findMany({
     where: { team: { division: { tournamentId }, adHoc: false } },
     select: {
@@ -23,13 +34,14 @@ export async function RunsVisibilityPanel({ tournamentId }: { tournamentId: stri
   const groups: Array<{ key: boolean | null; title: string; note: string }> = [
     { key: true, title: 'Runs public', note: 'every fail, restart and quit on the pool maps is on the board, and match scores can be pulled for them' },
     { key: false, title: 'Runs private', note: 'only their clears are known; a map they have tried and never finished looks unplayed' },
-    { key: null, title: 'Not asked yet', note: 'the worker asks within a few minutes of a player joining a roster' },
+    { key: null, title: 'Not asked yet', note: 'asked within a few minutes of a player joining a roster' },
   ];
   return (
     <section id="runs" className="scroll-mt-20">
       <Panel
         title="Recorded runs on BeatLeader"
         subtitle="Who shows the runs behind their scores - which is also whose match scores can be pulled straight from BeatLeader. It is a switch in each player's own BeatLeader profile settings: Show my stats publicly."
+        actions={canCheck ? <RecheckRuns tournamentId={tournamentId} label="Check everyone again" /> : undefined}
       >
         <div className="grid gap-4 sm:grid-cols-3">
           {groups.map((g) => {
@@ -55,6 +67,11 @@ export async function RunsVisibilityPanel({ tournamentId }: { tournamentId: stri
                           <span>{m.player.name}</span>
                           <span className="text-xs text-faint">{m.team.name}</span>
                         </PlayerLink>
+                        {g.key !== true && (canCheck || myPlayerIds.includes(m.player.id)) && (
+                          <span className="ml-2">
+                            <RecheckRuns tournamentId={tournamentId} playerId={m.player.id} label="check" compact />
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -65,8 +82,8 @@ export async function RunsVisibilityPanel({ tournamentId }: { tournamentId: stri
         </div>
         <p className="mt-3 text-xs text-faint">
           Signing in here does not unlock anyone&apos;s runs: BeatLeader answers that request from its own
-          session only. Once a player flips the switch, the next score pull sees it at once, and the board
-          catches up within two hours.
+          session only. Once a player flips the switch, the next score pull sees it at once; to update this
+          list sooner than the daily re-check, check again here.
         </p>
       </Panel>
     </section>

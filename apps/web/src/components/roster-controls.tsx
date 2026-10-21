@@ -252,7 +252,7 @@ export function PlayerPicker({
                 <li key={c.beatLeaderId}>
                   <button
                     type="button"
-                    disabled={c.onTeam || adding !== null}
+                    disabled={c.onTeam || Boolean(c.unavailable) || adding !== null}
                     onClick={() => add(c)}
                     className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition hover:bg-raised disabled:cursor-not-allowed disabled:opacity-75 disabled:hover:bg-transparent"
                   >
@@ -276,7 +276,9 @@ export function PlayerPicker({
                       {c.note && <span className="block truncate text-xs text-warn">{c.note}</span>}
                     </span>
                     <span className="w-20 text-right text-xs tabular text-muted">
-                      {c.onTeam
+                      {c.unavailable
+                        ? c.unavailable
+                        : c.onTeam
                         ? takenLabel
                         : adding === c.beatLeaderId
                           ? 'Adding…'
@@ -397,6 +399,34 @@ export function MemberControls({
         </>
       )}
     </span>
+  );
+}
+
+/** The one control a player-pool row needs: take them out of the pool. */
+export function RemoveFromPool({ memberId, playerName }: { memberId: string; playerName: string }) {
+  const [pending, start] = useTransition();
+  const [failed, setFailed] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      title={failed ? UNREACHABLE : `Remove ${playerName} from the player pool`}
+      aria-label={`Remove ${playerName} from the player pool`}
+      onClick={() => {
+        if (!window.confirm(`Remove ${playerName} from the player pool?`)) return;
+        setFailed(false);
+        start(async () => {
+          try {
+            await removePlayerFromTeam(memberId);
+          } catch {
+            setFailed(true);
+          }
+        });
+      }}
+      className={`-mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-red-600/20 hover:text-lose disabled:opacity-50 ${failed ? 'text-warn' : 'text-faint'}`}
+    >
+      ✕
+    </button>
   );
 }
 

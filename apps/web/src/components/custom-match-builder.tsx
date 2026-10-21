@@ -465,6 +465,7 @@ export function MatchOptions({
           <select name="coinFlip" className={inputClass} defaultValue="A">
             <option value="A">{sideNames[0]}</option>
             <option value="B">{sideNames[1]}</option>
+            <option value="RANDOM">Flip it for me</option>
           </select>
         </Field>
       </div>
