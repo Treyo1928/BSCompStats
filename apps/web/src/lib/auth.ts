@@ -60,6 +60,9 @@ if (hasDiscordAuth) {
     Discord({
       clientId: env.DISCORD_CLIENT_ID!,
       clientSecret: env.DISCORD_CLIENT_SECRET!,
+      // Discord now sends `iss` back on the login redirect; without its real
+      // issuer here Auth.js checks it against a placeholder and rejects it.
+      issuer: 'https://discord.com',
     }),
   );
 }
