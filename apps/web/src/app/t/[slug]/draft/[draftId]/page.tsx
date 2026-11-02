@@ -72,6 +72,7 @@ export default async function DraftPage({
           slug: true,
           name: true,
           isPublic: true,
+          taModeDefault: true,
           pools: { orderBy: { createdAt: 'asc' }, select: { id: true, name: true } },
         },
       },
@@ -336,6 +337,7 @@ export default async function DraftPage({
               <MatchOptions
                 pools={draft.tournament.pools}
                 sideNames={[draft.teamA.name, draft.teamB.name]}
+                taModeDefault={draft.tournament.taModeDefault}
               />
               <Button type="submit">Create match</Button>
             </form>

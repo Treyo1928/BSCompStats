@@ -68,7 +68,8 @@ describe('the duo rule, against the real scrim', () => {
     expect(asNormalMap.appearances).toEqual({ erin: 3, trey: 2, mia: 3, will: 2 });
   });
 
-  it('catches a repeated duo and names both maps', () => {
+  // Repeated pairings are the referee's call, never the app's: they are counted, not refused.
+  it('allows a repeated duo, and still records both maps it was used on', () => {
     const lineups = maroonLineups.map((l) =>
       l.matchMapId === 'm4' ? { ...l, playerIds: ['erin', 'will'] } : l,
     );
@@ -80,13 +81,9 @@ describe('the duo rule, against the real scrim', () => {
       playerName: nameOf,
     });
 
-    const duo = result.violations.find((v) => v.code === 'DUPLICATE_DUO');
-    expect(duo).toBeDefined();
-    expect(duo!.severity).toBe('ERROR');
-    expect(duo!.message).toContain('Erin + Will');
-    expect(duo!.message).toContain('Map 1 - Madeleine');
-    expect(duo!.matchMapIds).toEqual(['m1', 'm4']);
-    expect(result.valid).toBe(false);
+    expect(result.violations).toEqual([]);
+    expect(result.valid).toBe(true);
+    expect(result.duos[duoKey(['erin', 'will'])]).toEqual(['m1', 'm4']);
   });
 
   it("accepts White's real lineups: a short roster cannot avoid what they did", () => {
@@ -120,7 +117,7 @@ describe('the duo rule, against the real scrim', () => {
 });
 
 describe('partial input while a captain is still choosing', () => {
-  it('warns rather than errors on an unfinished lineup', () => {
+  it('says nothing about an unfinished lineup, just that it is not complete', () => {
     const result = validateLineups({
       format: MSU_DUOS_FORMAT,
       lineups: [
@@ -132,8 +129,7 @@ describe('partial input while a captain is still choosing', () => {
 
     expect(result.complete).toBe(false);
     expect(result.valid).toBe(true); // nothing blocks yet
-    expect(result.violations[0]?.code).toBe('INCOMPLETE_LINEUP');
-    expect(result.violations[0]?.severity).toBe('WARNING');
+    expect(result.violations).toEqual([]);
   });
 
   it('does not accuse a half-filled map of repeating a duo', () => {
@@ -221,8 +217,8 @@ describe('other legality checks', () => {
 });
 
 describe('legalAdditions', () => {
-  it('steers the captain away from a pick that would repeat a duo', () => {
-    // Maps 1-3 as played; map 4 has Trey on it. Adding Mia is the legal move.
+  it('offers everyone not already on the map, whatever they played before', () => {
+    // Maps 1-3 as played; map 4 has Trey on it. Who plays what is the referee's call.
     const lineups: LineupInput[] = [
       { matchMapId: 'm1', mapLabel: 'Map 1', isTiebreaker: false, playerIds: ['erin', 'will'] },
       { matchMapId: 'm2', mapLabel: 'Map 2', isTiebreaker: false, playerIds: ['erin', 'trey'] },
@@ -241,9 +237,8 @@ describe('legalAdditions', () => {
 
     expect(byId.mia?.legal).toBe(true);
     expect(byId.trey?.legal).toBe(false); // already on this map
-    // Erin would be a third appearance; Will would too.
-    expect(byId.erin?.legal).toBe(false);
-    expect(byId.will?.legal).toBe(false);
+    expect(byId.erin?.legal).toBe(true);
+    expect(byId.will?.legal).toBe(true);
   });
 });
 
@@ -271,20 +266,22 @@ describe('a roster bigger than the format expects', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('still refuses to bench someone entirely', () => {
+  it('lets a player sit out entirely', () => {
     const benched = lineups.map((l) =>
       l.matchMapId === 'm3' ? { ...l, playerIds: ['trey', 'will'] } : l,
     );
     const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups: benched, roster: SIX, playerName: nameOf });
-    expect(result.violations.map((v) => v.code)).toContain('TOO_FEW_APPEARANCES');
+    expect(result.violations).toEqual([]);
+    expect(result.appearances.alex ?? 0).toBe(0);
   });
 
-  it('keeps the maximum, so nobody plays everything', () => {
+  it('lets a player play more maps than the format suggests', () => {
     const greedy = lineups.map((l) =>
       l.matchMapId === 'm2' ? { ...l, playerIds: ['erin', 'will'] } : l,
     );
     const result = validateLineups({ format: MSU_DUOS_FORMAT, lineups: greedy, roster: SIX, playerName: nameOf });
-    expect(result.violations.map((v) => v.code)).toContain('TOO_MANY_APPEARANCES');
+    expect(result.violations).toEqual([]);
+    expect(result.appearances.erin).toBe(3);
   });
 });
 
@@ -309,14 +306,15 @@ describe('a roster smaller than the format expects', () => {
     expect(result.violations).toEqual([]);
   });
 
-  it('still objects to a second repeat that nothing forced', () => {
+  it('allows any number of repeats', () => {
     const result = validateLineups({
       format: MSU_DUOS_FORMAT,
       roster: ['erin', 'trey', 'mia'],
       playerName: nameOf,
       lineups: four([['erin', 'trey'], ['erin', 'trey'], ['erin', 'trey'], ['trey', 'mia']]),
     });
-    expect(result.violations.map((v) => v.code)).toContain('DUPLICATE_DUO');
+    expect(result.violations).toEqual([]);
+    expect(result.duos[duoKey(['erin', 'trey'])]).toHaveLength(3);
   });
 
   it('accepts the same duo on every map from a two-player team', () => {

@@ -1,3 +1,4 @@
+import type { PlayOrder } from '@bscs/core';
 import { randomInt } from 'node:crypto';
 import { prisma, type Prisma } from '@bscs/db';
 import { assertPoolIsBigEnough, parseFormat, PickBanError } from './match-helpers';
@@ -123,6 +124,10 @@ export async function openMatch(input: {
   name?: string;
   /** "ACCURACY" or "MATCH_POINTS"; the tournament's default where not given, and always where it is locked. */
   scoring?: string | null;
+  /** PICKS_FIRST or PLAY_EACH_PICK for this match only; the tournament's default where not given. */
+  playOrder?: PlayOrder | null;
+  /** Run through TournamentAssistant; the tournament's default where not given. */
+  taMode?: boolean | null;
 }): Promise<{ matchId: string } | { error: string }> {
   const { tournamentId, poolId, teamAId, teamBId } = input;
   if (teamAId === teamBId) return { error: 'A team cannot play itself - choose two different teams.' };
@@ -134,7 +139,7 @@ export async function openMatch(input: {
     }),
     prisma.tournament.findUnique({
       where: { id: tournamentId },
-      select: { defaultFormat: true, matchScoring: true, scoringLocked: true, pointsCurve: true, replayCounting: true, doubleFailedRuns: true },
+      select: { defaultFormat: true, matchScoring: true, scoringLocked: true, pointsCurve: true, replayCounting: true, doubleFailedRuns: true, taModeDefault: true },
     }),
     prisma.team.findMany({
       where: { id: { in: [teamAId, teamBId] }, division: { tournamentId }, playerPool: false },
@@ -148,7 +153,12 @@ export async function openMatch(input: {
   const teamB = teams.find((t) => t.id === teamBId);
   if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
 
-  const format = parseFormat(tournament.defaultFormat);
+  const tournamentFormat = parseFormat(tournament.defaultFormat);
+  // A match that plays differently from the tournament keeps its own copy of the format.
+  const ownFormat = input.playOrder && input.playOrder !== tournamentFormat.playOrder
+    ? { ...tournamentFormat, playOrder: input.playOrder }
+    : null;
+  const format = ownFormat ?? tournamentFormat;
   try {
     assertPoolIsBigEnough({
       format,
@@ -174,6 +184,7 @@ export async function openMatch(input: {
       // RANDOM is flipped here, not in the browser, so neither side can rig it.
       coinFlipWinnerId: (input.coinFlip === 'RANDOM' ? (randomInt(2) === 0 ? 'A' : 'B') : input.coinFlip) === 'B' ? teamBId : teamAId,
       name: input.name?.trim() || `${teamA.name} vs ${teamB.name}`,
+      ...(ownFormat ? { format: ownFormat } : {}),
       state: 'PICKBAN',
       startedAt: new Date(),
       blindLineups: input.blindLineups,
@@ -186,6 +197,7 @@ export async function openMatch(input: {
       // Kept with the match too, so the result it was played under stands.
       replayCounting: parseReplayCounting(tournament.replayCounting),
       doubleFailedRuns: tournament.doubleFailedRuns,
+      taMode: input.taMode ?? tournament.taModeDefault,
     },
     select: { id: true },
   });

@@ -1,8 +1,11 @@
 'use server';
 
+import { parsePlayOrder } from '@/lib/play-order';
+import { parseTaMode } from '@/lib/ta-mode';
+
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { prisma } from '@bscs/db';
+import { prisma, Prisma } from '@bscs/db';
 import {
   assertCan,
   can,
@@ -22,7 +25,7 @@ import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
 import { cleanUpAdHocTeams, openMatch, parseCoinFlip } from './custom-teams';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
-import { aggregateTotals } from '@bscs/core/match';
+import { aggregateTotals, nextMapToPlay, parseTaStatus } from '@bscs/core/match';
 import { choose, countedRun, fetchRuns, loadPullTarget, writeRuns } from './score-pull';
 
 /**
@@ -71,6 +74,8 @@ export async function createMatch(formData: FormData): Promise<void> {
     blindLineups: formData.get('blindLineups') === 'on',
     name: String(formData.get('name') ?? ''),
     scoring: formData.get('scoring') ? String(formData.get('scoring')) : null,
+    playOrder: parsePlayOrder(formData.get('playOrder')),
+    taMode: parseTaMode(formData),
   });
   if ('error' in opened) failBack(back, opened.error);
 
@@ -86,9 +91,10 @@ export async function submitPickBan(formData: FormData): Promise<void> {
   const actor = await getActor(match.tournamentId);
   if (!actor) throw new Error('Sign in first.');
 
-  // A captain may act for their own team; staff may act for either.
-  if (!can(actor, 'MAKE_PICK_BAN', { teamId })) {
-    throw new Error('It is not your place to make this pick.');
+  // A captain may act for their own team; staff may act for either. In TA
+  // mode only staff may, for both.
+  if (!can(actor, 'MAKE_PICK_BAN', { teamId, taMode: match.taMode })) {
+    throw new Error(match.taMode ? TA_PICKS : 'It is not your place to make this pick.');
   }
 
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
@@ -305,11 +311,17 @@ export async function saveLineup(formData: FormData): Promise<{ error?: string }
       where: { matchMapId_teamId: { matchMapId, teamId } },
       create: { matchMapId, teamId, ruleBreaks },
       update: { ruleBreaks },
+      include: { slots: { orderBy: { slot: 'asc' }, select: { playerId: true } } },
     });
     await tx.lineupSlot.deleteMany({ where: { lineupId: lineup.id } });
     await tx.lineupSlot.createMany({
       data: playerIds.map((playerId, slot) => ({ lineupId: lineup.id, playerId, slot })),
     });
+    // TA was asked to start this map with the old lineup. It must not go
+    // ahead with the wrong players, so the request goes and has to be made again.
+    if (lineup.slots.map((s) => s.playerId).join(',') !== playerIds.join(',')) {
+      await tx.matchMap.updateMany({ where: { id: matchMapId, startRequestedAt: { not: null } }, data: NO_START });
+    }
   });
 
   await matchChanged(match.tournament.slug, matchId);
@@ -339,8 +351,14 @@ export async function saveScores(formData: FormData): Promise<void> {
     teamId,
     captainsEnterScores: match.tournament.captainsEnterScores,
   });
+  // Scores reported by TournamentAssistant, through the TA bridge. Only staff
+  // may say a score came from TA; anyone else's typing is typing.
+  const fromTa = formData.get('source') === 'TA';
+  if (fromTa) assertCan(actor, 'START_MAP');
+  const source = fromTa ? 'TA' : 'MANUAL';
 
   const back = `/t/${match.tournament.slug}/match/${matchId}`;
+  if (fromTa && !match.taMode) failBack(back, 'This match does not run through TournamentAssistant.');
   if (match.state === 'COMPLETE') {
     failBack(back, 'This match is complete, so its scores are frozen. Reopen it to correct them.');
   }
@@ -390,16 +408,30 @@ export async function saveScores(formData: FormData): Promise<void> {
         );
       }
 
-      const accuracy = maxScore > 0 ? score / maxScore : 0;
+      // TA says the accuracy itself; it is doubled back for a fail like the score.
+      const rawAcc = String(formData.get(`accuracy:${playerId}:${attempt}`) ?? '').trim();
+      const reported = rawAcc === '' ? null : Number(rawAcc);
+      if (reported != null && !(reported >= 0 && reported <= 1)) {
+        failBack(back, `Accuracy "${rawAcc}" must be between 0 and 1.`);
+      }
+      const rawMisses = String(formData.get(`misses:${playerId}:${attempt}`) ?? '').trim();
+      const misses = rawMisses === '' ? null : Number(rawMisses);
+      if (misses != null && !(Number.isInteger(misses) && misses >= 0)) {
+        failBack(back, `Misses "${rawMisses}" must be a whole number.`);
+      }
+
+      const accuracy =
+        reported != null ? Math.min(1, failed ? reported * 2 : reported) : maxScore > 0 ? score / maxScore : 0;
       writes.push(
         prisma.matchMapAttempt.upsert({
           where: key,
-          create: { matchMapId, teamId, playerId, attempt, score, accuracy, failed, source: 'MANUAL' },
+          create: { matchMapId, teamId, playerId, attempt, score, accuracy, failed, misses, source },
           update: {
             score,
             accuracy,
             failed,
-            source: 'MANUAL',
+            misses,
+            source,
             beatLeaderScoreId: null,
             beatLeaderAttemptId: null,
             endType: null,
@@ -458,9 +490,10 @@ export async function callReplay(formData: FormData): Promise<void> {
   }
 
   // A replay is a new run: it opens now, and its scores are open until closed.
+  // In TA mode it is started afresh, so the last start request goes.
   await prisma.matchMap.update({
     where: { id: matchMapId },
-    data: { replayCalledByTeamIds: { push: teamId }, runOpenedAt: new Date(), scoresClosedAt: null },
+    data: { replayCalledByTeamIds: { push: teamId }, runOpenedAt: new Date(), scoresClosedAt: null, ...NO_START },
   });
   await matchChanged(match.tournament.slug, matchId);
 }
@@ -524,7 +557,8 @@ async function materializeMaps(matchId: string): Promise<void> {
         poolMapId: entry.poolMapId,
         isTiebreaker: entry.isTiebreaker,
         pickedById: entry.pickedByTeamId,
-        ...(replaced ? { runOpenedAt: new Date(), scoresClosedAt: null } : {}),
+        // ...and any TA start asked for the map that was there is not for this one.
+        ...(replaced ? { runOpenedAt: new Date(), scoresClosedAt: null, ...NO_START } : {}),
       },
     });
   }
@@ -588,6 +622,8 @@ async function loadForMutation(matchId: string) {
         orderBy: { seq: 'asc' },
         select: { seq: true, type: true, teamId: true, poolMapId: true },
       },
+      // Which picked maps are finished: play-each-pick holds the next step until they are.
+      maps: { select: { poolMapId: true, scoresClosedAt: true } },
     },
   });
   if (!match) throw new Error('Match not found.');
@@ -747,6 +783,7 @@ async function authorisePull(matchId: string): Promise<{ slug: string; staff: bo
   ) {
     return { error: 'You cannot fill in scores for this match.' };
   }
+  if (match.taMode) return { error: TA_NO_PULL };
   if (match.state === 'COMPLETE') return { error: 'This match is complete, so its scores are frozen. Reopen it to change them.' };
   return { slug: match.tournament.slug, staff: isStaff(actor) };
 }
@@ -920,4 +957,157 @@ export async function reopenMapScores(formData: FormData): Promise<void> {
   if (match.state === 'COMPLETE') failBack(`/t/${match.tournament.slug}/match/${matchId}`, 'Reopen the match first.');
   await prisma.matchMap.updateMany({ where: { id: matchMapId, matchId }, data: { scoresClosedAt: null } });
   await matchChanged(match.tournament.slug, matchId);
+}
+
+// ---------------------------------------------------------------------------
+//  TournamentAssistant (TA) mode
+// ---------------------------------------------------------------------------
+//
+// The site never talks to TA. An organiser asks for a map to be started; a
+// bridge program following the match over the API sees the request, starts the
+// song in TA for everyone in the lineups, reports how it goes, and enters the
+// scores TA recorded. These are the site's half: the request and the report.
+
+const TA_PICKS =
+  'This match runs through TournamentAssistant, so only an organiser picks and bans. Tell them your choice.';
+const TA_NO_PULL =
+  'This match runs through TournamentAssistant: its scores come from TA, not BeatLeader. An organiser can type them in if TA did not report them.';
+
+/** Clears a start request and whatever the bridge said about it. */
+const NO_START = { startRequestedAt: null, startRequestedById: null, taStatus: Prisma.DbNull };
+
+/** A TA step's outcome. `status` is the HTTP status the API answers a refusal with. */
+export type TaOutcome = { ok: true } | TaRefusal;
+type TaRefusal = { error: string; status: 400 | 403 | 409 };
+const refuse = (error: string, status: TaRefusal['status']): TaRefusal => ({ error, status });
+
+/** Load a TA-mode match for a staff action on one of its maps. */
+async function taTarget(matchId: string, matchMapId: string) {
+  const match = await loadForMutation(matchId);
+  const actor = await getActor(match.tournamentId);
+  if (!actor || !can(actor, 'START_MAP')) {
+    return refuse('Only an organiser can start maps in TournamentAssistant.', 403);
+  }
+  if (!match.taMode) return refuse('This match does not run through TournamentAssistant.', 409);
+  if (match.state === 'COMPLETE') return refuse('This match is complete.', 409);
+  const maps = await prisma.matchMap.findMany({
+    where: { matchId },
+    select: {
+      id: true,
+      order: true,
+      isTiebreaker: true,
+      scoresClosedAt: true,
+      startRequestedAt: true,
+      poolMap: { select: { leaderboard: { select: { map: { select: { name: true } } } } } },
+      lineups: { select: { teamId: true, slots: { select: { playerId: true } } } },
+    },
+  });
+  const map = maps.find((m) => m.id === matchMapId);
+  if (!map) return refuse('That map is not part of this match.', 400);
+  return { match, actor, maps, map };
+}
+
+/**
+ * Ask for a map to be started in TA, or started again after a failed or
+ * aborted start (`restart`): a new request time, and the bridge's last report
+ * cleared. Staff only, on the map being played next, once both lineups are set.
+ */
+export async function startMapInTa(matchId: string, matchMapId: string, restart = false): Promise<TaOutcome> {
+  const t = await taTarget(matchId, matchMapId);
+  if ('error' in t) return t;
+  const { match, actor, maps, map } = t;
+  if (map.scoresClosedAt) return { error: CLOSED, status: 409 };
+
+  const next = nextMapToPlay(maps.map((m) => ({ ...m, scoresClosed: m.scoresClosedAt != null })));
+  if (next && next.id !== map.id) {
+    return {
+      error: `Maps are started in order: ${next.isTiebreaker ? 'the tiebreaker' : `map ${next.order}`} (${next.poolMap.leaderboard.map.name}) is next. Close its scores first.`,
+      status: 409,
+    };
+  }
+  const format = parseFormat(match.format ?? match.tournament.defaultFormat);
+  const unset = [match.teamAId, match.teamBId].some(
+    (teamId) => (map.lineups.find((l) => l.teamId === teamId)?.slots.length ?? 0) < format.playersPerMap,
+  );
+  if (unset) return { error: 'Set both teams\' lineups for this map first.', status: 409 };
+
+  // Conditional, so two organisers pressing at once make one request, not two.
+  const operator = (await realUser())?.id ?? actor.userId;
+  const updated = await prisma.matchMap.updateMany({
+    where: { id: matchMapId, startRequestedAt: restart ? { not: null } : null },
+    data: { startRequestedAt: new Date(), startRequestedById: operator || null, taStatus: Prisma.DbNull },
+  });
+  if (updated.count === 0) {
+    return restart
+      ? { error: 'There is no start to restart: none was requested for this map.', status: 409 }
+      : { error: 'A start was already requested for this map. Restart it or cancel it.', status: 409 };
+  }
+  await matchChanged(match.tournament.slug, matchId);
+  return { ok: true };
+}
+
+/** Take back a start request. Staff only; nothing to cancel is not an error. */
+export async function cancelMapStart(matchId: string, matchMapId: string): Promise<TaOutcome> {
+  const t = await taTarget(matchId, matchMapId);
+  if ('error' in t) return t;
+  const updated = await prisma.matchMap.updateMany({
+    where: { id: matchMapId, startRequestedAt: { not: null } },
+    data: NO_START,
+  });
+  if (updated.count > 0) await matchChanged(t.match.tournament.slug, matchId);
+  return { ok: true };
+}
+
+/**
+ * The bridge says how the start is going. Shown to everyone on the match page.
+ * `requestedAt`, where given, names the request the report is about: a report
+ * for one that has since been cancelled or restarted is refused, so a late
+ * message from an old start cannot overwrite the new one's.
+ */
+export async function reportTaStatus(
+  matchId: string,
+  matchMapId: string,
+  input: unknown,
+  requestedAt?: string | null,
+): Promise<TaOutcome> {
+  const t = await taTarget(matchId, matchMapId);
+  if ('error' in t) return t;
+  const { map } = t;
+  if (!map.startRequestedAt) {
+    return { error: 'No start is requested for this map: it was cancelled, or never asked for.', status: 409 };
+  }
+  if (requestedAt != null && Date.parse(requestedAt) !== map.startRequestedAt.getTime()) {
+    return {
+      error: `That start was cancelled or restarted. The current request is from ${map.startRequestedAt.toISOString()}.`,
+      status: 409,
+    };
+  }
+  const parsed = parseTaStatus(input);
+  if ('error' in parsed) return { error: parsed.error, status: 400 };
+  const fielded = new Set(map.lineups.flatMap((l) => l.slots.map((s) => s.playerId)));
+  const stranger = parsed.status.players?.find((p) => !fielded.has(p.playerId));
+  if (stranger) return { error: `status.players: ${stranger.playerId} is not in this map's lineups.`, status: 400 };
+
+  const updated = await prisma.matchMap.updateMany({
+    where: { id: matchMapId, startRequestedAt: map.startRequestedAt },
+    data: { taStatus: parsed.status as unknown as Prisma.InputJsonValue },
+  });
+  if (updated.count === 0) return { error: 'That start was cancelled or restarted a moment ago.', status: 409 };
+  await matchChanged(t.match.tournament.slug, matchId);
+  return { ok: true };
+}
+
+/** The match page's buttons: start, restart, cancel. Refusals come back on the page. */
+export async function taStartForm(formData: FormData): Promise<void> {
+  const matchId = String(formData.get('matchId'));
+  const matchMapId = String(formData.get('matchMapId'));
+  const step = String(formData.get('step'));
+  const outcome =
+    step === 'cancel'
+      ? await cancelMapStart(matchId, matchMapId)
+      : await startMapInTa(matchId, matchMapId, step === 'restart');
+  if ('error' in outcome) {
+    const match = await prisma.match.findUnique({ where: { id: matchId }, select: { tournament: { select: { slug: true } } } });
+    failBack(`/t/${match?.tournament.slug ?? ''}/match/${matchId}`, outcome.error);
+  }
 }

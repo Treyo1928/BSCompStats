@@ -1,3 +1,5 @@
+import { PlayOrderSelect } from '@/components/play-order-select';
+import { TaModeToggle } from '@/components/ta-mode-toggle';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
@@ -12,7 +14,7 @@ import { renameBracket } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
 import { loadBracket, type BracketSlotView, type BracketTeam, type BracketView } from '@/server/brackets';
 import { describeSide, layoutBracket, nameSlots } from '@/lib/bracket-layout';
-import { deleteBracket, setBracketPool, setBracketResult, startBracketMatch } from '@/server/bracket-actions';
+import { deleteBracket, setBracketPool, setBracketResult, setRoundPool, setSlotPool, startBracketMatch } from '@/server/bracket-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,6 +51,7 @@ export default async function BracketPage({
       captainsCreateMatches: true,
       matchScoring: true,
       scoringLocked: true,
+      taModeDefault: true,
       pools: { orderBy: { createdAt: 'asc' }, select: { id: true, name: true } },
     },
   });
@@ -62,7 +65,7 @@ export default async function BracketPage({
     );
 
   // What a match started here is scored on unless whoever starts it says otherwise.
-  const scoring: StartScoring = { mode: tournament.matchScoring, locked: tournament.scoringLocked };
+  const scoring: StartScoring = { mode: tournament.matchScoring, locked: tournament.scoringLocked, taModeDefault: tournament.taModeDefault };
   const champion = bracket.teams.find((t) => t.id === bracket.championId);
 
   return (
@@ -189,6 +192,7 @@ export default async function BracketPage({
               </ConfirmButton>
             </form>
           </div>
+          <PoolsByRound bracket={bracket} pools={tournament.pools} />
         </Panel>
       )}
     </div>
@@ -274,10 +278,11 @@ function Tree({
   );
 }
 
-/** The tournament's default scoring, and whether every match must use it. */
+/** The tournament's default scoring, and whether every match must use it. Also its TournamentAssistant default. */
 interface StartScoring {
   mode: string;
   locked: boolean;
+  taModeDefault: boolean;
 }
 
 const SCORING_NAMES: Record<string, string> = { ACCURACY: 'Average accuracy', MATCH_POINTS: 'Match points' };
@@ -329,7 +334,10 @@ function SlotCard({
       style={{ height: CARD_H }}
     >
       <div className="flex h-5 items-center justify-between gap-1 border-b border-edge/70 px-2 text-[10px] text-faint">
-        <span className="truncate">{names.slots.get(slot.key) ?? ''}</span>
+        <span className="truncate" title={slot.pool ? `Pool: ${slot.pool.name}` : undefined}>
+          {names.slots.get(slot.key) ?? ''}
+          {slot.ownPool && slot.pool ? ` · ${slot.pool.name}` : ''}
+        </span>
         <span className="flex shrink-0 items-center gap-2">
           {slot.match && (
             <Link href={`/t/${slug}/match/${slot.match.id}`} className="text-accent hover:underline">
@@ -388,6 +396,7 @@ function SlotCard({
                         </select>
                       </label>
                     )}
+                    <PlayOrderSelect compact className={`${inputClass} h-8 px-2 text-xs`} />
                     <label className="flex items-start gap-2">
                       <input type="checkbox" name="blindLineups" className="mt-0.5" />
                       <span>
@@ -395,6 +404,7 @@ function SlotCard({
                         <span className="block text-faint">Each team sees only its own picks of players until every map is set.</span>
                       </span>
                     </label>
+                    <TaModeToggle compact defaultOn={scoring.taModeDefault} />
                     <Button type="submit" className="h-9 w-full">
                       Start match
                     </Button>
@@ -480,5 +490,83 @@ function StandingsTable({ bracket }: { bracket: BracketView }) {
         </table>
       </div>
     </Panel>
+  );
+}
+
+const SECTION_NAMES: Record<string, string> = { RR: 'Round robin', W: 'Winners', L: 'Losers', GF: 'Grand final' };
+
+/**
+ * Pools change by round more often than by match: group stage on one pool, playoffs on another,
+ * finals on a third. One row per round sets every match in it; single matches can be overridden below.
+ */
+function PoolsByRound({ bracket, pools }: { bracket: BracketView; pools: Array<{ id: string; name: string }> }) {
+  const names = nameSlots(bracket.slots);
+  const rounds = new Map<string, BracketSlotView[]>();
+  for (const s of bracket.slots) {
+    if (s.passThrough) continue;
+    const k = `${s.section}|${s.round}`;
+    if (!rounds.has(k)) rounds.set(k, []);
+    rounds.get(k)!.push(s);
+  }
+  const poolSelect = (value: string, name = 'poolId') => (
+    <select name={name} defaultValue={value} className={`${inputClass} h-8 px-2 text-xs`}>
+      <option value="">Bracket default{bracket.pool ? ` (${bracket.pool.name})` : ''}</option>
+      {pools.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name}
+        </option>
+      ))}
+    </select>
+  );
+  return (
+    <div className="mt-4 space-y-3 border-t border-edge pt-4">
+      <h3 className="text-xs font-medium uppercase tracking-wider text-faint">Pools by round</h3>
+      <p className="text-xs text-faint">
+        Each match is played on its own pool if it has one, otherwise the bracket&apos;s. A match already being played keeps
+        the pool it started on.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {[...rounds.entries()].map(([k, slots]) => {
+          const [section, round] = k.split('|');
+          const own = new Set(slots.map((s) => (s.ownPool ? s.pool?.id ?? '' : '')));
+          return (
+            <form key={k} action={setRoundPool} className="flex items-end gap-2">
+              <input type="hidden" name="bracketId" value={bracket.id} />
+              <input type="hidden" name="section" value={section} />
+              <input type="hidden" name="round" value={round} />
+              <label className="flex flex-1 flex-col gap-1 text-xs text-muted">
+                {SECTION_NAMES[section!] ?? section} round {round}
+                {own.size > 1 ? ' (mixed)' : ''}
+                {poolSelect(own.size === 1 ? [...own][0]! : '')}
+              </label>
+              <Button type="submit" variant="ghost" className="h-8">
+                Set
+              </Button>
+            </form>
+          );
+        })}
+      </div>
+      <details>
+        <summary className="cursor-pointer text-xs text-muted hover:text-ink">One match on a different pool</summary>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {bracket.slots
+            .filter((s) => !s.passThrough)
+            .map((s) => (
+              <form key={s.key} action={setSlotPool} className="flex items-end gap-2">
+                <input type="hidden" name="bracketId" value={bracket.id} />
+                <input type="hidden" name="key" value={s.key} />
+                <label className="flex flex-1 flex-col gap-1 text-xs text-muted">
+                  {names.slots.get(s.key) ?? s.key}
+                  {s.teamA && s.teamB ? ` · ${s.teamA.name} vs ${s.teamB.name}` : ''}
+                  {poolSelect(s.ownPool ? s.pool?.id ?? '' : '')}
+                </label>
+                <Button type="submit" variant="ghost" className="h-8">
+                  Set
+                </Button>
+              </form>
+            ))}
+        </div>
+      </details>
+    </div>
   );
 }

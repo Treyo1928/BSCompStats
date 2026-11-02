@@ -121,28 +121,7 @@ export function Badge({
   );
 }
 
-export function Button({
-  children,
-  variant = 'primary',
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'ghost' | 'danger';
-}) {
-  const variants: Record<string, string> = {
-    primary:
-      'bg-accent font-semibold text-surface shadow-[0_6px_16px_-8px_var(--color-accent)] hover:brightness-110',
-    ghost: 'border border-edge bg-raised/60 text-ink hover:border-faint hover:bg-raised',
-    danger: 'bg-red-600/80 text-white hover:bg-red-600',
-  };
-  return (
-    <button
-      {...props}
-      className={`inline-flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${variants[variant]} ${props.className ?? ''}`}
-    >
-      {children}
-    </button>
-  );
-}
+export { Button } from './button';
 
 export function Field({
   label,

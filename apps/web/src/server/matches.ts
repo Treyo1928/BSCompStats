@@ -14,7 +14,7 @@ import {
   type LineupInput,
   type ValidationResult,
 } from './match-helpers';
-import { mapResult, type CountedRun, type MapResult, type Scoring } from '@bscs/core/match';
+import { mapResult, readTaStatus, type CountedRun, type MapResult, type Scoring, type TaStatus } from '@bscs/core/match';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
 
 /** Everything the match room needs, assembled in one place. */
@@ -37,6 +37,8 @@ export interface MatchView {
   blindLineups: boolean;
   /** Left off the tournament's match lists; the link still opens it. */
   unlisted: boolean;
+  /** Run through TournamentAssistant: organisers pick, ban and start each map; scores come from TA. */
+  taMode: boolean;
   /** Set when the match was completed with a winner; null for a draw or an unfinished match. */
   winnerId: string | null;
   format: MatchFormat;
@@ -60,7 +62,14 @@ export interface MatchView {
     createdAt: Date;
   }>;
   /** Null once pick/ban is over. */
-  pending: { seq: number; type: 'PICK' | 'BAN'; teamId: string; availableMapIds: string[] } | null;
+  pending: {
+    seq: number;
+    type: 'PICK' | 'BAN';
+    teamId: string;
+    availableMapIds: string[];
+    /** Play-each-pick: this picked map has to be played (scores closed) before the step opens. */
+    waitingForPoolMapId: string | null;
+  } | null;
   plannedMaps: Array<{
     order: number;
     poolMapId: string;
@@ -83,8 +92,18 @@ export interface MatchView {
     scoresClosed: boolean;
     /** Who took the map and by how much, under the match's scoring. */
     result: MapResult;
+    /** TA mode: the request to start this map in TA, and what the bridge last reported. Null when none is standing. */
+    start: MapStart | null;
   }>;
   scoreboard: { a: number; b: number };
+}
+
+/** A request to start a map in TournamentAssistant. */
+export interface MapStart {
+  requestedAt: Date;
+  requestedBy: { id: string; name: string | null } | null;
+  /** The bridge's last report; null until it has said anything. */
+  status: TaStatus | null;
 }
 
 /** One team's go at a map: first run, replay... */
@@ -109,8 +128,10 @@ export interface MatchScore {
   accuracy: number;
   /** Match points, under MATCH_POINTS scoring where the map has a perfect accuracy. */
   points: number | null;
-  /** AUTO when pulled from BeatLeader, MANUAL when typed in. */
+  /** AUTO when pulled from BeatLeader, MANUAL when typed in, TA when TournamentAssistant reported it. */
   source: string;
+  /** Missed notes, where the source said (TA does). */
+  misses: number | null;
   /** How the run ended, where it came from BeatLeader. */
   endType: string | null;
   /** They failed; No Fail halved it. Counted doubled back only under `scoring.doubleFails`. */
@@ -124,7 +145,15 @@ export interface TeamView {
   name: string;
   color: string;
   colorSecondary: string | null;
-  players: Array<{ id: string; name: string; avatar: string | null }>;
+  players: Array<{
+    id: string;
+    name: string;
+    avatar: string | null;
+    /** Steam64 for Steam players (TA's platform id too); BeatLeader's own id for Quest players. */
+    beatLeaderId: string;
+    /** The id TournamentAssistant knows them by, where an organiser set one; else use beatLeaderId. */
+    taPlatformId: string | null;
+  }>;
 }
 
 export interface PoolMapView {
@@ -140,6 +169,14 @@ export interface PoolMapView {
   isTiebreaker: boolean;
   /** Song length in seconds, where known. */
   duration: number;
+  /** The organiser's play-style tag ("Tech", "Acc"…), song artist, map hash and BPM, for overlays. */
+  category: string | null;
+  artist: string | null;
+  hash: string;
+  bpm: number;
+  /** BeatLeader's difficulty and mode names ("ExpertPlus", "Standard"), for replay viewers. */
+  difficultyName: string;
+  modeName: string;
   /** What counts as a perfect score here, for match points, and whose figure it is. */
   perfectAcc: number | null;
   perfectSource: 'ORGANISERS' | 'BEATLEADER' | null;
@@ -187,6 +224,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
           poolMap: { include: { leaderboard: { include: { map: true } } } },
           lineups: { include: { slots: { orderBy: { slot: 'asc' }, include: { player: true } } } },
           attempts: { include: { player: { select: { name: true } } }, orderBy: { attempt: 'asc' } },
+          startRequestedBy: { select: { id: true, name: true } },
         },
       },
     },
@@ -200,15 +238,18 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     id: string;
     leaderboardId: string;
     label: string | null;
+    category: string | null;
     isTiebreaker: boolean;
     perfectAcc: number | null;
     leaderboard: {
       difficultyValue: number;
+      difficultyName: string;
+      modeName: string;
       customName: string | null;
       maxScore: number;
       duration: number;
       predictedAcc: number;
-      map: { name: string; mapper: string | null; coverImage: string | null; duration: number };
+      map: { name: string; mapper: string | null; author: string | null; hash: string; bpm: number; coverImage: string | null; duration: number };
     };
   }): PoolMapView => {
     const perfect = perfectAccOf(pm, match.tournament.perfectFromBeatLeader);
@@ -224,6 +265,12 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     maxScore: pm.leaderboard.maxScore,
     isTiebreaker: pm.isTiebreaker,
     duration: pm.leaderboard.duration || pm.leaderboard.map.duration,
+    category: pm.category,
+    artist: pm.leaderboard.map.author,
+    hash: pm.leaderboard.map.hash,
+    bpm: pm.leaderboard.map.bpm,
+    difficultyName: pm.leaderboard.difficultyName,
+    modeName: pm.leaderboard.modeName,
     perfectAcc: perfect.value,
     perfectSource: perfect.source,
     };
@@ -276,6 +323,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
         source: run.source,
         endType: run.endType,
         failed: run.failed,
+        misses: run.misses,
         replayUrl: replayViewer(run),
       };
     };
@@ -308,6 +356,13 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
       replayCalledByTeamIds: matchMap?.replayCalledByTeamIds ?? [],
       scoresClosed: matchMap?.scoresClosedAt != null,
       result,
+      start: matchMap?.startRequestedAt
+        ? {
+            requestedAt: matchMap.startRequestedAt,
+            requestedBy: matchMap.startRequestedBy,
+            status: readTaStatus(matchMap.taStatus),
+          }
+        : null,
     };
   });
 
@@ -330,6 +385,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     scoring,
     blindLineups: match.blindLineups,
     unlisted: match.unlisted,
+    taMode: match.taMode,
     winnerId: match.winnerId,
     format,
     teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),
@@ -360,7 +416,7 @@ function toTeamView(team: {
   colorSecondary: string | null;
   members: Array<{
     available: boolean;
-    player: { id: string; name: string; avatar: string | null };
+    player: { id: string; name: string; avatar: string | null; beatLeaderId: string; taPlatformId: string | null };
   }>;
 }, everyone: boolean): TeamView {
   return {
@@ -377,6 +433,8 @@ function toTeamView(team: {
         id: m.player.id,
         name: m.player.name,
         avatar: m.player.avatar,
+        beatLeaderId: m.player.beatLeaderId,
+        taPlatformId: m.player.taPlatformId,
       })),
   };
 }
@@ -388,6 +446,8 @@ export function buildPickBanContext(
     coinFlipWinnerId: string | null;
     pool: { maps: Array<{ id: string; isTiebreaker: boolean }> };
     actions: Array<{ seq: number; type: 'PICK' | 'BAN'; teamId: string; poolMapId: string }>;
+    /** Materialised maps; a closed one counts as played for PLAY_EACH_PICK. */
+    maps?: Array<{ poolMapId: string; scoresClosedAt: Date | null }>;
   },
   format: MatchFormat,
 ): PickBanContext {
@@ -412,6 +472,7 @@ export function buildPickBanContext(
       teamId: a.teamId,
       poolMapId: a.poolMapId,
     })),
+    playedPoolMapIds: (match.maps ?? []).filter((m) => m.scoresClosedAt != null).map((m) => m.poolMapId),
   };
 }
 

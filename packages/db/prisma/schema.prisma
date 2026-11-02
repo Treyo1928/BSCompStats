@@ -36,11 +36,13 @@ model User {
 
   accounts           Account[]
   sessions           Session[]
+  apiKeys            ApiKey[]
   players            Player[]
   tournamentMembers  TournamentMember[]
   ownedTournaments   Tournament[]       @relation("TournamentOwner")
   actionsPerformed   MatchAction[]      @relation("ActingUser")
   actionsOnBehalfOf  MatchAction[]      @relation("OnBehalfOfUser")
+  mapStartsRequested MatchMap[]         @relation("StartRequestedBy")
 }
 
 model Account {
@@ -145,6 +147,11 @@ model Player {
   attemptsPublic    Boolean?
   attemptsCheckedAt DateTime?
   attemptsSyncedAt  DateTime?
+
+  /// The id TournamentAssistant knows them by, where it is not their BeatLeader
+  /// id: BeatLeader ids are Steam64 for Steam players (what TA uses too) but
+  /// BeatLeader's own for Quest/Oculus players. Null: use beatLeaderId.
+  taPlatformId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -487,6 +494,8 @@ model Tournament {
   replayCounting String @default("BEST_PAIR")
   /// A failed run counts doubled back from No Fail's halving. Off: as scored.
   doubleFailedRuns Boolean @default(false)
+  /// New matches run through TournamentAssistant unless whoever sets one up says otherwise.
+  taModeDefault Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -497,6 +506,7 @@ model Tournament {
   drafts    Draft[]
   members   TournamentMember[]
   brackets  Bracket[]
+  apiKeys   ApiKey[]
 
   @@index([ownerId])
 }
@@ -618,12 +628,19 @@ model MapPool {
   sourceType String?
   sourceRef  String?
 
+  /// Scores and runs on this pool's maps set before this are left out, for
+  /// everyone who looks: an organiser's cutoff, so a run from years ago does
+  /// not stand for the player now. Null counts everything.
+  scoresSince DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   maps     PoolMap[]
   matches  Match[]
   brackets Bracket[]
+  /// Bracket slots that play this pool instead of their bracket's default.
+  bracketNodes BracketNode[]
 
   @@unique([tournamentId, name])
 }
@@ -704,6 +721,11 @@ model Match {
   /// A failed run counts doubled back from No Fail's halving. Off: as scored.
   doubleFailedRuns Boolean @default(false)
 
+  /// Run through TournamentAssistant: organisers pick and ban and start each
+  /// map, a bridge program starts it in TA, and the scores come from TA rather
+  /// than BeatLeader. Fixed when the match is made.
+  taMode Boolean @default(false)
+
   scheduledAt DateTime?
   startedAt   DateTime?
   completedAt DateTime?
@@ -782,6 +804,15 @@ model MatchMap {
   /// typed in after that until an organiser reopens them.
   scoresClosedAt DateTime?
 
+  /// TA mode: an organiser asked for this map to be started in TournamentAssistant.
+  /// Cleared by a cancel, a lineup change or a replay; a restart sets it anew.
+  startRequestedAt   DateTime?
+  startRequestedById String?
+  startRequestedBy   User?     @relation("StartRequestedBy", fields: [startRequestedById], references: [id], onDelete: SetNull)
+  /// What the TA bridge last reported for that request: phase, per-player
+  /// state, an error. Shape checked by core match/ta. Null until it reports.
+  taStatus           Json?
+
   createdAt DateTime @default(now())
 
   lineups  Lineup[]
@@ -848,7 +879,11 @@ model MatchMapAttempt {
   /// is the match's `doubleFailedRuns`.
   failed   Boolean @default(false)
 
-  /// AUTO when pulled from BeatLeader, MANUAL when someone typed it.
+  /// Missed notes, where the source says (TournamentAssistant does).
+  misses   Int?
+
+  /// AUTO when pulled from BeatLeader, MANUAL when someone typed it, TA when
+  /// TournamentAssistant reported it.
   source            String  @default("AUTO")
   beatLeaderScoreId Int?
   /// The BeatLeader run this was pulled from.
@@ -959,7 +994,7 @@ model Bracket {
   name   String
   /// "ROUND_ROBIN" | "SINGLE_ELIM" | "DOUBLE_ELIM"
   format String
-  /// The pool its matches are played on.
+  /// The pool its matches are played on, unless a slot names its own.
   poolId String?
   pool   MapPool? @relation(fields: [poolId], references: [id], onDelete: SetNull)
   order  Int      @default(0)
@@ -1005,7 +1040,40 @@ model BracketNode {
   /// The match played for this slot.
   matchId  String? @unique
   match    Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  /// This slot's pool, when it differs from the bracket's (finals on a harder pool, say).
+  poolId   String?
+  pool     MapPool? @relation(fields: [poolId], references: [id], onDelete: SetNull)
 
   @@unique([bracketId, key])
   @@index([bracketId])
+  @@index([poolId])
+}
+
+// ===========================================================================
+//  API keys
+// ===========================================================================
+
+/// A key an overlay or control app sends instead of a browser sign-in. It acts
+/// as its user, with exactly that user's permissions, so an organiser's key can
+/// run matches and a captain's key can only act for their team.
+model ApiKey {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  /// The first characters of the key ("bscs_ab12cd"), so it can be recognised in the list.
+  prefix String
+  /// SHA-256 of the whole key. The key itself is shown once and never stored.
+  hash   String @unique
+  /// Limited to one tournament, or null for every tournament the user can act in.
+  tournamentId String?
+  tournament   Tournament? @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  /// Off: the key can read (overlays) but not change anything.
+  canWrite   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
 }

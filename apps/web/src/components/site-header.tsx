@@ -43,6 +43,11 @@ export async function SiteHeader() {
               Users
             </Link>
           )}
+          {user && (
+            <Link href="/account/api-keys" className="hidden rounded-lg px-3 py-1.5 hover:bg-raised hover:text-ink sm:block">
+              API keys
+            </Link>
+          )}
           {user ? (
             <form
               action={async () => {

@@ -27,6 +27,18 @@ export const tiebreakerModeSchema = z.enum([
 ]);
 export type TiebreakerMode = z.infer<typeof tiebreakerModeSchema>;
 
+export const playOrderSchema = z.enum([
+  /** Every pick and ban first, then the maps are played in pick order. */
+  'PICKS_FIRST',
+  /**
+   * Each picked map is played straight away, before the next pick or ban -
+   * how live tournaments usually run: pick, play, pick, play, ban, ban, ...
+   * The tiebreaker is played last, once the sequence is spent.
+   */
+  'PLAY_EACH_PICK',
+]);
+export type PlayOrder = z.infer<typeof playOrderSchema>;
+
 export const winConditionSchema = z.enum([
   /** Most maps won, each map decided on combined team score. */
   'MAP_WINS',
@@ -71,6 +83,8 @@ export const matchFormatSchema = z.object({
   pickBanSequence: z.array(pickBanStepSchema).default([]),
   tiebreaker: tiebreakerModeSchema.default('LAST_REMAINING'),
   winCondition: winConditionSchema.default('MAP_WINS'),
+  /** Whether maps wait for pick/ban to finish or are played as they are picked. */
+  playOrder: playOrderSchema.default('PICKS_FIRST'),
   rules: matchRulesSchema.default({}),
 });
 export type MatchFormat = z.infer<typeof matchFormatSchema>;
@@ -109,9 +123,21 @@ export const MSU_DUOS_FORMAT: MatchFormat = matchFormatSchema.parse({
   },
 });
 
+/**
+ * The same sequence played live: each pick is played before the next step,
+ * so a match runs pick, play, pick, play, ban, ban, pick, play, pick, play,
+ * and then the tiebreaker.
+ */
+export const MSU_DUOS_LIVE_FORMAT: MatchFormat = matchFormatSchema.parse({
+  ...MSU_DUOS_FORMAT,
+  name: 'MSU duos, live (play each pick)',
+  playOrder: 'PLAY_EACH_PICK',
+});
+
 /** Format presets offered when creating a tournament. */
 export const FORMAT_PRESETS: Record<string, MatchFormat> = {
   msuDuos: MSU_DUOS_FORMAT,
+  msuDuosLive: MSU_DUOS_LIVE_FORMAT,
   soloBo5: matchFormatSchema.parse({
     name: 'Solo best-of-5',
     playersPerMap: 1,

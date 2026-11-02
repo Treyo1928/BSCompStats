@@ -95,3 +95,29 @@ describe('match set-up and BeatLeader scores', () => {
     expect(can(organiser, 'PULL_SCORES', { matchTeamIds: ['green', 'blue'] })).toBe(true);
   });
 });
+
+describe('TournamentAssistant mode', () => {
+  it('leaves pick and ban to staff, even for a captain\'s own team', () => {
+    expect(can(captain, 'MAKE_PICK_BAN', { teamId: 'maroon', taMode: true })).toBe(false);
+    expect(can(captain, 'MAKE_PICK_BAN', { teamId: 'white', taMode: true })).toBe(false);
+    expect(can(organizer, 'MAKE_PICK_BAN', { teamId: 'maroon', taMode: true })).toBe(true);
+    expect(can(admin, 'MAKE_PICK_BAN', { teamId: 'maroon', taMode: true })).toBe(true);
+    // A captain who also runs the event is staff, so still may.
+    expect(can(playerCaptainWhoRunsTheEvent, 'MAKE_PICK_BAN', { teamId: 'white', taMode: true })).toBe(true);
+    // Off, captains pick and ban as ever.
+    expect(can(captain, 'MAKE_PICK_BAN', { teamId: 'maroon', taMode: false })).toBe(true);
+  });
+
+  it('keeps lineups with the captains', () => {
+    expect(can(captain, 'SET_LINEUP', { teamId: 'maroon', taMode: true })).toBe(true);
+    expect(can(captain, 'SET_LINEUP', { teamId: 'white', taMode: true })).toBe(false);
+  });
+
+  it('lets only staff start a map', () => {
+    expect(can(organizer, 'START_MAP')).toBe(true);
+    expect(can(admin, 'START_MAP')).toBe(true);
+    expect(can(captain, 'START_MAP', { teamId: 'maroon', taMode: true })).toBe(false);
+    expect(can(player, 'START_MAP')).toBe(false);
+    expect(can(stranger, 'START_MAP')).toBe(false);
+  });
+});

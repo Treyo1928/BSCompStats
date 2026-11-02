@@ -26,6 +26,7 @@ export default async function CustomMatchPage({
     select: {
       id: true,
       name: true,
+      taModeDefault: true,
       pools: { orderBy: { createdAt: 'asc' }, select: { id: true, name: true } },
       drafts: {
         where: { matchId: null },
@@ -104,6 +105,7 @@ export default async function CustomMatchPage({
           tournamentId={tournament.id}
           players={[...players.values()]}
           pools={tournament.pools}
+          taModeDefault={tournament.taModeDefault}
         />
       )}
     </div>

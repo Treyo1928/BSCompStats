@@ -81,6 +81,7 @@ export default async function TournamentPage({
       captainsCreateMatches: true,
       matchScoring: true,
       scoringLocked: true,
+      taModeDefault: true,
       pools: {
         orderBy: { createdAt: 'asc' },
         select: {
@@ -319,6 +320,7 @@ export default async function TournamentPage({
             pools={tournament.pools}
             from="tournament"
             scoring={{ mode: tournament.matchScoring, locked: tournament.scoringLocked }}
+            taModeDefault={tournament.taModeDefault}
             ownTeamIds={can(actor, 'CREATE_MATCH') ? undefined : [...(actor.captainOfTeamIds ?? [])]}
           />
           {can(actor, 'CREATE_MATCH') && (

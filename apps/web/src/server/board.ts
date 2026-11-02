@@ -3,7 +3,7 @@ import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
 import { buildTournamentData, type TournamentData } from './stats';
-import { loadRuns, loadScores, type ScoreSource, type StoredRun } from './score-sources';
+import { loadRuns, loadScores, poolCutoffs, type ScoreSource, type StoredRun } from './score-sources';
 
 /**
  * The pool board: every tracked player against every map in a pool.
@@ -105,6 +105,10 @@ export interface BoardMap {
 export interface PoolBoard {
   poolId: string;
   poolName: string;
+  /** The organisers' cutoff: scores and runs set before it are left out. Null counts everything. */
+  scoresSince: Date | null;
+  /** Players' bests on these maps left out for being set before the cutoff. */
+  tooOld: number;
   maps: BoardMap[];
   /** Rows grouped by team, the way the spreadsheet blocked them out. */
   teams: Array<{
@@ -186,6 +190,7 @@ export async function buildPoolBoard(
       id: true,
       name: true,
       tournamentId: true,
+      scoresSince: true,
       maps: {
         orderBy: { order: 'asc' },
         select: {
@@ -219,10 +224,12 @@ export async function buildPoolBoard(
   const leaderboardIds = pool.maps.map((m) => m.leaderboardId);
   const playerIds = [...new Set(members.map((m) => m.player.id))];
 
-  const scores = await loadScores(playerIds, { source, leaderboardIds });
+  const cutoffs = await poolCutoffs({ poolId });
+  const report = { tooOld: 0 };
+  const scores = await loadScores(playerIds, { source, leaderboardIds, cutoffs, report });
 
   const scoreBy = new Map(scores.map((s) => [`${s.playerId}::${s.leaderboardId}`, s]));
-  const known = source === 'scoresaber' ? null : await loadRuns(playerIds, leaderboardIds);
+  const known = source === 'scoresaber' ? null : await loadRuns(playerIds, leaderboardIds, cutoffs);
   const runsBy = summariseRuns(known?.runs ?? [], known?.durations ?? {});
 
   const data = await buildTournamentData(pool.tournamentId, overrideScope, source);
@@ -289,8 +296,8 @@ export async function buildPoolBoard(
         // The viewer takes the score id and plays it.
         replayUrl: score?.beatLeaderScoreId
           ? `https://replay.beatleader.com/?scoreId=${score.beatLeaderScoreId}`
-          : bestTry?.replayUrl
-            ? `https://replay.beatleader.com/?link=${encodeURIComponent(bestTry.replayUrl)}`
+          : (score?.replayUrl ?? bestTry?.replayUrl)
+            ? `https://replay.beatleader.com/?link=${encodeURIComponent((score?.replayUrl ?? bestTry?.replayUrl)!)}`
             : null,
         rank: rank && rank > 0 ? rank : null,
         runs,
@@ -335,6 +342,8 @@ export async function buildPoolBoard(
   return {
     poolId: pool.id,
     poolName: pool.name,
+    scoresSince: pool.scoresSince,
+    tooOld: report.tooOld,
     maps,
     teams: teamOrder.map((key) => {
       const teamRows = byTeam.get(key)!;

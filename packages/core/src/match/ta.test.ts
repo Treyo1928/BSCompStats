@@ -1,0 +1,83 @@
+import { describe, it, expect } from 'vitest';
+import { nextMapToPlay, parseTaStatus, readTaStatus, TA_MAX_PLAYERS } from './ta.js';
+
+const now = new Date('2026-10-29T20:00:00Z');
+
+describe('a TA bridge report', () => {
+  it('is stored with the time it arrived', () => {
+    const out = parseTaStatus(
+      {
+        phase: 'playing',
+        players: [
+          { playerId: 'p1', state: 'playing' },
+          { playerId: 'p2', state: 'finished', score: 812_345, accuracy: 0.9612 },
+        ],
+        startedAt: '2026-10-29T19:59:30+00:00',
+      },
+      now,
+    );
+    expect(out).toEqual({
+      status: {
+        phase: 'playing',
+        players: [
+          { playerId: 'p1', state: 'playing' },
+          { playerId: 'p2', state: 'finished', score: 812_345, accuracy: 0.9612 },
+        ],
+        startedAt: '2026-10-29T19:59:30.000Z',
+        reportedAt: '2026-10-29T20:00:00.000Z',
+      },
+    });
+  });
+
+  it('needs only a phase', () => {
+    expect(parseTaStatus({ phase: 'waiting' }, now)).toEqual({ status: { phase: 'waiting', reportedAt: now.toISOString() } });
+  });
+
+  it('says what is wrong with a bad one', () => {
+    expect(parseTaStatus(null)).toHaveProperty('error');
+    expect(parseTaStatus({ phase: 'started' })).toMatchObject({ error: expect.stringContaining('status.phase') });
+    expect(parseTaStatus({ phase: 'playing', players: [{ playerId: 'p1', state: 'dancing' }] })).toMatchObject({
+      error: expect.stringContaining('status.players.0.state'),
+    });
+    expect(parseTaStatus({ phase: 'finished', players: [{ playerId: 'p1', state: 'finished', accuracy: 96.1 }] })).toMatchObject({
+      error: expect.stringContaining('accuracy'),
+    });
+    expect(parseTaStatus({ phase: 'loading', startedAt: 'soon' })).toMatchObject({ error: expect.stringContaining('startedAt') });
+    expect(parseTaStatus({ phase: 'error', message: 'x'.repeat(501) })).toHaveProperty('error');
+    expect(parseTaStatus({ phase: 'waiting', extra: 1 })).toHaveProperty('error');
+    expect(
+      parseTaStatus({ phase: 'loading', players: [{ playerId: 'p1', state: 'ready' }, { playerId: 'p1', state: 'loading' }] }),
+    ).toMatchObject({ error: expect.stringContaining('twice') });
+  });
+
+  it('is kept small', () => {
+    const players = Array.from({ length: TA_MAX_PLAYERS + 1 }, (_, i) => ({ playerId: `p${i}`, state: 'ready' }));
+    expect(parseTaStatus({ phase: 'loading', players })).toHaveProperty('error');
+  });
+
+  it('reads back what was stored, and nothing else', () => {
+    const stored = (parseTaStatus({ phase: 'error', message: 'TA lost the connection' }, now) as { status: unknown }).status;
+    expect(readTaStatus(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    expect(readTaStatus(null)).toBeNull();
+    expect(readTaStatus({ phase: 'waiting' })).toBeNull();
+    expect(readTaStatus('waiting')).toBeNull();
+  });
+});
+
+describe('the map to play next', () => {
+  const map = (order: number, scoresClosed: boolean, isTiebreaker = false) => ({ order, scoresClosed, isTiebreaker });
+
+  it('is the first map still open, in slot order', () => {
+    expect(nextMapToPlay([map(2, false), map(1, true), map(3, false)])?.order).toBe(2);
+  });
+
+  it('puts the tiebreaker last, whatever its slot', () => {
+    expect(nextMapToPlay([map(1, false, true), map(2, false)])?.order).toBe(2);
+    expect(nextMapToPlay([map(1, false, true), map(2, true)])?.order).toBe(1);
+  });
+
+  it('is none once every map is closed', () => {
+    expect(nextMapToPlay([map(1, true), map(2, true)])).toBeNull();
+    expect(nextMapToPlay([])).toBeNull();
+  });
+});

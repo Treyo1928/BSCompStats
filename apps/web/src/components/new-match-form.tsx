@@ -1,5 +1,7 @@
 import { Button, Empty, Field, Panel, inputClass } from './ui';
 import { createMatch } from '@/server/match-actions';
+import { PlayOrderSelect } from '@/components/play-order-select';
+import { TaModeToggle } from '@/components/ta-mode-toggle';
 
 const SCORING_NAMES: Record<string, string> = { ACCURACY: 'Average accuracy', MATCH_POINTS: 'Match points' };
 
@@ -11,6 +13,7 @@ export function NewMatchForm({
   from,
   scoring,
   ownTeamIds,
+  taModeDefault,
 }: {
   tournamentId: string;
   teams: Array<{ id: string; name: string }>;
@@ -21,6 +24,8 @@ export function NewMatchForm({
   scoring: { mode: string; locked: boolean };
   /** For a captain setting up their own match: the teams they may put down as Team A. Everyone else: absent. */
   ownTeamIds?: string[];
+  /** New matches run through TournamentAssistant unless unticked here. */
+  taModeDefault: boolean;
 }) {
   const sideA = ownTeamIds ? teams.filter((t) => ownTeamIds.includes(t.id)) : teams;
   const sideB = ownTeamIds ? teams.filter((t) => !ownTeamIds.includes(t.id) || sideA.length > 1) : teams;
@@ -97,6 +102,7 @@ export function NewMatchForm({
             </select>
           </Field>
         )}
+        <PlayOrderSelect className={inputClass} />
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" name="blindLineups" className="mt-1" />
           <span>
@@ -107,6 +113,7 @@ export function NewMatchForm({
             </span>
           </span>
         </label>
+        <TaModeToggle defaultOn={taModeDefault} />
         <Button type="submit">Create match</Button>
       </form>
     </Panel>

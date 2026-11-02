@@ -1,5 +1,5 @@
 import { prisma } from '@bscs/db';
-import { loadScores, runsPulse, scoreSaberPulse, type ScoreSource } from './score-sources';
+import { loadScores, poolCutoffs, runsPulse, scoreSaberPulse, type ScoreSource } from './score-sources';
 import {
   applyScope,
   buildPlayerProfiles,
@@ -62,6 +62,8 @@ export async function buildTournamentData(
     select: { leaderboardId: true },
   });
   const poolLeaderboardIds = new Set(poolMaps.map((pm) => pm.leaderboardId));
+  // The organisers' "count scores from" dates on the pools.
+  const cutoffs = await poolCutoffs({ tournamentId });
 
   // Cheap to ask, and it moves whenever a score is added or improved.
   const pulse = await prisma.score.aggregate({
@@ -74,6 +76,7 @@ export async function buildTournamentData(
     scope,
     [...playerIds].sort(),
     [...poolLeaderboardIds].sort(),
+    [...cutoffs].sort(),
     pulse._count,
     pulse._max.timeset,
     pulse._sum.baseScore,
@@ -91,6 +94,7 @@ export async function buildTournamentData(
     const scores = await loadScores(playerIds, {
       source,
       leaderboardIds: scope.source === 'POOL_ONLY' ? [...poolLeaderboardIds] : undefined,
+      cutoffs,
     });
 
     const maxScores: Record<string, number> = {};

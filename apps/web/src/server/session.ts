@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { prisma } from '@bscs/db';
@@ -28,7 +29,19 @@ interface Identity {
   effective: SiteUser;
 }
 
-const resolveIdentity = cache(async (): Promise<Identity | null> => {
+/**
+ * Set for the length of an API request made with a key: the key's user is who
+ * is acting, as if they had signed in. Nothing else changes - every permission
+ * check still runs against that user's real roles. See withApiUser.
+ */
+const apiIdentity = new AsyncLocalStorage<Identity>();
+
+/** Run `fn` as `user`, for an API request authenticated by that user's key. */
+export function withApiUser<T>(user: SiteUser, fn: () => Promise<T>): Promise<T> {
+  return apiIdentity.run({ real: user, effective: user }, fn);
+}
+
+const resolveSessionIdentity = cache(async (): Promise<Identity | null> => {
   const session = await auth();
   if (!session?.user?.id) return null;
 
@@ -49,6 +62,11 @@ const resolveIdentity = cache(async (): Promise<Identity | null> => {
   });
   return { real, effective: target ?? real };
 });
+
+/** An API key's user while inside withApiUser, else the browser session. */
+async function resolveIdentity(): Promise<Identity | null> {
+  return apiIdentity.getStore() ?? resolveSessionIdentity();
+}
 
 /**
  * Resolve the signed-in user into the Actor the permission rules understand.

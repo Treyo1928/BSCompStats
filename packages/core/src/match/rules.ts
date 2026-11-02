@@ -83,10 +83,8 @@ export function validateLineups(options: ValidateOptions): ValidationResult {
   const violations: Violation[] = [];
   const appearances: Record<string, number> = {};
   const duos: Record<string, string[]> = {};
-  const duoLabels = new Map<string, string[]>();
 
   let complete = true;
-  let forcedRepeatsLeft = rules.duoRepeatsAllowed;
 
   for (const lineup of lineups) {
     const ids = lineup.playerIds;
@@ -129,14 +127,8 @@ export function validateLineups(options: ValidateOptions): ValidationResult {
         playerIds: ids,
       });
     } else if (ids.length < format.playersPerMap) {
+      // Not a warning: a captain still choosing is not doing anything wrong.
       complete = false;
-      violations.push({
-        code: 'INCOMPLETE_LINEUP',
-        severity: 'WARNING',
-        message: `${lineup.mapLabel} needs ${format.playersPerMap - ids.length} more player(s).`,
-        matchMapIds: [lineup.matchMapId],
-        playerIds: ids,
-      });
     }
 
     // --- Across maps --------------------------------------------------------
@@ -149,72 +141,12 @@ export function validateLineups(options: ValidateOptions): ValidationResult {
       }
     }
 
-    // A duo only exists once the map is fully staffed - a half-filled lineup
-    // must not raise a duo clash against a pair the captain has not chosen yet.
-    if (
-      rules.uniqueDuos &&
-      countsTowardsDuos &&
-      ids.length === format.playersPerMap &&
-      format.playersPerMap > 1
-    ) {
+    // Duos are counted for the lineup advice and stats, never enforced: whether a
+    // repeated pairing (or a player's number of maps) is allowed is the
+    // referee's call for each match, not the app's.
+    if (countsTowardsDuos && ids.length === format.playersPerMap && format.playersPerMap > 1) {
       const key = duoKey(ids);
-      const previous = duos[key];
-
-      // A roster too small to avoid a repeat is allowed exactly as many as it
-      // is forced into; only a repeat beyond that is the captain's doing.
-      if (previous && forcedRepeatsLeft > 0) {
-        forcedRepeatsLeft--;
-        previous.push(lineup.matchMapId);
-        duoLabels.get(key)?.push(lineup.mapLabel);
-      } else if (previous) {
-        const names = [...ids].sort().map(name).join(' + ');
-        violations.push({
-          code: 'DUPLICATE_DUO',
-          severity: 'ERROR',
-          message:
-            `${names} already played together on ${(duoLabels.get(key) ?? []).join(', ')}. ` +
-            `Each pairing may only be used once.`,
-          matchMapIds: [...previous, lineup.matchMapId],
-          playerIds: [...ids],
-        });
-        previous.push(lineup.matchMapId);
-        duoLabels.get(key)?.push(lineup.mapLabel);
-      } else {
-        duos[key] = [lineup.matchMapId];
-        duoLabels.set(key, [lineup.mapLabel]);
-      }
-    }
-  }
-
-  // --- Appearance bounds ----------------------------------------------------
-  // Only meaningful once every lineup is filled; before that, a player with too
-  // few appearances is simply a captain who has not finished.
-  if (rules.maxAppearances != null) {
-    for (const [id, count] of Object.entries(appearances)) {
-      if (count > rules.maxAppearances) {
-        violations.push({
-          code: 'TOO_MANY_APPEARANCES',
-          severity: 'ERROR',
-          message: `${name(id)} is playing ${count} maps; the limit is ${rules.maxAppearances}.`,
-          matchMapIds: [],
-          playerIds: [id],
-        });
-      }
-    }
-  }
-
-  if (complete && rules.minAppearances != null) {
-    for (const id of roster) {
-      const count = appearances[id] ?? 0;
-      if (count < rules.minAppearances) {
-        violations.push({
-          code: 'TOO_FEW_APPEARANCES',
-          severity: 'ERROR',
-          message: `${name(id)} is only playing ${count} map(s); each player must play at least ${rules.minAppearances}.`,
-          matchMapIds: [],
-          playerIds: [id],
-        });
-      }
+      (duos[key] ??= []).push(lineup.matchMapId);
     }
   }
 

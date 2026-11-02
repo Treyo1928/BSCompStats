@@ -45,10 +45,42 @@ export interface UnifiedScore {
   pp: number;
   modifiers: string;
   beatLeaderScoreId: number | null;
+  /**
+   * The raw replay, for a score that is a recorded clear standing in for a best
+   * set before the pool's cutoff (it has no score id). Otherwise absent.
+   */
+  replayUrl?: string | null;
   leaderboard: { maxScore: number; ranked: boolean; accRating: number; passRating: number; techRating: number };
 }
 
 const NO_RATINGS = { accRating: 0, passRating: 0, techRating: 0 };
+
+/**
+ * Per map (BeatLeader leaderboard id), the unix second before which a score or
+ * run is left out: the organisers' "count scores from" date on a pool.
+ */
+export type ScoreCutoffs = ReadonlyMap<string, number>;
+
+/** Set before the cutoff on its map. A time not known (0) is kept. */
+const tooOld = (cutoffs: ScoreCutoffs | undefined, leaderboardId: string, timeset: number): boolean => {
+  const since = cutoffs?.get(leaderboardId);
+  return since != null && timeset > 0 && timeset < since;
+};
+
+/** The cutoffs for these pools' maps. Where a map is in more than one, the latest date stands. */
+export async function poolCutoffs(where: { poolId: string } | { tournamentId: string }): Promise<Map<string, number>> {
+  const rows = await prisma.poolMap.findMany({
+    where: 'poolId' in where ? { poolId: where.poolId } : { pool: { tournamentId: where.tournamentId } },
+    select: { leaderboardId: true, pool: { select: { scoresSince: true } } },
+  });
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.pool.scoresSince) continue;
+    const since = Math.floor(r.pool.scoresSince.getTime() / 1000);
+    out.set(r.leaderboardId, Math.max(since, out.get(r.leaderboardId) ?? 0));
+  }
+  return out;
+}
 
 export async function loadScores(
   playerIds: readonly string[],
@@ -56,6 +88,10 @@ export async function loadScores(
     source: ScoreSource;
     /** Only these BeatLeader leaderboards - a pool. Omit for everything. */
     leaderboardIds?: readonly string[];
+    /** Leave out what was set before these dates, map by map. */
+    cutoffs?: ScoreCutoffs;
+    /** Filled in with how many bests were left out as too old. */
+    report?: { tooOld: number };
   },
 ): Promise<UnifiedScore[]> {
   if (playerIds.length === 0) return [];
@@ -89,9 +125,16 @@ export async function loadScores(
 
   // The worker no longer stores modified runs; rows from before it did are
   // dropped here, the same as the ScoreSaber filter below.
-  const out: UnifiedScore[] = beatLeader
-    .filter((s) => !hasScoreAlteringModifier(s.modifiers))
+  const cutoffs = options.cutoffs?.size ? options.cutoffs : undefined;
+  const kept = beatLeader.filter((s) => !hasScoreAlteringModifier(s.modifiers));
+  const stale = kept.filter((s) => tooOld(cutoffs, s.leaderboardId, s.timeset));
+  const out: UnifiedScore[] = kept
+    .filter((s) => !tooOld(cutoffs, s.leaderboardId, s.timeset))
     .map((s) => ({ ...s, platform: 'BL' as const }));
+  if (options.report) options.report.tooOld = stale.length;
+  // BeatLeader keeps only a player's best. Where that is too old, the best
+  // clear they have set since is their score - where their runs are public.
+  if (stale.length) out.push(...(await clearsSince(stale, cutoffs!)));
   if (options.source === 'beatleader') return out;
 
   // The charts a ScoreSaber score could be matched to: for a pool, the pool's; otherwise any we know.
@@ -139,6 +182,11 @@ export async function loadScores(
   for (const s of scoreSaber) {
     const chart = chartOf.get(`${s.songHash}:${s.difficultyValue}`);
     if (only && !chart) continue;
+    // ScoreSaber keeps only the best too, and shows no runs to fall back on.
+    if (chart && tooOld(cutoffs, chart.id, s.timeset)) {
+      if (options.report) options.report.tooOld++;
+      continue;
+    }
 
     // BeatLeader's max score is the authoritative one, and ScoreSaber often has none for an unranked map.
     const maxScore = chart?.maxScore || s.maxScore;
@@ -174,6 +222,66 @@ export async function loadScores(
     });
   }
   return [...best.values()];
+}
+
+/**
+ * For bests set before their map's cutoff: the player's best recorded clear on
+ * the map since then, as a score. None where they have not cleared it since,
+ * or BeatLeader does not show their runs.
+ */
+async function clearsSince(
+  stale: ReadonlyArray<{ playerId: string; leaderboardId: string; leaderboard: UnifiedScore['leaderboard'] }>,
+  cutoffs: ScoreCutoffs,
+): Promise<UnifiedScore[]> {
+  const rows = await prisma.attempt.findMany({
+    where: {
+      endType: 'CLEAR',
+      OR: stale.map((s) => ({
+        playerId: s.playerId,
+        leaderboardId: s.leaderboardId,
+        timeset: { gte: cutoffs.get(s.leaderboardId)! },
+      })),
+    },
+    select: {
+      playerId: true,
+      leaderboardId: true,
+      baseScore: true,
+      accuracy: true,
+      missedNotes: true,
+      badCuts: true,
+      modifiers: true,
+      timeset: true,
+      replayUrl: true,
+    },
+  });
+  const boardOf = new Map(stale.map((s) => [`${s.playerId}::${s.leaderboardId}`, s.leaderboard]));
+  const best = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) {
+    if (hasScoreAlteringModifier(r.modifiers)) continue;
+    const key = `${r.playerId}::${r.leaderboardId}`;
+    const held = best.get(key);
+    if (!held || r.baseScore > held.baseScore) best.set(key, r);
+  }
+  return [...best].map(([key, r]) => ({
+    playerId: r.playerId,
+    leaderboardId: r.leaderboardId,
+    platform: 'BL' as const,
+    baseScore: r.baseScore,
+    accuracy: r.accuracy,
+    missedNotes: r.missedNotes,
+    badCuts: r.badCuts,
+    // A run record does not say; bombs and walls would break one too.
+    fullCombo: false,
+    pauses: 0,
+    accLeft: 0,
+    accRight: 0,
+    timeset: r.timeset,
+    pp: 0,
+    modifiers: r.modifiers,
+    beatLeaderScoreId: null,
+    replayUrl: r.replayUrl,
+    leaderboard: boardOf.get(key)!,
+  }));
 }
 
 const chartSelect = {
@@ -222,6 +330,8 @@ export interface StoredRun {
 export async function loadRuns(
   playerIds: readonly string[],
   leaderboardIds?: readonly string[],
+  /** Leave out runs set before these dates, map by map. */
+  cutoffs?: ScoreCutoffs,
 ): Promise<{ runs: StoredRun[]; durations: Record<string, number>; visible: Map<string, boolean | null> }> {
   if (playerIds.length === 0) return { runs: [], durations: {}, visible: new Map() };
   const [rows, players] = await Promise.all([
@@ -256,6 +366,7 @@ export async function loadRuns(
   for (const r of rows) {
     // A modified run is not evidence of a match score, as with scores.
     if (hasScoreAlteringModifier(r.modifiers)) continue;
+    if (tooOld(cutoffs, r.leaderboardId, r.timeset)) continue;
     if (r.leaderboard.duration > 0) durations[r.leaderboardId] = r.leaderboard.duration;
     runs.push({
       playerId: r.playerId,

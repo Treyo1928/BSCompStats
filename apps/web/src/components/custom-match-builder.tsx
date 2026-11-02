@@ -1,5 +1,8 @@
 'use client';
 
+import { PlayOrderSelect } from '@/components/play-order-select';
+import { TaModeToggle } from '@/components/ta-mode-toggle';
+
 import { useState } from 'react';
 import { draftSequence, draftTeamSizes, type DraftOrder } from '@bscs/core/match';
 import { registerGuest, searchGuestCandidates } from '@/server/actions';
@@ -33,10 +36,13 @@ export function CustomMatchBuilder({
   tournamentId,
   players: initialPlayers,
   pools,
+  taModeDefault,
 }: {
   tournamentId: string;
   players: BuilderPlayer[];
   pools: Array<{ id: string; name: string }>;
+  /** The tournament's default for running matches through TournamentAssistant. */
+  taModeDefault: boolean;
 }) {
   const [mode, setMode] = useState<'manual' | 'draft'>('manual');
   const [players, setPlayers] = useState(initialPlayers);
@@ -222,7 +228,7 @@ export function CustomMatchBuilder({
 
           <Panel title="The match">
             <div className="space-y-3">
-              <MatchOptions pools={pools} sideNames={['Side A', 'Side B']} />
+              <MatchOptions pools={pools} sideNames={['Side A', 'Side B']} taModeDefault={taModeDefault} />
               <Button type="submit" disabled={onSide('A').length === 0 || onSide('B').length === 0}>
                 Create match
               </Button>
@@ -445,9 +451,11 @@ function PlayerLine({ player }: { player: BuilderPlayer }) {
 export function MatchOptions({
   pools,
   sideNames,
+  taModeDefault,
 }: {
   pools: Array<{ id: string; name: string }>;
   sideNames: [string, string];
+  taModeDefault: boolean;
 }) {
   return (
     <>
@@ -469,7 +477,8 @@ export function MatchOptions({
           </select>
         </Field>
       </div>
-      <label className="flex items-start gap-2 text-sm">
+      <PlayOrderSelect className={inputClass} />
+        <label className="flex items-start gap-2 text-sm">
         <input type="checkbox" name="blindLineups" className="mt-1" />
         <span>
           Hide lineups until both teams are done
@@ -478,6 +487,7 @@ export function MatchOptions({
           </span>
         </span>
       </label>
+      <TaModeToggle defaultOn={taModeDefault} />
     </>
   );
 }

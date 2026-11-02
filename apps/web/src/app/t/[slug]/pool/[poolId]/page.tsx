@@ -26,6 +26,8 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { getPoolSummary } from '@/server/summaries';
 import { PerfectAccForm } from '@/components/perfect-acc-form';
+import { ScoresSinceForm } from '@/components/scores-since-form';
+import { LocalDate } from '@/components/local-time';
 import { RenameForm } from '@/components/rename-form';
 import { renamePool } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
@@ -108,6 +110,12 @@ export default async function PoolPage({
             <CoverStrip covers={board.maps.map((m) => m.coverImage)} size={28} />
             <span>
               {board.maps.length} maps · {playerCount} players
+              {board.scoresSince && (
+                <>
+                  {' '}
+                  · scores from <LocalDate at={board.scoresSince.toISOString()} />
+                </>
+              )}
             </span>
           </span>
         }
@@ -228,7 +236,22 @@ export default async function PoolPage({
                 {board.data.runsKnownFor} of {board.data.playerCount}
               </Link>
             </Stat>
+            <Stat
+              label="Scores from"
+              hint="Scores and runs on these maps set before this date are left out, for everyone. Where a player's best is older, their best clear since then stands in for it (only for players who show their runs on BeatLeader)."
+            >
+              {board.scoresSince ? <LocalDate at={board.scoresSince.toISOString()} /> : 'All time'}
+            </Stat>
+            {board.scoresSince && (
+              <Stat label="Older bests left out">{board.tooOld}</Stat>
+            )}
           </dl>
+          {can(actor, 'IMPORT_POOL') && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-xs text-muted">Count scores set on or after:</p>
+              <ScoresSinceForm poolId={poolId} since={board.scoresSince?.toISOString() ?? null} />
+            </div>
+          )}
         </Panel>
       </div>
 

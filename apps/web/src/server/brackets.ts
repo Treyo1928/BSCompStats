@@ -43,6 +43,10 @@ export interface BracketSlotView {
   passThrough: boolean;
   winnerId: string | null;
   match: { id: string; name: string; state: string; a: number; b: number } | null;
+  /** The pool this slot is played on: its own, else the bracket's. */
+  pool: { id: string; name: string } | null;
+  /** True when the slot names its own pool rather than using the bracket's. */
+  ownPool: boolean;
 }
 
 export interface BracketView {
@@ -84,6 +88,7 @@ export async function loadBracket(bracketId: string): Promise<(BracketView & { t
           position: true,
           sources: true,
           winnerId: true,
+          pool: { select: { id: true, name: true } },
           match: {
             select: {
               id: true,
@@ -156,6 +161,8 @@ export async function loadBracket(bracketId: string): Promise<(BracketView & { t
       passThrough: node.passThrough,
       winnerId: node.winner,
       match,
+      pool: nodes[i]!.pool ?? bracket.pool,
+      ownPool: nodes[i]!.pool != null,
     };
   });
 

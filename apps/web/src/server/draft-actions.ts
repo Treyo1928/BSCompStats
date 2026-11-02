@@ -1,5 +1,8 @@
 'use server';
 
+import { parsePlayOrder } from '@/lib/play-order';
+import { parseTaMode } from '@/lib/ta-mode';
+
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -100,6 +103,8 @@ export async function createCustomMatch(formData: FormData): Promise<void> {
       teamBId: teamB.id,
       coinFlip: parseCoinFlip(formData.get('coinFlip')),
       blindLineups: formData.get('blindLineups') === 'on',
+      playOrder: parsePlayOrder(formData.get('playOrder')),
+      taMode: parseTaMode(formData),
       name: String(formData.get('name') ?? ''),
     });
   } catch (err) {
@@ -325,6 +330,8 @@ export async function startDraftMatch(formData: FormData): Promise<void> {
     teamBId: draft.teamBId,
     coinFlip: parseCoinFlip(formData.get('coinFlip')),
     blindLineups: formData.get('blindLineups') === 'on',
+    playOrder: parsePlayOrder(formData.get('playOrder')),
+    taMode: parseTaMode(formData),
   });
   if ('error' in opened) failBack(back, opened.error);
 

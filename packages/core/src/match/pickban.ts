@@ -25,6 +25,11 @@ export interface PickBanContext {
   /** Pre-set tiebreaker, when the format designates one. */
   designatedTiebreakerId?: string | null;
   actions: readonly AppliedAction[];
+  /**
+   * Picked maps that have been played (their scores closed). Only consulted
+   * when the format plays each pick before the next step.
+   */
+  playedPoolMapIds?: readonly string[];
 }
 
 export interface PendingStep {
@@ -33,6 +38,11 @@ export interface PendingStep {
   teamId: string;
   /** Maps this team may legally choose right now. */
   availableMapIds: string[];
+  /**
+   * With PLAY_EACH_PICK: the picked map that has to be played before this step
+   * can be taken. Null when the step is open.
+   */
+  waitingForPoolMapId: string | null;
 }
 
 export type PickBanErrorCode =
@@ -40,6 +50,7 @@ export type PickBanErrorCode =
   | 'NOT_YOUR_TURN'
   | 'MAP_NOT_IN_POOL'
   | 'MAP_ALREADY_USED'
+  | 'PLAY_PICKED_MAP_FIRST'
   | 'POOL_TOO_SMALL';
 
 export class PickBanError extends Error {
@@ -69,7 +80,19 @@ export function remainingMapIds(ctx: PickBanContext): string[] {
 }
 
 /**
- * The step waiting to be taken, or null when pick/ban is finished.
+ * With PLAY_EACH_PICK, the earliest picked map not yet played - nothing else
+ * happens until it is. Null when nothing is holding pick/ban up.
+ */
+export function mapAwaitingPlay(ctx: PickBanContext): string | null {
+  if (ctx.format.playOrder !== 'PLAY_EACH_PICK') return null;
+  const played = new Set(ctx.playedPoolMapIds ?? []);
+  const unplayed = liveActions(ctx).find((a) => a.type === 'PICK' && !played.has(a.poolMapId));
+  return unplayed?.poolMapId ?? null;
+}
+
+/**
+ * The step waiting to be taken, or null when pick/ban is finished. A step can
+ * exist but be on hold (`waitingForPoolMapId`) until a picked map is played.
  */
 export function currentStep(ctx: PickBanContext): PendingStep | null {
   const taken = liveActions(ctx).length;
@@ -81,6 +104,7 @@ export function currentStep(ctx: PickBanContext): PendingStep | null {
     type: step.action,
     teamId: teamForActor(ctx, step.actor),
     availableMapIds: remainingMapIds(ctx),
+    waitingForPoolMapId: mapAwaitingPlay(ctx),
   };
 }
 
@@ -104,6 +128,12 @@ export function prepareAction(
     throw new PickBanError(
       'NOT_YOUR_TURN',
       `It is not this team's turn - the next ${step.type.toLowerCase()} belongs to the other team.`,
+    );
+  }
+  if (step.waitingForPoolMapId) {
+    throw new PickBanError(
+      'PLAY_PICKED_MAP_FIRST',
+      'The map just picked has to be played before the next pick or ban.',
     );
   }
   if (!ctx.poolMapIds.includes(input.poolMapId)) {

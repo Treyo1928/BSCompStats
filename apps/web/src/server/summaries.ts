@@ -2,7 +2,7 @@ import { cache } from 'react';
 import { prisma } from '@bscs/db';
 import { nextDraftSlot, parseDraftSettings } from '@bscs/core/match';
 import { tallyMaps } from './match-summary';
-import { loadScores } from './score-sources';
+import { loadScores, poolCutoffs } from './score-sources';
 
 /**
  * What a page says about itself in a link preview.
@@ -129,6 +129,7 @@ export const getPoolSummary = cache(async (slug: string, poolId: string) => {
   const scores = await loadScores([...nameOf.keys()], {
     source: 'both',
     leaderboardIds: pool.maps.map((m) => m.leaderboardId),
+    cutoffs: await poolCutoffs({ poolId }),
   });
 
   const byPlayer = new Map<string, number[]>();

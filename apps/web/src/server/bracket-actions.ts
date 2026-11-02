@@ -1,5 +1,8 @@
 'use server';
 
+import { parsePlayOrder } from '@/lib/play-order';
+import { parseTaMode } from '@/lib/ta-mode';
+
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -154,11 +157,12 @@ export async function startBracketMatch(formData: FormData): Promise<void> {
   ) {
     failBack(back, 'Only an organiser, or a captain of one of these teams, can start this match.');
   }
-  if (!view.pool) failBack(back, 'This bracket has no map pool. An organiser can set one below.');
+  // A slot may play its own pool (a harder one for the finals); otherwise the bracket's.
+  if (!slot.pool) failBack(back, 'This match has no map pool. An organiser can set one for the bracket or for this match below.');
 
   const opened = await openMatch({
     tournamentId: view.tournamentId,
-    poolId: view.pool.id,
+    poolId: slot.pool.id,
     teamAId: slot.teamA.id,
     teamBId: slot.teamB.id,
     coinFlip: parseCoinFlip(formData.get('coinFlip')),
@@ -167,6 +171,8 @@ export async function startBracketMatch(formData: FormData): Promise<void> {
       String(formData.get('name') ?? '').trim().slice(0, 80) ||
       `${view.name} · ${nameSlots(view.slots).slots.get(slot.key) ?? 'Match'}: ${slot.teamA.name} vs ${slot.teamB.name}`,
     scoring: formData.get('scoring') ? String(formData.get('scoring')) : null,
+    playOrder: parsePlayOrder(formData.get('playOrder')),
+    taMode: parseTaMode(formData),
   });
   if ('error' in opened) failBack(back, opened.error);
 
@@ -246,5 +252,47 @@ export async function setBracketPool(formData: FormData): Promise<void> {
     throw new Error('That pool is not in this tournament.');
   }
   await prisma.bracket.update({ where: { id: bracketId }, data: { poolId } });
+  revalidatePath(`/t/${bracket.tournament.slug}/bracket/${bracketId}`);
+}
+
+/** Give one bracket slot its own pool, or (empty) put it back on the bracket's. */
+export async function setSlotPool(formData: FormData): Promise<void> {
+  const bracketId = String(formData.get('bracketId'));
+  const key = String(formData.get('key'));
+  const poolId = String(formData.get('poolId') ?? '') || null;
+  const bracket = await prisma.bracket.findUnique({
+    where: { id: bracketId },
+    select: { tournamentId: true, tournament: { select: { slug: true } } },
+  });
+  if (!bracket) throw new Error('No such bracket.');
+  await staffFor(bracket.tournamentId);
+  if (poolId && !(await prisma.mapPool.findFirst({ where: { id: poolId, tournamentId: bracket.tournamentId } }))) {
+    throw new Error('That pool is not in this tournament.');
+  }
+  // A match already being played keeps the pool it started on; this changes what the slot will use.
+  await prisma.bracketNode.updateMany({ where: { bracketId, key }, data: { poolId } });
+  revalidatePath(`/t/${bracket.tournament.slug}/bracket/${bracketId}`);
+}
+
+/**
+ * Set the pool for a whole round at once (every slot in that section and round), since pools
+ * usually change by round: group stage on one, playoffs on another, finals on a third.
+ */
+export async function setRoundPool(formData: FormData): Promise<void> {
+  const bracketId = String(formData.get('bracketId'));
+  const section = String(formData.get('section'));
+  const round = Number(formData.get('round'));
+  const poolId = String(formData.get('poolId') ?? '') || null;
+  if (!['RR', 'W', 'L', 'GF'].includes(section) || !Number.isInteger(round)) throw new Error('Unknown round.');
+  const bracket = await prisma.bracket.findUnique({
+    where: { id: bracketId },
+    select: { tournamentId: true, tournament: { select: { slug: true } } },
+  });
+  if (!bracket) throw new Error('No such bracket.');
+  await staffFor(bracket.tournamentId);
+  if (poolId && !(await prisma.mapPool.findFirst({ where: { id: poolId, tournamentId: bracket.tournamentId } }))) {
+    throw new Error('That pool is not in this tournament.');
+  }
+  await prisma.bracketNode.updateMany({ where: { bracketId, section, round }, data: { poolId } });
   revalidatePath(`/t/${bracket.tournament.slug}/bracket/${bracketId}`);
 }

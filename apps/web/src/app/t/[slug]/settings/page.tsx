@@ -1,3 +1,5 @@
+import { PLAY_ORDER_NAMES } from '@/lib/play-order';
+import { parseFormat } from '@bscs/core';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
@@ -52,9 +54,11 @@ export default async function SettingsPage({
       captainsCreateMatches: true,
       matchScoring: true,
       scoringLocked: true,
+      defaultFormat: true,
       replayCounting: true,
       doubleFailedRuns: true,
       perfectFromBeatLeader: true,
+      taModeDefault: true,
       pointsCurve: true,
       scorePull: true,
       pools: {
@@ -178,10 +182,12 @@ export default async function SettingsPage({
             tournament.captainsPullScores,
             tournament.captainsEnterScores,
             tournament.matchScoring,
+            parseFormat(tournament.defaultFormat).playOrder,
             tournament.scoringLocked,
             tournament.replayCounting,
             tournament.doubleFailedRuns,
             tournament.perfectFromBeatLeader,
+            tournament.taModeDefault,
           ].join('|')}
         >
           <input type="hidden" name="tournamentId" value={tournament.id} />
@@ -199,6 +205,22 @@ export default async function SettingsPage({
               Type their own team&apos;s scores in by hand
               <Note>The override for when BeatLeader cannot say. Admins always can.</Note>
             </RuleBox>
+          </fieldset>
+          <fieldset className="space-y-2 border-t border-edge pt-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Pick and ban</legend>
+            <Field label="New matches are played">
+              <select name="playOrder" className={inputClass} defaultValue={parseFormat(tournament.defaultFormat).playOrder}>
+                {Object.entries(PLAY_ORDER_NAMES).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Note>
+              Play each map as it is picked runs pick, play, pick, play, ban, ban, … with the tiebreaker last. Whoever sets up a
+              match can still choose the other order for that match. Matches already made keep theirs.
+            </Note>
           </fieldset>
           <fieldset className="space-y-2 border-t border-edge pt-3">
             <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Scoring</legend>
@@ -229,6 +251,17 @@ export default async function SettingsPage({
             <RuleBox name="perfectFromBeatLeader" checked={tournament.perfectFromBeatLeader}>
               Use BeatLeader&apos;s predicted accuracy as a map&apos;s perfect % until one is set
               <Note>Perfect % only sizes a map&apos;s points; it never decides who wins it. Set it per map on the pool page.</Note>
+            </RuleBox>
+          </fieldset>
+          <fieldset className="space-y-2 border-t border-edge pt-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">TournamentAssistant</legend>
+            <RuleBox name="taModeDefault" checked={tournament.taModeDefault}>
+              Run matches through TournamentAssistant
+              <Note>
+                Organisers pick and ban for both teams and start each map in TA for every player at once; captains still set
+                their lineups. Scores come from TA instead of BeatLeader. Whoever sets up a match can still turn it off for that
+                match. Matches already made keep theirs.
+              </Note>
             </RuleBox>
           </fieldset>
           <Button type="submit">Save rules</Button>

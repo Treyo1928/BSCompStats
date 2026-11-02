@@ -46,6 +46,8 @@ import { goName } from '@/lib/goes';
 import { MatchSummaryTable } from '@/components/match-summary-table';
 import { PullScores } from '@/components/pull-scores';
 import { CalculatorButton } from '@/components/calculator-button';
+import { TaStart } from '@/components/ta-start';
+import { nextMapToPlay } from '@bscs/core/match';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,7 +93,7 @@ export default async function MatchPage({
   if (!can(actor, 'VIEW', { isPublic: match.tournament.isPublic })) notFound();
 
   const canAct = match.pending
-    ? can(actor, 'MAKE_PICK_BAN', { teamId: match.pending.teamId })
+    ? can(actor, 'MAKE_PICK_BAN', { teamId: match.pending.teamId, taMode: match.taMode })
     : false;
   const pendingTeam =
     match.pending?.teamId === match.teamA.id ? match.teamA : match.teamB;
@@ -104,9 +106,13 @@ export default async function MatchPage({
         captainedTeams.length > 0 ? ` and captain of ${captainedTeams.map((t) => t.name).join(' and ')}` : ''
       }, so you can pick, ban and set lineups for both teams. Anything you do for a team you do not captain is recorded as made on its captain's behalf.`
     : captainedTeams.length > 0
-      ? `You captain ${captainedTeams.map((t) => t.name).join(' and ')}. You can pick, ban and set lineups for your own team only, and only on its turn.`
+      ? match.taMode
+        ? `You captain ${captainedTeams.map((t) => t.name).join(' and ')}. This match runs through TournamentAssistant, so an organiser makes the picks and bans - tell them yours. You set your own team's lineups.`
+        : `You captain ${captainedTeams.map((t) => t.name).join(' and ')}. You can pick, ban and set lineups for your own team only, and only on its turn.`
       : actor.userId
-        ? 'You are watching. Only team captains and organisers can pick, ban or set lineups.'
+        ? match.taMode
+          ? 'You are watching. This match runs through TournamentAssistant: organisers pick, ban and start each map, captains set lineups.'
+          : 'You are watching. Only team captains and organisers can pick, ban or set lineups.'
         : null;
 
   // Hidden lineups: until both teams have set every map, each side sees only
@@ -168,6 +174,16 @@ export default async function MatchPage({
     maxScore: m.maxScore,
     perfectAcc: m.perfectAcc,
   }));
+  // TA mode: the map to start next, the first whose scores are open.
+  const nextMap = nextMapToPlay(match.plannedMaps.filter((pm) => pm.matchMapId));
+  const playerNames = new Map([...match.teamA.players, ...match.teamB.players].map((p) => [p.id, p.name]));
+  // TA's report names who is playing; a hidden lineup stays hidden in it too.
+  const fielded = (teamIds: string[]) => teamIds.flatMap((id) => match.plannedMaps.flatMap((pm) => pm.lineups[id] ?? []));
+  const shownPlayers = new Set(fielded([match.teamA.id, match.teamB.id].filter(canSeeLineup)));
+  const hiddenPlayers = new Set(
+    fielded([match.teamA.id, match.teamB.id].filter((id) => !canSeeLineup(id))).filter((id) => !shownPlayers.has(id)),
+  );
+
   // In the summary, pick and ban shows only while there is one to make.
   const showPickBan = view === 'detailed' || match.pending != null;
 
@@ -201,6 +217,14 @@ export default async function MatchPage({
                 showPoints={match.scoring.mode === 'MATCH_POINTS'}
                 className="h-9 px-3 text-sm"
               />
+            )}
+            {match.taMode && (
+              <Badge
+                tone="accent"
+                title="Run through TournamentAssistant: organisers pick, ban and start each map in TA for everyone at once, and the scores come from TA rather than BeatLeader."
+              >
+                TournamentAssistant
+              </Badge>
             )}
             {match.unlisted && (
               <Badge title="Left off the tournament's match lists. Anyone with the link can still open it.">Unlisted</Badge>
@@ -329,7 +353,9 @@ export default async function MatchPage({
           <Panel
             title="Pick and ban"
             subtitle={
-              match.pending
+              match.pending?.waitingForPoolMapId
+                ? `Playing ${match.pool.maps.find((m) => m.poolMapId === match.pending!.waitingForPoolMapId)?.name ?? 'the picked map'}`
+                : match.pending
                 ? `${pendingTeam.name} to ${match.pending.type.toLowerCase()}`
                 : 'Complete'
             }
@@ -413,7 +439,19 @@ export default async function MatchPage({
               </ol>
             )}
 
-            {match.pending && (
+            {match.pending?.waitingForPoolMapId && (
+              <div className="mt-4 border-t border-edge pt-4">
+                <p className="text-sm text-muted">
+                  Play{' '}
+                  <span className="font-semibold text-ink">
+                    {match.pool.maps.find((m) => m.poolMapId === match.pending!.waitingForPoolMapId)?.name ?? 'the picked map'}
+                  </span>{' '}
+                  first. {pendingTeam.name}&apos;s {match.pending.type.toLowerCase()} opens once its scores are closed.
+                </p>
+              </div>
+            )}
+
+            {match.pending && !match.pending.waitingForPoolMapId && (
               <div className="mt-4 border-t border-edge pt-4">
                 <p className="mb-3 text-sm">
                   {canAct ? (
@@ -428,7 +466,9 @@ export default async function MatchPage({
                     </>
                   ) : (
                     <span className="text-muted">
-                      Waiting for {pendingTeam.name} to {match.pending.type.toLowerCase()}.
+                      {match.taMode
+                        ? `Waiting for an organiser to enter ${pendingTeam.name}'s ${match.pending.type.toLowerCase()} (TournamentAssistant match).`
+                        : `Waiting for ${pendingTeam.name} to ${match.pending.type.toLowerCase()}.`}
                     </span>
                   )}
                 </p>
@@ -617,6 +657,16 @@ export default async function MatchPage({
                       {/* Scores and replays */}
                       {planned.matchMapId && (
                         <div className="space-y-3 border-t border-edge p-3">
+                          {match.taMode && (
+                            <TaStart
+                              match={match}
+                              planned={planned}
+                              isNext={nextMap?.poolMapId === planned.poolMapId}
+                              staff={can(actor, 'START_MAP')}
+                              playerName={(id) => playerNames.get(id) ?? 'Player'}
+                              visible={(id) => !hiddenPlayers.has(id)}
+                            />
+                          )}
                           {planned.replayCalledByTeamIds.length > 0 && (
                             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
                               {planned.replayCalledByTeamIds.map((id, i) => (
@@ -692,7 +742,8 @@ export default async function MatchPage({
                                     played in order; as an organiser you can fill this one in anyway.
                                   </p>
                                 )}
-                                {mayPull && hasLineup && (
+                                {/* In TA mode the scores come from TA; BeatLeader is not asked. */}
+                                {mayPull && hasLineup && !match.taMode && (
                                   <PullScores
                                     matchId={match.id}
                                     matchMapId={planned.matchMapId!}

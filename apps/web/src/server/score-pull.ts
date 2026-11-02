@@ -198,7 +198,7 @@ export async function writeRuns(
   chosen: ReadonlyArray<{ playerId: string; run: PulledRun }>,
 ): Promise<string[]> {
   const typed = await prisma.matchMapAttempt.findMany({
-    where: { matchMapId: target.matchMapId, attempt: target.attempt, source: 'MANUAL' },
+    where: { matchMapId: target.matchMapId, attempt: target.attempt, source: { in: ['MANUAL', 'TA'] } },
     select: { teamId: true, playerId: true },
   });
   const isTyped = (teamId: string, playerId: string) => typed.some((t) => t.teamId === teamId && t.playerId === playerId);

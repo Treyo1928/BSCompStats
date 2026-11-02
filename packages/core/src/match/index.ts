@@ -6,3 +6,4 @@ export * from './draft.js';
 export * from './points.js';
 export * from './scoring.js';
 export * from './pull.js';
+export * from './ta.js';

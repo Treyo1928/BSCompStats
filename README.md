@@ -34,14 +34,24 @@ you track. No refresh button required (there is one anyway).
 **Matches with real pick/ban.** Each captain signs in and makes their own picks
 and bans. The server replays the action log to decide whose turn it is, so a
 stale tab cannot pick a banned map and two captains clicking at once cannot both
-succeed. Organisers can act for a captain, and it is recorded as such.
+succeed. Organisers can act for a captain, and it is recorded as such. Two play
+orders: every pick and ban first, or each map played as soon as it is picked
+(pick, play, pick, play, ban, ban, …, tiebreaker last). The tournament sets the
+default and each match can choose the other.
 
-**Lineup rules that are actually enforced.** The duo rule — no pairing used
-twice, tiebreaker exempt — is validated across the whole card as the captain
-builds it, because it is a constraint *between* maps and no single control can
-see it. Incomplete lineups warn; illegal ones block. An organiser can override,
-and a captain who is also an organiser can override their own, which is the
-normal case for friendly scrims.
+**Matches run through TournamentAssistant.** A match can be set to run through
+TA instead: organisers make the picks and bans, and once both lineups for the
+next map are in, one "Start map in TA" button asks a bridge program to start the
+song for every player at once. The bridge reports back - who is loading, ready,
+playing, finished - and enters the scores TA recorded, marked "from TA";
+BeatLeader is not asked. The tournament sets the default; see
+[docs/api.md](docs/api.md#ta-mode) for the bridge's side.
+
+**Lineups without nagging.** The app only refuses lineups that cannot be real:
+a player twice on one map, more players than the format fields, or someone who
+is not on the team. Repeated pairings and how many maps each player plays are
+the referee's call, so the app never warns about or blocks them. It still
+counts duos and appearances, for the stats and the lineup advice.
 
 **Recommendations, including when to lose on purpose.** See
 [The recommendation engine](#the-recommendation-engine).
@@ -379,6 +389,8 @@ server-sent events route, without which live updates arrive in bursts.
 ---
 
 ## Development
+
+To just try things: `scripts/mock.sh` runs a throwaway mock tournament with dev sign-in links (see docs/api.md).
 
 ```bash
 npm install

@@ -19,7 +19,7 @@ import {
   TeamScopeTabs,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { createTeam, deleteTeam, updateTeam } from '@/server/actions';
+import { createTeam, deleteTeam, setTaPlatformId, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls, RemoveFromPool } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
 import { createPlayerPool, makeDuosFromPool } from '@/server/pool-actions';
@@ -69,6 +69,7 @@ export default async function TeamsPage({
       captainsCreateMatches: true,
       matchScoring: true,
       scoringLocked: true,
+      taModeDefault: true,
       divisions: {
         orderBy: { order: 'asc' },
         select: {
@@ -100,6 +101,7 @@ export default async function TeamsPage({
                       avatar: true,
                       userId: true,
                       scoreSaberId: true,
+                      taPlatformId: true,
                     },
                   },
                 },
@@ -381,6 +383,32 @@ export default async function TeamsPage({
                           canManage={canManage}
                         />
                       )}
+                      {canManage && (
+                        // TournamentAssistant finds players by platform id: Steam64 is the BeatLeader id, a Quest player's is not.
+                        <details className="basis-full pb-1 pl-11 text-xs sm:pl-12">
+                          <summary className="cursor-pointer text-faint hover:text-ink">
+                            TA id: {member.player.taPlatformId ?? `${member.player.beatLeaderId} (BeatLeader)`}
+                          </summary>
+                          <form action={setTaPlatformId} className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <input type="hidden" name="memberId" value={member.id} />
+                            <input
+                              name="taPlatformId"
+                              defaultValue={member.player.taPlatformId ?? ''}
+                              placeholder={member.player.beatLeaderId}
+                              aria-label={`${member.player.name}'s TournamentAssistant platform id`}
+                              autoComplete="off"
+                              className={`${inputClass} h-8 w-52 tabular`}
+                            />
+                            <Button type="submit" variant="ghost" className="h-8 text-xs">
+                              Save
+                            </Button>
+                            <span className="text-faint">
+                              The id TournamentAssistant shows for them. Leave blank to use their BeatLeader id, which is right for
+                              Steam players.
+                            </span>
+                          </form>
+                        </details>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -467,6 +495,7 @@ export default async function TeamsPage({
               pools={tournament.pools}
               from="teams"
               scoring={{ mode: tournament.matchScoring, locked: tournament.scoringLocked }}
+              taModeDefault={tournament.taModeDefault}
               ownTeamIds={can(actor, 'CREATE_MATCH') ? undefined : [...(actor.captainOfTeamIds ?? [])]}
             />
           )}

@@ -9,8 +9,9 @@ import { Avatar, Button, pct, num, teamInk } from './ui';
 /**
  * Picks the players a team fields on one map, and shows what each scored.
  *
- * Validation is server-side - the duo rule spans every map, so no single
- * control can judge it - and what it objects to is shown right here.
+ * Validation is server-side and only structural (a player twice on one map, too
+ * many players, someone off the roster). Who may pair with whom, and how many
+ * maps a player plays, is the referee's call, not the app's.
  */
 export function LineupEditor({
   matchId,
@@ -136,7 +137,8 @@ export function LineupEditor({
                 <span
                   className="shrink-0 text-right tabular text-xs"
                   title={[
-                    score.source === 'AUTO' ? 'From BeatLeader' : 'Entered by hand',
+                    score.source === 'AUTO' ? 'From BeatLeader' : score.source === 'TA' ? 'From TA' : 'Entered by hand',
+                    score.misses != null ? `${score.misses} ${score.misses === 1 ? 'miss' : 'misses'}` : null,
                     score.endType && score.endType !== 'CLEAR' ? `run ${score.endType.toLowerCase()}` : null,
                     score.failed
                       ? doubleFails
@@ -159,6 +161,9 @@ export function LineupEditor({
                     </span>
                   )}
                   {score.endType && score.endType !== 'CLEAR' && <span className="ml-1 text-lose">✗</span>}
+                  {score.source === 'TA' && (
+                    <span className="ml-1 rounded bg-accent/15 px-1 text-[10px] font-semibold text-violet-200">from TA</span>
+                  )}
                 </span>
               )}
             </button>

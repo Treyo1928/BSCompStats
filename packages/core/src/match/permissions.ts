@@ -15,6 +15,11 @@
  * override their own lineup - which is the normal case for friendly scrims,
  * where the person running the event is playing in it. Every override is
  * recorded with who performed it.
+ *
+ * TournamentAssistant (TA) mode moves pick and ban to the organisers: the
+ * match is run from TA's side, where one person presses start for everyone,
+ * so the captains say what they want and an organiser enters it. Lineups stay
+ * with the captains - TA only needs to know who plays, not who chose them.
  */
 
 export type GlobalRole = 'USER' | 'ADMIN';
@@ -50,7 +55,9 @@ export type Action =
   | 'PULL_SCORES'
   | 'OVERRIDE_RULES'
   | 'ACT_FOR_OTHERS'
-  | 'UNDO_ACTION';
+  | 'UNDO_ACTION'
+  /** TA mode: ask for a map to be started in TournamentAssistant, cancel or restart it, report on it. */
+  | 'START_MAP';
 
 export interface ActionContext {
   /** The team the action concerns, for team-scoped actions. */
@@ -65,6 +72,8 @@ export interface ActionContext {
   captainsCreateMatches?: boolean;
   /** For match-scoped actions: the two teams in the match. */
   matchTeamIds?: readonly string[];
+  /** The match runs through TournamentAssistant: organisers pick and ban. */
+  taMode?: boolean;
 }
 
 /** Roles that administer a tournament rather than compete in it. */
@@ -111,6 +120,7 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
     case 'IMPORT_POOL':
     case 'ACT_FOR_OTHERS':
     case 'UNDO_ACTION':
+    case 'START_MAP':
       // Note there is no captain branch here: a captain who may override is one
       // who also holds a staff role, and that is caught by `staff` above.
       return staff;
@@ -134,6 +144,10 @@ export function can(actor: Actor, action: Action, context: ActionContext = {}): 
       );
 
     case 'MAKE_PICK_BAN':
+      // In TA mode the organisers run pick and ban, even for a captain's own team.
+      if (context.taMode === true) return staff;
+      return staff || isCaptainOf(actor, context.teamId);
+
     case 'SET_LINEUP':
       return staff || isCaptainOf(actor, context.teamId);
 

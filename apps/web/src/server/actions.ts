@@ -1,5 +1,8 @@
 'use server';
 
+import { parsePlayOrder } from '@/lib/play-order';
+import { parseFormat } from '@bscs/core';
+
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma, Prisma } from '@bscs/db';
@@ -216,9 +219,15 @@ export async function setMatchRules(formData: FormData): Promise<void> {
   if (!actor) throw new Error('Sign in first.');
   assertCan(actor, 'MANAGE_TOURNAMENT');
 
+  // The play order is part of the default format; the rest of the format stays as it is.
+  const current = await prisma.tournament.findUnique({ where: { id: tournamentId }, select: { defaultFormat: true } });
+  const playOrder = parsePlayOrder(formData.get('playOrder'));
+  const defaultFormat = playOrder ? { ...parseFormat(current?.defaultFormat), playOrder } : undefined;
+
   const tournament = await prisma.tournament.update({
     where: { id: tournamentId },
     data: {
+      ...(defaultFormat ? { defaultFormat } : {}),
       captainsCreateMatches: formData.get('captainsCreateMatches') === 'on',
       captainsEnterScores: formData.get('captainsEnterScores') === 'on',
       captainsPullScores: formData.get('captainsPullScores') === 'on',
@@ -227,6 +236,7 @@ export async function setMatchRules(formData: FormData): Promise<void> {
       doubleFailedRuns: formData.get('doubleFailedRuns') === 'on',
       scoringLocked: formData.get('scoringLocked') === 'on',
       perfectFromBeatLeader: formData.get('perfectFromBeatLeader') === 'on',
+      taModeDefault: formData.get('taModeDefault') === 'on',
     },
     select: { slug: true, replayCounting: true, doubleFailedRuns: true },
   });
@@ -323,6 +333,41 @@ export async function setPoolMapPerfect(formData: FormData): Promise<void> {
     perfectAcc = Math.round(percent * 1000) / 100000;
   }
   await prisma.poolMap.update({ where: { id: poolMapId }, data: { perfectAcc } });
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * The pool's "count scores from" date: scores and runs on its maps set before
+ * it are left out of the board and the stats, for everyone. Blank clears it.
+ * The form sends the moment as an ISO time, worked out in the organiser's own
+ * time zone.
+ */
+export async function setPoolScoresSince(formData: FormData): Promise<void> {
+  const poolId = String(formData.get('poolId'));
+  const pool = await prisma.mapPool.findUnique({
+    where: { id: poolId },
+    select: { tournamentId: true, tournament: { select: { slug: true } } },
+  });
+  if (!pool) throw new Error('No such pool.');
+
+  const actor = await getActor(pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+
+  const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
+  // `since` is filled in by the page's script; sent before that has loaded, only the bare day arrives (taken as UTC).
+  const raw = formData.get('clear')
+    ? ''
+    : String(formData.get('since') || formData.get('day') || '').trim();
+  let scoresSince: Date | null = null;
+  if (raw !== '') {
+    scoresSince = new Date(raw);
+    if (Number.isNaN(scoresSince.getTime())) failBack(back, `"${raw}" is not a date.`);
+    if (scoresSince.getTime() > Date.now() + 86_400_000) {
+      failBack(back, 'That date is in the future: nothing would count yet.');
+    }
+  }
+  await prisma.mapPool.update({ where: { id: poolId }, data: { scoresSince } });
   revalidatePath('/t', 'layout');
 }
 
@@ -906,6 +951,22 @@ export async function setTeamCaptain(memberId: string, captain: boolean): Promis
     where: { id: memberId },
     data: { role: captain ? 'CAPTAIN' : 'PLAYER' },
   });
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * The id TournamentAssistant knows a player by, where it is not their
+ * BeatLeader id - a Quest player, whose BeatLeader id is BeatLeader's own
+ * rather than a platform's. Blank goes back to the BeatLeader id. Organisers only.
+ */
+export async function setTaPlatformId(formData: FormData): Promise<void> {
+  const memberId = String(formData.get('memberId'));
+  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { teamId: true, playerId: true } });
+  if (!member) return;
+  await requireTeamManager(member.teamId);
+  const raw = String(formData.get('taPlatformId') ?? '').trim();
+  if (raw.length > 64 || /\s/.test(raw)) throw new Error('That is not a platform id.');
+  await prisma.player.update({ where: { id: member.playerId }, data: { taPlatformId: raw || null } });
   revalidatePath('/t', 'layout');
 }
 
