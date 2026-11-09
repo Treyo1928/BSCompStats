@@ -2,6 +2,7 @@ import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
+import { dayIn } from '@bscs/core';
 import { buildTournamentData, type TournamentData } from './stats';
 import { loadRuns, loadScores, poolCutoffs, type ScoreSource, type StoredRun } from './score-sources';
 
@@ -105,10 +106,13 @@ export interface BoardMap {
 export interface PoolBoard {
   poolId: string;
   poolName: string;
-  /** The organisers' cutoff: scores and runs set before it are left out. Null counts everything. */
-  scoresSince: Date | null;
-  /** Players' bests on these maps left out for being set before the cutoff. */
-  tooOld: number;
+  /**
+   * The organisers' dates ("YYYY-MM-DD", US Central days, both inclusive):
+   * scores and runs set outside them are left out. Null leaves that end open.
+   */
+  scoreDays: { from: string | null; to: string | null };
+  /** Players' bests on these maps left out for being set outside the dates. */
+  leftOut: number;
   maps: BoardMap[];
   /** Rows grouped by team, the way the spreadsheet blocked them out. */
   teams: Array<{
@@ -191,6 +195,7 @@ export async function buildPoolBoard(
       name: true,
       tournamentId: true,
       scoresSince: true,
+      scoresUntil: true,
       maps: {
         orderBy: { order: 'asc' },
         select: {
@@ -225,7 +230,7 @@ export async function buildPoolBoard(
   const playerIds = [...new Set(members.map((m) => m.player.id))];
 
   const cutoffs = await poolCutoffs({ poolId });
-  const report = { tooOld: 0 };
+  const report = { outside: 0 };
   const scores = await loadScores(playerIds, { source, leaderboardIds, cutoffs, report });
 
   const scoreBy = new Map(scores.map((s) => [`${s.playerId}::${s.leaderboardId}`, s]));
@@ -342,8 +347,11 @@ export async function buildPoolBoard(
   return {
     poolId: pool.id,
     poolName: pool.name,
-    scoresSince: pool.scoresSince,
-    tooOld: report.tooOld,
+    scoreDays: {
+      from: pool.scoresSince ? dayIn(pool.scoresSince) : null,
+      to: pool.scoresUntil ? dayIn(pool.scoresUntil) : null,
+    },
+    leftOut: report.outside,
     maps,
     teams: teamOrder.map((key) => {
       const teamRows = byTeam.get(key)!;

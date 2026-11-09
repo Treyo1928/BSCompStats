@@ -26,8 +26,7 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { getPoolSummary } from '@/server/summaries';
 import { PerfectAccForm } from '@/components/perfect-acc-form';
-import { ScoresSinceForm } from '@/components/scores-since-form';
-import { LocalDate } from '@/components/local-time';
+import { ScoreDaysForm } from '@/components/score-days-form';
 import { RenameForm } from '@/components/rename-form';
 import { renamePool } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
@@ -78,6 +77,7 @@ export default async function PoolPage({
 
   const board = await buildPoolBoard(poolId);
   if (!board) notFound();
+  const scoreDays = describeDays(board.scoreDays);
 
   // The board is the tournament's teams. Match-only sides still playing are behind a tab, not in among them.
   const matchOnlyCount = board.teams.filter((t) => t.adHoc).length;
@@ -110,12 +110,7 @@ export default async function PoolPage({
             <CoverStrip covers={board.maps.map((m) => m.coverImage)} size={28} />
             <span>
               {board.maps.length} maps · {playerCount} players
-              {board.scoresSince && (
-                <>
-                  {' '}
-                  · scores from <LocalDate at={board.scoresSince.toISOString()} />
-                </>
-              )}
+              {scoreDays && <> · scores {scoreDays}</>}
             </span>
           </span>
         }
@@ -237,19 +232,17 @@ export default async function PoolPage({
               </Link>
             </Stat>
             <Stat
-              label="Scores from"
-              hint="Scores and runs on these maps set before this date are left out, for everyone. Where a player's best is older, their best clear since then stands in for it (only for players who show their runs on BeatLeader)."
+              label="Scores counted"
+              hint="Scores and runs on these maps set outside these dates (12:00 AM on the first to 11:59 PM on the last, US Central) are left out of this board and the stats, for everyone. Where a player's best falls outside them, their best clear within them stands in for it (only for players who show their runs on BeatLeader). Match score pulls ignore these dates."
             >
-              {board.scoresSince ? <LocalDate at={board.scoresSince.toISOString()} /> : 'All time'}
+              {scoreDays ?? 'All time'}
             </Stat>
-            {board.scoresSince && (
-              <Stat label="Older bests left out">{board.tooOld}</Stat>
-            )}
+            {scoreDays && <Stat label="Bests outside the dates">{board.leftOut}</Stat>}
           </dl>
           {can(actor, 'IMPORT_POOL') && (
             <div className="mt-3 space-y-1.5">
-              <p className="text-xs text-muted">Count scores set on or after:</p>
-              <ScoresSinceForm poolId={poolId} since={board.scoresSince?.toISOString() ?? null} />
+              <p className="text-xs text-muted">Count scores set from / to (US Central, either may be blank):</p>
+              <ScoreDaysForm poolId={poolId} from={board.scoreDays.from} to={board.scoreDays.to} />
             </div>
           )}
         </Panel>
@@ -320,4 +313,16 @@ function Legend() {
       <span title="Tried, never cleared, and no run hit ten notes.">✗3 tries, none hit 10 notes</span>
     </div>
   );
+}
+
+/** "YYYY-MM-DD" as "Nov 2, 2026" - the day itself, no time zone shift. */
+const showDay = (day: string) =>
+  new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
+
+/** The pool's score dates in words, or null for all time. */
+function describeDays({ from, to }: { from: string | null; to: string | null }): string | null {
+  if (from && to) return `${showDay(from)} – ${showDay(to)}`;
+  if (from) return `from ${showDay(from)}`;
+  if (to) return `up to ${showDay(to)}`;
+  return null;
 }

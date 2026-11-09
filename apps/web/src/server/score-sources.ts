@@ -1,5 +1,5 @@
 import { prisma } from '@bscs/db';
-import { hasScoreAlteringModifier } from '@bscs/core';
+import { hasScoreAlteringModifier, narrowWindows, outsideWindow, type ScoreWindow } from '@bscs/core';
 
 /**
  * Scores from both ranked platforms, on one set of map keys.
@@ -56,28 +56,29 @@ export interface UnifiedScore {
 const NO_RATINGS = { accRating: 0, passRating: 0, techRating: 0 };
 
 /**
- * Per map (BeatLeader leaderboard id), the unix second before which a score or
- * run is left out: the organisers' "count scores from" date on a pool.
+ * Per map (BeatLeader leaderboard id), the unix seconds outside which a score
+ * or run is left out: the organisers' "count scores from ... to ..." dates on
+ * a pool. Only the board and stats read these; match pulls never do.
  */
-export type ScoreCutoffs = ReadonlyMap<string, number>;
+export type ScoreCutoffs = ReadonlyMap<string, ScoreWindow>;
 
-/** Set before the cutoff on its map. A time not known (0) is kept. */
-const tooOld = (cutoffs: ScoreCutoffs | undefined, leaderboardId: string, timeset: number): boolean => {
-  const since = cutoffs?.get(leaderboardId);
-  return since != null && timeset > 0 && timeset < since;
-};
+/** Set outside the window on its map. A time not known (0) is kept. */
+const outside = (cutoffs: ScoreCutoffs | undefined, leaderboardId: string, timeset: number): boolean =>
+  outsideWindow(cutoffs?.get(leaderboardId), timeset);
 
-/** The cutoffs for these pools' maps. Where a map is in more than one, the latest date stands. */
-export async function poolCutoffs(where: { poolId: string } | { tournamentId: string }): Promise<Map<string, number>> {
+/** The windows for these pools' maps. Where a map is in more than one, only what every window allows counts. */
+export async function poolCutoffs(where: { poolId: string } | { tournamentId: string }): Promise<Map<string, ScoreWindow>> {
   const rows = await prisma.poolMap.findMany({
     where: 'poolId' in where ? { poolId: where.poolId } : { pool: { tournamentId: where.tournamentId } },
-    select: { leaderboardId: true, pool: { select: { scoresSince: true } } },
+    select: { leaderboardId: true, pool: { select: { scoresSince: true, scoresUntil: true } } },
   });
-  const out = new Map<string, number>();
+  const sec = (d: Date | null) => (d ? Math.floor(d.getTime() / 1000) : null);
+  const out = new Map<string, ScoreWindow>();
   for (const r of rows) {
-    if (!r.pool.scoresSince) continue;
-    const since = Math.floor(r.pool.scoresSince.getTime() / 1000);
-    out.set(r.leaderboardId, Math.max(since, out.get(r.leaderboardId) ?? 0));
+    if (!r.pool.scoresSince && !r.pool.scoresUntil) continue;
+    const window = { from: sec(r.pool.scoresSince), until: sec(r.pool.scoresUntil) };
+    const held = out.get(r.leaderboardId);
+    out.set(r.leaderboardId, held ? narrowWindows(held, window) : window);
   }
   return out;
 }
@@ -88,10 +89,10 @@ export async function loadScores(
     source: ScoreSource;
     /** Only these BeatLeader leaderboards - a pool. Omit for everything. */
     leaderboardIds?: readonly string[];
-    /** Leave out what was set before these dates, map by map. */
+    /** Leave out what was set outside these dates, map by map. */
     cutoffs?: ScoreCutoffs;
-    /** Filled in with how many bests were left out as too old. */
-    report?: { tooOld: number };
+    /** Filled in with how many bests were left out as outside the dates. */
+    report?: { outside: number };
   },
 ): Promise<UnifiedScore[]> {
   if (playerIds.length === 0) return [];
@@ -127,14 +128,14 @@ export async function loadScores(
   // dropped here, the same as the ScoreSaber filter below.
   const cutoffs = options.cutoffs?.size ? options.cutoffs : undefined;
   const kept = beatLeader.filter((s) => !hasScoreAlteringModifier(s.modifiers));
-  const stale = kept.filter((s) => tooOld(cutoffs, s.leaderboardId, s.timeset));
+  const stale = kept.filter((s) => outside(cutoffs, s.leaderboardId, s.timeset));
   const out: UnifiedScore[] = kept
-    .filter((s) => !tooOld(cutoffs, s.leaderboardId, s.timeset))
+    .filter((s) => !outside(cutoffs, s.leaderboardId, s.timeset))
     .map((s) => ({ ...s, platform: 'BL' as const }));
-  if (options.report) options.report.tooOld = stale.length;
-  // BeatLeader keeps only a player's best. Where that is too old, the best
-  // clear they have set since is their score - where their runs are public.
-  if (stale.length) out.push(...(await clearsSince(stale, cutoffs!)));
+  if (options.report) options.report.outside = stale.length;
+  // BeatLeader keeps only a player's best. Where that is outside the dates, the
+  // best clear they set within them is their score - where their runs are public.
+  if (stale.length) out.push(...(await clearsWithin(stale, cutoffs!)));
   if (options.source === 'beatleader') return out;
 
   // The charts a ScoreSaber score could be matched to: for a pool, the pool's; otherwise any we know.
@@ -183,8 +184,8 @@ export async function loadScores(
     const chart = chartOf.get(`${s.songHash}:${s.difficultyValue}`);
     if (only && !chart) continue;
     // ScoreSaber keeps only the best too, and shows no runs to fall back on.
-    if (chart && tooOld(cutoffs, chart.id, s.timeset)) {
-      if (options.report) options.report.tooOld++;
+    if (chart && outside(cutoffs, chart.id, s.timeset)) {
+      if (options.report) options.report.outside++;
       continue;
     }
 
@@ -225,11 +226,11 @@ export async function loadScores(
 }
 
 /**
- * For bests set before their map's cutoff: the player's best recorded clear on
- * the map since then, as a score. None where they have not cleared it since,
- * or BeatLeader does not show their runs.
+ * For bests set outside their map's dates: the player's best recorded clear on
+ * the map within them, as a score. None where they did not clear it then, or
+ * BeatLeader does not show their runs.
  */
-async function clearsSince(
+async function clearsWithin(
   stale: ReadonlyArray<{ playerId: string; leaderboardId: string; leaderboard: UnifiedScore['leaderboard'] }>,
   cutoffs: ScoreCutoffs,
 ): Promise<UnifiedScore[]> {
@@ -239,7 +240,7 @@ async function clearsSince(
       OR: stale.map((s) => ({
         playerId: s.playerId,
         leaderboardId: s.leaderboardId,
-        timeset: { gte: cutoffs.get(s.leaderboardId)! },
+        timeset: windowFilter(cutoffs.get(s.leaderboardId)!),
       })),
     },
     select: {
@@ -283,6 +284,11 @@ async function clearsSince(
     leaderboard: boardOf.get(key)!,
   }));
 }
+
+const windowFilter = (w: ScoreWindow) => ({
+  ...(w.from != null ? { gte: w.from } : {}),
+  ...(w.until != null ? { lte: w.until } : {}),
+});
 
 const chartSelect = {
   id: true,
@@ -330,7 +336,7 @@ export interface StoredRun {
 export async function loadRuns(
   playerIds: readonly string[],
   leaderboardIds?: readonly string[],
-  /** Leave out runs set before these dates, map by map. */
+  /** Leave out runs set outside these dates, map by map. */
   cutoffs?: ScoreCutoffs,
 ): Promise<{ runs: StoredRun[]; durations: Record<string, number>; visible: Map<string, boolean | null> }> {
   if (playerIds.length === 0) return { runs: [], durations: {}, visible: new Map() };
@@ -366,7 +372,7 @@ export async function loadRuns(
   for (const r of rows) {
     // A modified run is not evidence of a match score, as with scores.
     if (hasScoreAlteringModifier(r.modifiers)) continue;
-    if (tooOld(cutoffs, r.leaderboardId, r.timeset)) continue;
+    if (outside(cutoffs, r.leaderboardId, r.timeset)) continue;
     if (r.leaderboard.duration > 0) durations[r.leaderboardId] = r.leaderboard.duration;
     runs.push({
       playerId: r.playerId,

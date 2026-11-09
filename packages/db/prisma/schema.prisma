@@ -632,6 +632,9 @@ model MapPool {
   /// everyone who looks: an organiser's cutoff, so a run from years ago does
   /// not stand for the player now. Null counts everything.
   scoresSince DateTime?
+  /// And after this: the end of the window, for qualifiers held over set
+  /// dates. Only the pool board and stats read either - never match pulls.
+  scoresUntil DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

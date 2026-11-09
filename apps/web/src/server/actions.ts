@@ -1,7 +1,7 @@
 'use server';
 
 import { parsePlayOrder } from '@/lib/play-order';
-import { parseFormat } from '@bscs/core';
+import { endOfDay, parseFormat, startOfDay } from '@bscs/core';
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
@@ -337,12 +337,12 @@ export async function setPoolMapPerfect(formData: FormData): Promise<void> {
 }
 
 /**
- * The pool's "count scores from" date: scores and runs on its maps set before
- * it are left out of the board and the stats, for everyone. Blank clears it.
- * The form sends the moment as an ISO time, worked out in the organiser's own
- * time zone.
+ * The pool's "count scores from ... to ..." days: scores and runs on its maps
+ * set outside them are left out of the board and the stats, for everyone.
+ * Days are US Central: 12:00 AM on the first to 11:59 PM on the last. Either
+ * may be blank (open); "Count all" clears both. Match pulls never read these.
  */
-export async function setPoolScoresSince(formData: FormData): Promise<void> {
+export async function setPoolScoreDays(formData: FormData): Promise<void> {
   const poolId = String(formData.get('poolId'));
   const pool = await prisma.mapPool.findUnique({
     where: { id: poolId },
@@ -355,19 +355,17 @@ export async function setPoolScoresSince(formData: FormData): Promise<void> {
   assertCan(actor, 'IMPORT_POOL');
 
   const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
-  // `since` is filled in by the page's script; sent before that has loaded, only the bare day arrives (taken as UTC).
-  const raw = formData.get('clear')
-    ? ''
-    : String(formData.get('since') || formData.get('day') || '').trim();
-  let scoresSince: Date | null = null;
-  if (raw !== '') {
-    scoresSince = new Date(raw);
-    if (Number.isNaN(scoresSince.getTime())) failBack(back, `"${raw}" is not a date.`);
-    if (scoresSince.getTime() > Date.now() + 86_400_000) {
-      failBack(back, 'That date is in the future: nothing would count yet.');
-    }
+  const clear = Boolean(formData.get('clear'));
+  const fromDay = clear ? '' : String(formData.get('from') ?? '').trim();
+  const toDay = clear ? '' : String(formData.get('to') ?? '').trim();
+  const scoresSince = fromDay ? startOfDay(fromDay) : null;
+  const scoresUntil = toDay ? endOfDay(toDay) : null;
+  if (fromDay && !scoresSince) failBack(back, `"${fromDay}" is not a date.`);
+  if (toDay && !scoresUntil) failBack(back, `"${toDay}" is not a date.`);
+  if (scoresSince && scoresUntil && scoresUntil < scoresSince) {
+    failBack(back, 'The end date is before the start date.');
   }
-  await prisma.mapPool.update({ where: { id: poolId }, data: { scoresSince } });
+  await prisma.mapPool.update({ where: { id: poolId }, data: { scoresSince, scoresUntil } });
   revalidatePath('/t', 'layout');
 }
 
