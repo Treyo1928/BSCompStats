@@ -1,4 +1,5 @@
 import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
+import { shownAs, tournamentAliases } from './aliases';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
@@ -132,8 +133,9 @@ export interface PoolBoard {
  * match-only team's matches are over it drops off, rather than sitting on the
  * board forever as a second copy of players who are already there.
  */
-export function loadBoardMembers(tournamentId: string) {
-  return prisma.teamMember.findMany({
+export async function loadBoardMembers(tournamentId: string) {
+  const aliases = await tournamentAliases(tournamentId);
+  const members = await prisma.teamMember.findMany({
     where: {
       team: {
         division: { tournamentId },
@@ -179,6 +181,8 @@ export function loadBoardMembers(tournamentId: string) {
       },
     },
   });
+  // As this tournament shows them: an organiser's nickname and picture where set.
+  return members.map((member) => ({ ...member, player: shownAs(member.player, aliases) }));
 }
 
 export async function buildPoolBoard(

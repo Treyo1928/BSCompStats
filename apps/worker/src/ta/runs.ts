@@ -441,18 +441,28 @@ export class MapRuns {
       ]
         .filter(Boolean)
         .join(' ') || null;
+    let closed = false;
     try {
       // Only while this is still the request: a map closed or restarted a moment ago keeps what it has.
       const still = await prisma.matchMap.count({ where: { id: run.matchMapId, startRequestedAt: run.requestedAt, scoresClosedAt: null } });
-      if (still) await prisma.$transaction(writes);
+      // A clean run closes its own map: a score from every lineup player. Anything else is the referee's call.
+      const clean = writes.length === run.slots.length && !unreported.length && !quit.length;
+      closed = !!still && clean && this.session.options.autoClose;
+      if (still) {
+        await prisma.$transaction([
+          ...writes,
+          ...(closed ? [prisma.matchMap.updateMany({ where: { id: run.matchMapId, startRequestedAt: run.requestedAt, scoresClosedAt: null }, data: { scoresClosedAt: new Date() } })] : []),
+        ]);
+      }
     } catch (err) {
+      closed = false;
       log.error(`ta[${this.session.slug}]: could not enter scores for ${run.mapName}`, err);
       run.message = `The scores could not be saved (${err instanceof Error ? err.message : String(err)}). Type them in.`;
     }
     await this.report(run);
     await this.live(run, 'over');
     await this.release(run, false);
-    log.info(`ta[${this.session.slug}]: ${run.matchName}: ${run.mapName} finished, ${writes.length}/${run.slots.length} scores entered from TA`);
+    log.info(`ta[${this.session.slug}]: ${run.matchName}: ${run.mapName} finished, ${writes.length}/${run.slots.length} scores entered from TA${closed ? ', map closed' : ''}`);
   }
 
   /** Take the TA match down; `toMenu` also pulls the players out of the song or the loaded map. */

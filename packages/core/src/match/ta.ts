@@ -126,15 +126,21 @@ export interface TaOptions {
   disablePause: boolean;
   /** Show TA's in-game scoreboard of the other players in the match. */
   showScoreboard: boolean;
+  /**
+   * A song that ran cleanly closes its own map: every lineup player's score came from TA, so there is nothing for
+   * an organiser to check first. Any other ending (someone left the song, or dropped off TA) leaves the map open.
+   * An organiser can always reopen a closed map.
+   */
+  autoClose: boolean;
 }
 
-export const DEFAULT_TA_OPTIONS: TaOptions = { disableFail: true, disablePause: false, showScoreboard: false };
+export const DEFAULT_TA_OPTIONS: TaOptions = { disableFail: true, disablePause: false, showScoreboard: false, autoClose: true };
 
 /** Stored options read back; anything missing or odd falls to the default. */
 export function parseTaOptions(stored: unknown): TaOptions {
   const o = stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : {};
   const flag = (key: keyof TaOptions) => (typeof o[key] === 'boolean' ? (o[key] as boolean) : DEFAULT_TA_OPTIONS[key]);
-  return { disableFail: flag('disableFail'), disablePause: flag('disablePause'), showScoreboard: flag('showScoreboard') };
+  return { disableFail: flag('disableFail'), disablePause: flag('disablePause'), showScoreboard: flag('showScoreboard'), autoClose: flag('autoClose') };
 }
 
 /** Where the worker's connection to TA stands. */

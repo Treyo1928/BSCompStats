@@ -406,6 +406,13 @@ export default async function TaPage({
             </Check>
           </fieldset>
           <fieldset className="space-y-2 border-t border-edge pt-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">When a song ends</legend>
+            <Check name="autoClose" checked={options.autoClose}>
+              Close the map by itself
+              <Note>When every player&apos;s score came in from TA the map is closed and counted straight away. If someone left the song or dropped off TA it stays open for you to sort out. A closed map can be reopened on the match page.</Note>
+            </Check>
+          </fieldset>
+          <fieldset className="space-y-2 border-t border-edge pt-3">
             <Check name="enabled" checked={link.enabled}>
               Link switched on
               <Note>Off: the site disconnects from TA and keeps these settings.</Note>

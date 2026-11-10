@@ -197,3 +197,15 @@ export interface BLAttempt {
   timeset: number;
   timepost?: number;
 }
+
+/** `/score/{id}`: one score, with what it was played on. Only the parts read here. */
+export interface BLScoreDetail {
+  id: number;
+  playerId: string;
+  /** 0..1 */
+  accuracy: number;
+  replay?: string;
+  player?: { id: string; name: string };
+  song?: { name?: string; subName?: string; author?: string; mapper?: string; hash?: string; cover?: string };
+  difficulty?: { difficultyName?: string; modeName?: string; duration?: number };
+}

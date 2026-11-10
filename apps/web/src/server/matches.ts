@@ -16,6 +16,7 @@ import {
 } from './match-helpers';
 import { mapResult, readTaStatus, type CountedRun, type MapResult, type Scoring, type TaStatus } from '@bscs/core/match';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
+import { shownAs, tournamentAliases, type Aliases } from './aliases';
 
 /** Everything the match room needs, assembled in one place. */
 
@@ -153,10 +154,15 @@ export interface TeamView {
   name: string;
   color: string;
   colorSecondary: string | null;
+  /** The team's mark: null is the default star, "msu" the MSU Esports shield, else the path of an uploaded picture. */
+  logo: string | null;
   players: Array<{
     id: string;
+    /** As this tournament shows them: an organiser's nickname and picture where set, else BeatLeader's. */
     name: string;
     avatar: string | null;
+    /** Replays they chose to show on stream (viewer links). */
+    replays: string[];
     /** Steam64 for Steam players (TA's platform id too); BeatLeader's own id for Quest players. */
     beatLeaderId: string;
     /** The id TournamentAssistant knows them by, where an organiser set one; else use beatLeaderId. */
@@ -239,6 +245,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     },
   });
   if (!match) return null;
+  const aliases = await tournamentAliases(match.tournament.id);
 
   const format = parseFormat(match.format ?? match.tournament.defaultFormat);
 
@@ -324,7 +331,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
       )!;
       return {
         playerId: counted.playerId,
-        playerName: run.player.name,
+        playerName: aliases.get(counted.playerId)?.nickname || run.player.name,
         attempt: counted.attempt,
         score: counted.score,
         accuracy: counted.accuracy,
@@ -404,8 +411,8 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
         : null,
     winnerId: match.winnerId,
     format,
-    teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),
-    teamB: toTeamView(match.teamB, match.state === 'COMPLETE'),
+    teamA: toTeamView(match.teamA, match.state === 'COMPLETE', aliases),
+    teamB: toTeamView(match.teamB, match.state === 'COMPLETE', aliases),
     coinFlipWinnerId: match.coinFlipWinnerId,
     pool: { id: match.pool.id, name: match.pool.name, maps: poolMaps },
     actions: match.actions.map((action) => ({
@@ -430,25 +437,26 @@ function toTeamView(team: {
   name: string;
   color: string;
   colorSecondary: string | null;
+  logo: string | null;
   members: Array<{
     available: boolean;
     player: { id: string; name: string; avatar: string | null; beatLeaderId: string; taPlatformId: string | null };
   }>;
-}, everyone: boolean): TeamView {
+}, everyone: boolean, aliases: Aliases): TeamView {
   return {
     id: team.id,
     name: team.name,
     color: team.color,
     colorSecondary: team.colorSecondary,
+    logo: team.logo,
     // Subs who are not switched in, and anyone absent, cannot be fielded - so
     // they are not offered in lineups. A finished
     // match keeps everyone, since its lineups name whoever actually played.
     players: team.members
       .filter((m) => everyone || m.available)
       .map((m) => ({
-        id: m.player.id,
-        name: m.player.name,
-        avatar: m.player.avatar,
+        ...shownAs({ id: m.player.id, name: m.player.name, avatar: m.player.avatar }, aliases),
+        replays: (aliases.get(m.player.id)?.replays ?? []).map((r) => r.ref),
         beatLeaderId: m.player.beatLeaderId,
         taPlatformId: m.player.taPlatformId,
       })),

@@ -33,7 +33,7 @@ turn, wrong step, the picked map hasn't been played yet) · **400** anything els
 | Request | Returns |
 |---|---|
 | `GET /api/v1/me` | who the key acts as, and its limits |
-| `GET /api/v1/tournaments/:slug` | `{ tournament, matches, brackets, pools }`: pick the match to follow |
+| `GET /api/v1/tournaments/:slug` | `{ tournament, matches, brackets, pools, teams }`: pick the match to follow. `teams` is every team entered, as shown on stream: `{ id, name, color, colorSecondary, logo, players: [{ id, name, avatar, replays }] }` (see `teamA` below) |
 | `GET /api/v1/matches/:matchId` | `{ match }`, everything about a match (below) |
 | `GET /api/v1/brackets/:bracketId` | `{ bracket }`: every slot with section, round, teams, state, winner and its match (maps won), plus standings |
 | `GET /api/v1/matches/:matchId/events` | server-sent events: `event: match` with the full match on connect and after every change; in TA mode also `event: live` while a song plays ([TA mode](#ta-mode)) |
@@ -42,7 +42,12 @@ The **match** object is what the match page shows:
 
 - `state`: `PICKBAN`, `PLAYING`, `COMPLETE`. Also `format`, including `playOrder` (`PICKS_FIRST` / `PLAY_EACH_PICK`)
   and `playersPerMap`.
-- `teamA`, `teamB`: names, colours, rosters. Each player is `{ id, name, avatar, beatLeaderId, taPlatformId }`:
+- `teamA`, `teamB`: names, colours, `logo`, rosters. `logo` is `null` (the default star), `"msu"` (the MSU Esports
+  shield) or the path of an uploaded picture (`/api/img/<id>` on this site, public, cacheable for good). Each
+  player is `{ id, name, avatar, replays, beatLeaderId, taPlatformId }`. `name` and `avatar` are as the tournament
+  shows them: an organiser's nickname and uploaded picture where set (Teams page, "On stream"), else BeatLeader's;
+  an uploaded `avatar` is a path like `logo`. `replays` are the replays the player chose to show on stream, as
+  viewer links (`https://replay.beatleader.com/?scoreId=…`, or a `.bsor` address).
   `beatLeaderId` is the Steam64 id for Steam players (the same id TournamentAssistant uses) but BeatLeader's own
   id for Quest players, so an organiser can set `taPlatformId` (on the Teams page, "TA id") where TA knows them by
   another; it is `null` when unset. `coinFlipWinnerId`, `winnerId`.
@@ -159,7 +164,10 @@ the wrong players) and a replay being called. `restartMap` gives a new `requeste
 starts the earlier scores of that run are dropped. After a team calls a replay, the next start is the map's run 2
 and its scores are kept beside run 1's. Once the map's scores are closed, `start` stays as a record.
 
-An organiser then closes the map (`closeMap`), which makes the next one startable. Scores can still be typed
+A song that ran cleanly closes its own map: when a score came from TA for every lineup player, the worker closes
+the map in the same step as it enters the scores (the TA page's "Close the map by itself", on by default). If
+someone left the song or dropped off TA the map stays open and an organiser closes it (`closeMap`) once it is sorted
+out. A closed map makes the next one startable, and an organiser can reopen it (`reopenMap`). Scores can still be typed
 (`scores`, marked `MANUAL`) where TA could not say, and a tool may enter them as TA's with `source: "TA"`
 (organiser keys, TA-mode matches only; `accuracy` 0..1 and `misses` optional).
 

@@ -68,6 +68,7 @@ export async function saveTaLink(formData: FormData): Promise<void> {
     disableFail: formData.get('disableFail') === 'on',
     disablePause: formData.get('disablePause') === 'on',
     showScoreboard: formData.get('showScoreboard') === 'on',
+    autoClose: formData.get('autoClose') === 'on',
   };
   const enabled = formData.get('enabled') === 'on';
   const existing = await prisma.taLink.findUnique({ where: { tournamentId: tournament.id }, select: { host: true, port: true } });

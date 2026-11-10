@@ -94,7 +94,8 @@ describe('parseTaOptions', () => {
   it('defaults to players who cannot fail, and keeps what was stored', () => {
     expect(parseTaOptions(null)).toEqual(DEFAULT_TA_OPTIONS);
     expect(DEFAULT_TA_OPTIONS.disableFail).toBe(true);
-    expect(parseTaOptions({ disableFail: false, disablePause: true })).toEqual({ disableFail: false, disablePause: true, showScoreboard: false });
+    expect(parseTaOptions({ disableFail: false, disablePause: true })).toEqual({ disableFail: false, disablePause: true, showScoreboard: false, autoClose: true });
+    expect(parseTaOptions({ autoClose: false }).autoClose).toBe(false);
   });
 
   it('ignores anything that is not a yes or no', () => {

@@ -165,6 +165,7 @@ model Player {
   scoreSaberScores ScoreSaberScore[]
   runs         Attempt[]
   profile      PlayerProfile?
+  tournamentEntries TournamentPlayer[]
 
   @@index([userId])
   @@index([name])
@@ -505,6 +506,8 @@ model Tournament {
   matches   Match[]
   drafts    Draft[]
   members   TournamentMember[]
+  players   TournamentPlayer[]
+  uploads   Upload[]
   brackets  Bracket[]
   apiKeys   ApiKey[]
   taLink    TaLink?
@@ -549,6 +552,48 @@ model TaLink {
   updatedAt DateTime @updatedAt
 }
 
+/// How a player appears in one tournament, where an organiser wants something
+/// other than their BeatLeader name and picture, and the replays they chose to
+/// show off on stream. Kept per tournament: a player is one row for the whole
+/// site, and one event's nickname is not another's.
+model TournamentPlayer {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  playerId     String
+  player       Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  /// Shown instead of their BeatLeader name. Null: the BeatLeader name.
+  nickname String?
+  /// Shown instead of their BeatLeader picture: the path of an uploaded one
+  /// ("/api/img/<Upload id>"). Null: the BeatLeader picture.
+  avatar   String?
+  /// Replays to play on stream while their team is up next:
+  /// [{ ref, scoreId?, song?, mapper?, difficulty?, accuracy?, player? }].
+  /// See packages/core/replays.
+  replays  Json     @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tournamentId, playerId])
+  @@index([playerId])
+}
+
+/// A small picture an organiser uploaded: a team logo or a player's avatar.
+/// Kept in the database so a deploy needs no file volume and a database
+/// backup has everything. Served at /api/img/<id>.
+model Upload {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  mime         String
+  bytes        Bytes
+  createdAt    DateTime   @default(now())
+
+  @@index([tournamentId])
+}
+
 model TournamentMember {
   id           String         @id @default(cuid())
   tournamentId String
@@ -591,6 +636,9 @@ model Team {
   /// Primary colour, used for the pool board shading the sheets did by hand.
   color String  @default("#4F46E5")
   colorSecondary String @default("#A5B4FC")
+  /// The team's mark, on the site and on stream. Null: the default star.
+  /// "msu": the MSU Esports shield. Otherwise the path of an uploaded picture
+  /// ("/api/img/<Upload id>").
   logo  String?
 
   /// A side put together for particular matches - a mixed scrim, a captains'

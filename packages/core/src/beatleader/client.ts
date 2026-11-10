@@ -1,4 +1,5 @@
 import type {
+  BLScoreDetail,
   BLLeaderboardPage,
   BLPlayer,
   BLScore,
@@ -134,6 +135,11 @@ export class BeatLeaderClient {
       `/score/${encodeURIComponent(playerId)}/${normalizeHash(hash)}/` +
         `${encodeURIComponent(difficultyName)}/${encodeURIComponent(modeName)}`,
     );
+  }
+
+  /** One score by its id, with its player, song and difficulty. Null where BeatLeader has no such score. */
+  async getScore(scoreId: string): Promise<BLScoreDetail | null> {
+    return this.get<BLScoreDetail>(`/score/${encodeURIComponent(scoreId)}`);
   }
 
   /**

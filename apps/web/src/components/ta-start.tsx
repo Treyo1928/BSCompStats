@@ -211,7 +211,7 @@ export function TaStart({
       {phase === 'ready' && !staff && <p className="text-xs text-muted">Everyone has the map. An organiser starts the song.</p>}
       {phase === 'error' && <p className="text-xs text-lose">{status?.message || 'TournamentAssistant could not start the map.'}</p>}
       {phase === 'finished' && staff && (
-        <p className="text-xs text-muted">The scores below came from TournamentAssistant. Check them, then close the map.</p>
+        <p className="text-xs text-muted">The scores below came from TournamentAssistant. The map was left open: check them, then close it.</p>
       )}
       {status && phase !== 'error' && status.message && <p className="text-xs text-muted">{status.message}</p>}
       {players.length > 0 && (

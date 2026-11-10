@@ -27,6 +27,10 @@ import { RunsVisibilityPanel } from '@/components/runs-visibility';
 import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
 import { buildPoolBoard } from '@/server/board';
+import { tournamentAliases } from '@/server/aliases';
+import { setPlayerReplays, setPlayerShown, setTeamLogo } from '@/server/team-media-actions';
+import { TeamLogo } from '@/components/team-logo';
+import { SHOWCASE_REPLAYS_MAX, SHOWCASE_REPLAYS_PER_PLAYER } from '@bscs/core';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,6 +87,7 @@ export default async function TeamsPage({
               name: true,
               color: true,
               colorSecondary: true,
+              logo: true,
               adHoc: true,
               playerPool: true,
               members: {
@@ -118,6 +123,7 @@ export default async function TeamsPage({
   if (!can(actor, 'VIEW', { isPublic: tournament.isPublic })) notFound();
 
   const canManage = can(actor, 'MANAGE_TEAMS');
+  const aliases = await tournamentAliases(tournament.id);
   const teams = tournament.divisions.flatMap((d) => d.teams);
   const entered = teams.filter((t) => !t.adHoc && !t.playerPool);
   const playerPool = teams.find((t) => t.playerPool) ?? null;
@@ -304,6 +310,7 @@ export default async function TeamsPage({
                 className="flex min-w-0 items-center gap-2 truncate text-base font-semibold tracking-tight"
                 style={{ color: teamInk(team.color, team.colorSecondary) }}
               >
+                <TeamLogo logo={team.logo} size={22} />
                 <span className="truncate">{team.name}</span>
                 {team.adHoc && (
                   <Badge title="Put together for a particular match. It is removed when its last match is deleted.">
@@ -323,7 +330,13 @@ export default async function TeamsPage({
                 <Empty>No players yet.</Empty>
               ) : (
                 <ul className="-my-1.5 text-sm">
-                  {team.members.map((member) => (
+                  {team.members.map((member) => {
+                    const alias = aliases.get(member.player.id);
+                    const shownName = alias?.nickname || member.player.name;
+                    const replays = alias?.replays ?? [];
+                    const isSelf = !!actor.userId && member.player.userId === actor.userId;
+                    const maySetReplays = canManage || isSelf || isCaptainOf(actor, team.id);
+                    return (
                     // On a phone the controls drop to their own line rather than squeezing the name out.
                     <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
                       <PlayerLink
@@ -332,15 +345,16 @@ export default async function TeamsPage({
                         className="-ml-2 flex min-w-0 flex-1 basis-full items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-raised sm:basis-0"
                       >
                         <Avatar
-                          src={member.player.avatar}
-                          name={member.player.name}
+                          src={alias?.avatar || member.player.avatar}
+                          name={shownName}
                           size={32}
                           ring={team.color}
                         />
                         <span
                           className={`min-w-0 flex-1 truncate font-medium ${member.available ? '' : 'text-muted line-through decoration-faint'}`}
+                          title={alias?.nickname ? `${alias.nickname} (${member.player.name} on BeatLeader)` : undefined}
                         >
-                          {member.player.name}
+                          {shownName}
                         </span>
                         {member.isSub && (
                           <Badge title="Substitute - only counted when switched in">
@@ -409,8 +423,89 @@ export default async function TeamsPage({
                           </form>
                         </details>
                       )}
+                      {(maySetReplays || replays.length > 0) && (
+                        <details className="basis-full pb-1 pl-11 text-xs sm:pl-12">
+                          <summary className="cursor-pointer text-faint hover:text-ink">
+                            On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
+                            {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
+                            {alias?.avatar ? ' · own picture' : ''}
+                          </summary>
+                          {replays.length > 0 && (
+                            <ul className="mt-1.5 space-y-0.5">
+                              {replays.map((r) => (
+                                <li key={r.ref} className="truncate">
+                                  <a href={r.ref} target="_blank" rel="noreferrer" className="text-ink hover:underline">
+                                    {r.song ?? r.ref}
+                                  </a>
+                                  <span className="text-faint">
+                                    {r.difficulty ? ` · ${r.difficulty}` : ''}
+                                    {r.accuracy != null ? ` · ${(r.accuracy * 100).toFixed(2)}%` : ''}
+                                    {r.player && r.player !== member.player.name ? ` · played by ${r.player}` : ''}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {maySetReplays && (
+                            <form action={setPlayerReplays} className="mt-1.5 space-y-1.5">
+                              <input type="hidden" name="memberId" value={member.id} />
+                              <textarea
+                                name="replays"
+                                rows={Math.max(2, replays.length + 1)}
+                                defaultValue={replays.map((r) => r.ref).join('\n')}
+                                placeholder="https://replay.beatleader.com/?scoreId=..."
+                                aria-label={`${shownName}'s replays to show on stream, one link per line`}
+                                className={`${inputClass} h-auto py-1.5 font-mono text-xs`}
+                              />
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Button type="submit" variant="ghost" className="h-8 text-xs">
+                                  Save replays
+                                </Button>
+                                <span className="text-faint">
+                                  Replays to play on stream while this team is up next. One BeatLeader replay link per line,{' '}
+                                  {canManage
+                                    ? `up to ${SHOWCASE_REPLAYS_MAX} (players and captains can add ${SHOWCASE_REPLAYS_PER_PLAYER} of their own).`
+                                    : `up to ${SHOWCASE_REPLAYS_PER_PLAYER}, played by ${isSelf ? 'you' : member.player.name}.`}
+                                </span>
+                              </div>
+                            </form>
+                          )}
+                          {canManage && (
+                            <form action={setPlayerShown} className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-2">
+                              <input type="hidden" name="memberId" value={member.id} />
+                              <label className="space-y-1">
+                                <span className="block text-faint">Nickname in this tournament</span>
+                                <input
+                                  name="nickname"
+                                  defaultValue={alias?.nickname ?? ''}
+                                  placeholder={member.player.name}
+                                  maxLength={40}
+                                  autoComplete="off"
+                                  className={`${inputClass} h-8 w-48`}
+                                />
+                              </label>
+                              <label className="space-y-1">
+                                <span className="block text-faint">Picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most)</span>
+                                <input type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" className="block max-w-[15rem] text-xs" />
+                              </label>
+                              {alias?.avatar && (
+                                <label className="flex h-8 items-center gap-1.5">
+                                  <input type="checkbox" name="removeAvatar" /> Back to their BeatLeader picture
+                                </label>
+                              )}
+                              <Button type="submit" variant="ghost" className="h-8 text-xs">
+                                Save
+                              </Button>
+                              <span className="basis-full text-faint">
+                                Leave the nickname blank to use their BeatLeader name. Both apply to this tournament only: its match pages, boards and the stream overlay.
+                              </span>
+                            </form>
+                          )}
+                        </details>
+                      )}
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               )}
 
@@ -447,6 +542,31 @@ export default async function TeamsPage({
                     <FieldAction>
                       <Button type="submit">Save</Button>
                     </FieldAction>
+                  </form>
+                  <form action={setTeamLogo} className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2 border-t border-edge pt-3 text-xs">
+                    <input type="hidden" name="teamId" value={team.id} />
+                    <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      <legend className="mb-1 font-medium text-muted">Logo</legend>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" name="logo" value="star" defaultChecked={!team.logo} />
+                        <TeamLogo logo={null} size={18} /> Star
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" name="logo" value="msu" defaultChecked={team.logo === 'msu'} />
+                        <TeamLogo logo="msu" size={18} /> MSU Esports
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" name="logo" value="upload" defaultChecked={!!team.logo && team.logo !== 'msu'} />
+                        {team.logo && team.logo !== 'msu' && <TeamLogo logo={team.logo} size={18} />} Own picture
+                      </label>
+                    </fieldset>
+                    <input type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" aria-label={`A logo for ${team.name}`} className="block max-w-[15rem] text-xs" />
+                    <Button type="submit" variant="ghost" className="h-8 text-xs">
+                      Save logo
+                    </Button>
+                    <span className="basis-full text-faint">
+                      Shown beside the team&apos;s name here and on the stream overlay. A square PNG or SVG with a see-through background works best; 1 MB at most.
+                    </span>
                   </form>
                   <form action={deleteTeam} className="mt-3">
                     <input type="hidden" name="teamId" value={team.id} />
