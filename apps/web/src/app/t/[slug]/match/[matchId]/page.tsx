@@ -46,7 +46,9 @@ import { goName } from '@/lib/goes';
 import { MatchSummaryTable } from '@/components/match-summary-table';
 import { PullScores } from '@/components/pull-scores';
 import { CalculatorButton } from '@/components/calculator-button';
-import { TaStart } from '@/components/ta-start';
+import { TaStart, type TaLinkSummary } from '@/components/ta-start';
+import { TaLive } from '@/components/ta-live';
+import { taStamp, taState } from '@/server/ta';
 import { nextMapToPlay } from '@bscs/core/match';
 
 export const dynamic = 'force-dynamic';
@@ -184,6 +186,24 @@ export default async function MatchPage({
     fielded([match.teamA.id, match.teamB.id].filter((id) => !canSeeLineup(id))).filter((id) => !shownPlayers.has(id)),
   );
 
+  // TA mode, for staff: where the tournament's TA link stands and which roster players are connected.
+  let taLink: TaLinkSummary | null = null;
+  let taLinkStamp: string | null = null;
+  if (match.taMode && match.state !== 'COMPLETE' && can(actor, 'START_MAP')) {
+    const link = await prisma.taLink.findUnique({
+      where: { tournamentId: match.tournament.id },
+      select: { enabled: true, taTournamentName: true },
+    });
+    const state = link?.enabled ? await taState(match.tournament.id) : null;
+    taLinkStamp = taStamp(state);
+    taLink = {
+      phase: !link ? 'none' : !link.enabled ? 'off' : !state ? 'noWorker' : state.phase,
+      message: state?.message ?? null,
+      connected: (state?.users ?? []).flatMap((u) => (u.playerId ? [u.playerId] : [])),
+      tournamentName: state?.tournament?.name ?? link?.taTournamentName ?? null,
+    };
+  }
+
   // In the summary, pick and ban shows only while there is one to make.
   const showPickBan = view === 'detailed' || match.pending != null;
 
@@ -191,6 +211,7 @@ export default async function MatchPage({
     // data-wide: the match page may use the full width of a large screen (see the root layout).
     <div data-wide className="space-y-6">
       <MatchLive matchId={match.id} />
+      {taLinkStamp != null && <TaLive slug={slug} stamp={taLinkStamp} />}
       <PageHeader
         crumbs={[{ label: match.tournament.name, href: `/t/${slug}` }]}
         title={match.name}
@@ -665,6 +686,7 @@ export default async function MatchPage({
                               staff={can(actor, 'START_MAP')}
                               playerName={(id) => playerNames.get(id) ?? 'Player'}
                               visible={(id) => !hiddenPlayers.has(id)}
+                              link={taLink}
                             />
                           )}
                           {planned.replayCalledByTeamIds.length > 0 && (

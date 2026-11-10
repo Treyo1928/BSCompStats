@@ -39,6 +39,12 @@ export interface MatchView {
   unlisted: boolean;
   /** Run through TournamentAssistant: organisers pick, ban and start each map; scores come from TA. */
   taMode: boolean;
+  /**
+   * TA mode: where each player's live replay can be watched while they play -
+   * `liveUrl` with `{platformId}` replaced by the player's `taPlatformId ?? beatLeaderId`.
+   * Null when the match is not in TA mode or the tournament has no TA link.
+   */
+  ta: { host: string; port: number; liveUrl: string } | null;
   /** Set when the match was completed with a winner; null for a draw or an unfinished match. */
   winnerId: string | null;
   format: MatchFormat;
@@ -92,7 +98,7 @@ export interface MatchView {
     scoresClosed: boolean;
     /** Who took the map and by how much, under the match's scoring. */
     result: MapResult;
-    /** TA mode: the request to start this map in TA, and what the bridge last reported. Null when none is standing. */
+    /** TA mode: the request to load and start this map in TA, and how it is going. Null when none is standing. */
     start: MapStart | null;
   }>;
   scoreboard: { a: number; b: number };
@@ -102,7 +108,9 @@ export interface MatchView {
 export interface MapStart {
   requestedAt: Date;
   requestedBy: { id: string; name: string | null } | null;
-  /** The bridge's last report; null until it has said anything. */
+  /** When an organiser pressed "Start song"; null until then. */
+  playRequestedAt: Date | null;
+  /** How it is going in TA; null until there is anything to say. */
   status: TaStatus | null;
 }
 
@@ -196,6 +204,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
           captainsEnterScores: true,
           captainsPullScores: true,
           perfectFromBeatLeader: true,
+          taLink: { select: { enabled: true, host: true, port: true } },
         },
       },
       teamA: { include: { members: { orderBy: { order: 'asc' }, include: { player: true } } } },
@@ -360,6 +369,7 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
         ? {
             requestedAt: matchMap.startRequestedAt,
             requestedBy: matchMap.startRequestedBy,
+            playRequestedAt: matchMap.playRequestedAt,
             status: readTaStatus(matchMap.taStatus),
           }
         : null,
@@ -377,15 +387,21 @@ export async function loadMatch(matchId: string): Promise<MatchView | null> {
     match,
   );
 
+  // The TA link is for building `ta` below; the view's tournament stays what pages expect.
+  const { taLink, ...tournament } = match.tournament;
   return {
     id: match.id,
     name: match.name,
     state: match.state,
-    tournament: match.tournament,
+    tournament,
     scoring,
     blindLineups: match.blindLineups,
     unlisted: match.unlisted,
     taMode: match.taMode,
+    ta:
+      match.taMode && taLink?.enabled
+        ? { host: taLink.host, port: taLink.port, liveUrl: `wss://${taLink.host}:${taLink.port}/live/u/{platformId}` }
+        : null,
     winnerId: match.winnerId,
     format,
     teamA: toTeamView(match.teamA, match.state === 'COMPLETE'),

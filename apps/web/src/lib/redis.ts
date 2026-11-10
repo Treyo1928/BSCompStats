@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import { TA_KEYS, type TaLive } from '@bscs/core/match';
 import { env } from './env';
 
 /**
@@ -11,6 +12,8 @@ export const CHANNELS = {
   refreshRequest: 'bscs:refresh',
   importProgress: 'bscs:import',
   matchChange: 'bscs:match',
+  /** Live numbers while a map is played through TournamentAssistant; from the worker. */
+  taLive: TA_KEYS.live,
 } as const;
 
 export interface ScoreUpdate {
@@ -76,7 +79,7 @@ function listen(channel: string, listener: Listener): () => void {
       for (const each of byChannel.get(from) ?? []) each(payload);
     });
     // ioredis resubscribes by itself after a reconnect.
-    void client.subscribe(CHANNELS.scoreUpdate, CHANNELS.matchChange).catch(() => {});
+    void client.subscribe(CHANNELS.scoreUpdate, CHANNELS.matchChange, CHANNELS.taLive).catch(() => {});
     globalForFanout.fanoutSubscriber = client;
   }
 
@@ -91,6 +94,9 @@ export const onScoreUpdate = (listener: (update: ScoreUpdate) => void) =>
 
 export const onMatchChange = (listener: (change: MatchChange) => void) =>
   listen(CHANNELS.matchChange, listener as Listener);
+
+/** Every player's live score while a map is played through TournamentAssistant, a few times a second. */
+export const onTaLive = (listener: (live: TaLive) => void) => listen(CHANNELS.taLive, listener as Listener);
 
 /** Tell every open copy of a match page that it is out of date. */
 export async function announceMatchChange(matchId: string): Promise<void> {

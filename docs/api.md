@@ -36,7 +36,7 @@ turn, wrong step, the picked map hasn't been played yet) · **400** anything els
 | `GET /api/v1/tournaments/:slug` | `{ tournament, matches, brackets, pools }`: pick the match to follow |
 | `GET /api/v1/matches/:matchId` | `{ match }`, everything about a match (below) |
 | `GET /api/v1/brackets/:bracketId` | `{ bracket }`: every slot with section, round, teams, state, winner and its match (maps won), plus standings |
-| `GET /api/v1/matches/:matchId/events` | server-sent events: `event: match` with the full match on connect and after every change |
+| `GET /api/v1/matches/:matchId/events` | server-sent events: `event: match` with the full match on connect and after every change; in TA mode also `event: live` while a song plays ([TA mode](#ta-mode)) |
 
 The **match** object is what the match page shows:
 
@@ -46,7 +46,8 @@ The **match** object is what the match page shows:
   `beatLeaderId` is the Steam64 id for Steam players (the same id TournamentAssistant uses) but BeatLeader's own
   id for Quest players, so an organiser can set `taPlatformId` (on the Teams page, "TA id") where TA knows them by
   another; it is `null` when unset. `coinFlipWinnerId`, `winnerId`.
-- `taMode`: the match runs through TournamentAssistant (see [TA mode](#ta-mode)).
+- `taMode`: the match runs through TournamentAssistant (see [TA mode](#ta-mode)). `ta`: `{ host, port, liveUrl }`
+  for such a match when the tournament is connected to TA, else `null`.
 - `pool.maps[]`: every map, with name, cover, difficulty, category, max score, tiebreaker flag.
 - `actions[]`: the pick/ban log. `pending`: the step due now (`type`, `teamId`, `availableMapIds`), with
   `waitingForPoolMapId` set while a picked map must be played first.
@@ -90,10 +91,10 @@ that's ready. It's played on the slot's own pool if it has one, else the bracket
 | `reopenMap` | `matchMapId` | |
 | `callReplay` / `cancelReplay` | `matchMapId` (+ `teamId` to call) | |
 | `complete` / `reopen` | | finish the match / reopen it |
-| `startMap` | `matchMapId` | TA mode, staff: ask for the map to be started in TA |
-| `restartMap` | `matchMapId` | TA mode, staff: ask again after a failed or aborted start |
-| `cancelStart` | `matchMapId` | TA mode, staff: take the request back (fine if there is none) |
-| `taStatus` | `matchMapId`, `status`, `requestedAt?` | TA mode, staff: the bridge reports how the start is going |
+| `startMap` | `matchMapId` | TA mode, staff: load the map in TA for the players in its lineups |
+| `playMap` | `matchMapId` | TA mode, staff: start the song for all of them at once (refused, 409, until TA reports everyone ready) |
+| `restartMap` | `matchMapId` | TA mode, staff: load it again after a failed or aborted start, or to play it over |
+| `cancelStart` | `matchMapId` | TA mode, staff: take the request back; players go back to the menu (fine if there is none) |
 
 ### Example: one step from a shell
 
@@ -105,64 +106,82 @@ curl -s -X POST "$SITE/api/v1/matches/$MATCH/actions" \
 
 ## TA mode
 
-For matches run through [TournamentAssistant](https://github.com/MatrikMoon/TournamentAssistant): on match night
-an organiser presses one button and TA starts the song for every lineup player at the same moment, and the scores
-come from TA rather than BeatLeader. The site does not talk to TA. A **bridge** program follows the match over this
-API with an organiser's key, does the TA side, reports back and enters the scores.
+For matches run through [TournamentAssistant](https://github.com/MatrikMoon/TournamentAssistant): an organiser
+loads each map for the players in its lineups and then starts the song for all of them at the same moment, and the
+scores come from TA rather than BeatLeader.
 
-It is set per match when the match is made (`taMode`), defaulting to the tournament's setting. In a TA-mode match:
+**The site does the TA side itself.** Its worker holds the connection to the TA server; a tournament admin connects
+the tournament once on its **TA** page (which TA server, a sign-in, the TA tournament players join in game). There
+is no separate bridge program and nothing to report over this API: you ask for a map to be loaded or started, and
+read how it goes.
+
+TA mode is set per match when the match is made (`taMode`), defaulting to the tournament's setting. In a TA-mode match:
 
 - Only organisers pick and ban, for both teams. A captain's `pick`/`ban` is refused with **403**. Captains still set
   their own lineups.
 - `pullScores` is refused (**409**) and the site hides its button.
-- The map to play next (the first planned map whose scores are open, the tiebreaker last) can be started once both
-  lineups are set. A staff `startMap` records the request; anything else is **409** with the reason (lineups not
-  set, not the next map, already requested, scores closed).
+- The map to play next (the first planned map whose scores are open, the tiebreaker last) can be loaded once both
+  lineups are set and the tournament is connected to TA. A staff `startMap` records the request; anything else is
+  **409** with the reason (lineups not set, not the next map, already requested, scores closed, not connected to TA).
 
-Each planned map has `start`, `null` until a start is requested:
+Each planned map has `start`, `null` until a load is requested:
 
 ```json
 "start": {
-  "requestedAt": "2026-10-29T19:30:00.000Z",
+  "requestedAt": "2026-11-09T19:30:00.000Z",
   "requestedBy": { "id": "…", "name": "Org Anizer" },
-  "status": null
+  "playRequestedAt": null,
+  "status": { "phase": "loading", "reportedAt": "2026-11-09T19:30:02.412Z",
+              "players": [ { "playerId": "…", "state": "ready" }, { "playerId": "…", "state": "loading" } ] }
 }
 ```
 
-`status` is `null` until the bridge reports, then what it last sent plus `reportedAt` (server time). A `cancelStart`
-puts `start` back to `null`; so does any change to either lineup of that map (TA must not start the wrong
-players) and a replay being called. `restartMap` gives a new `requestedAt` and clears `status`. After the map's
-scores are closed, `start` stays as a record; only maps with `scoresClosed: false` are live.
+`status` is `null` for the moment before the worker picks the request up, then how it stands (with `reportedAt`,
+server time):
 
-**The bridge's loop.** Follow `GET /api/v1/matches/:id/events`; every change above sends a fresh `match` event at
-once. When a planned map has `start` set, `scoresClosed: false` and a `requestedAt` you have not handled, start it
-in TA for the players in `lineups` (match them by `taPlatformId ?? beatLeaderId`) and report as it goes:
+| `phase` | Meaning |
+|---|---|
+| `waiting` | a lineup player is not connected to the TA tournament (`state: "missing"`); it carries on by itself when they join |
+| `loading` | a TA match was made with the players and their games are fetching the map |
+| `ready` | everyone has the map. Nothing more happens until `playMap` |
+| `playing` | the song is running for all of them; `startedAt` says since when |
+| `finished` | their scores are on the map, `source: "TA"`. `message` names anyone whose score is missing |
+| `error` | it stopped; `message` says why (a map that would not load, the TA connection dropping). `restartMap` begins again |
+
+`players[].state` is `loading`, `ready`, `playing`, `finished`, `failed` (could not load the map, or failed the
+song), `quit` (left the song, or their game dropped off TA) or `missing`. Finished players carry `score` and
+`accuracy` (0..1, of the whole map).
+
+`playMap` sets `playRequestedAt` and the song starts within a second or two. `cancelStart` puts `start` back to
+`null` and sends the players back to the menu; so does any change to either lineup of that map (TA must not start
+the wrong players) and a replay being called. `restartMap` gives a new `requestedAt`, clears `status` and
+`playRequestedAt`, and loads the map again: after a `finished` run that is "play it again", and when the song
+starts the earlier scores of that run are dropped. After a team calls a replay, the next start is the map's run 2
+and its scores are kept beside run 1's. Once the map's scores are closed, `start` stays as a record.
+
+An organiser then closes the map (`closeMap`), which makes the next one startable. Scores can still be typed
+(`scores`, marked `MANUAL`) where TA could not say, and a tool may enter them as TA's with `source: "TA"`
+(organiser keys, TA-mode matches only; `accuracy` 0..1 and `misses` optional).
+
+### Live scores and live replays
+
+While a song plays, `GET /api/v1/matches/:id/events` also sends `event: live` about four times a second:
 
 ```json
-{ "action": "taStatus", "matchMapId": "…", "requestedAt": "2026-10-29T19:30:00.000Z",
-  "status": { "phase": "playing", "startedAt": "2026-10-29T19:30:12Z", "message": "optional, up to 500 characters",
-              "players": [ { "playerId": "…", "state": "playing", "score": 812345, "accuracy": 0.9612 } ] } }
+{ "matchId": "…", "matchMapId": "…", "phase": "playing", "startedAt": 1794260096669, "at": 1794260101250,
+  "players": [ { "playerId": "…", "teamId": "…", "slot": 0, "platformId": "7656119…", "score": 153694,
+                 "accuracy": 0.9712, "combo": 212, "misses": 1, "songPosition": 41.3, "finished": false } ] }
 ```
 
-- `phase`: `waiting`, `loading`, `playing`, `finished` or `error` (shown with `message` as the error line).
-- `players[].state`: `loading`, `ready`, `playing`, `finished`, `failed` or `missing` (not found in TA). `score`
-  and `accuracy` (0..1) are optional. At most 32 players, each in this map's lineups (else **400**), each once.
-- `requestedAt` is optional but recommended: it names the request you are reporting on, and a report for one that
-  was cancelled or restarted since is refused with **409**, so a late message cannot overwrite a newer start.
-  Reporting with no start standing is **409** too: stop and leave TA alone.
-- Unknown fields are refused (**400**), and so is a body over 16 KB.
+`accuracy` here is of the notes so far, as shown in game. `startedAt` and `at` are Unix milliseconds. One last
+event with `phase: "over"` follows when the song is finished or cancelled. A key that may not see a hidden (blind)
+lineup does not get that lineup's players.
 
-Then enter the scores, one call per team, with `source: "TA"` (organiser keys only, TA-mode matches only):
-
-```json
-{ "action": "scores", "matchMapId": "…", "teamId": "…", "source": "TA",
-  "scores": [ { "playerId": "…", "score": 812345, "accuracy": 0.9612, "misses": 2, "failed": false } ] }
-```
-
-`score` is what TA reports; with `failed: true` it (and `accuracy`) is a No Fail score and doubled back, as for typed
-scores. Without `accuracy` it is worked out from the map's max score. They show on the site as "from TA". An
-organiser closes the map (`closeMap`), which makes the next map startable. Typed scores still work as the fallback
-and are marked `MANUAL`.
+TA also streams each player's live replay (when the TA tournament has replay streaming on, which the TA page shows
+and switches). The match's `ta.liveUrl`, with `{platformId}` replaced by a player's `platformId` from a `live`
+event (or `taPlatformId ?? beatLeaderId` beforehand), is that player's stream: a websocket of TA's
+`ReplayStreamPacket` protobuf messages, silent until they start a song. A replay viewer that understands it can
+draw the gameplay as it happens.
 
 ## Mock tournament (try it by hand)
 

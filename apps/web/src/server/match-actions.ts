@@ -25,7 +25,8 @@ import { failBack } from './form-errors';
 import { announceMatchChange } from '@/lib/redis';
 import { cleanUpAdHocTeams, openMatch, parseCoinFlip } from './custom-teams';
 import { perfectAccOf, scoringOf, tallyMaps } from './match-summary';
-import { aggregateTotals, nextMapToPlay, parseTaStatus } from '@bscs/core/match';
+import { aggregateTotals, nextMapToPlay, readTaStatus } from '@bscs/core/match';
+import { taPoke } from './ta';
 import { choose, countedRun, fetchRuns, loadPullTarget, writeRuns } from './score-pull';
 
 /**
@@ -351,8 +352,9 @@ export async function saveScores(formData: FormData): Promise<void> {
     teamId,
     captainsEnterScores: match.tournament.captainsEnterScores,
   });
-  // Scores reported by TournamentAssistant, through the TA bridge. Only staff
-  // may say a score came from TA; anyone else's typing is typing.
+  // Scores TournamentAssistant reported. The worker writes those itself; this is
+  // for a tool entering them over the API. Only staff may say a score came
+  // from TA; anyone else's typing is typing.
   const fromTa = formData.get('source') === 'TA';
   if (fromTa) assertCan(actor, 'START_MAP');
   const source = fromTa ? 'TA' : 'MANUAL';
@@ -963,18 +965,22 @@ export async function reopenMapScores(formData: FormData): Promise<void> {
 //  TournamentAssistant (TA) mode
 // ---------------------------------------------------------------------------
 //
-// The site never talks to TA. An organiser asks for a map to be started; a
-// bridge program following the match over the API sees the request, starts the
-// song in TA for everyone in the lineups, reports how it goes, and enters the
-// scores TA recorded. These are the site's half: the request and the report.
+// The web app never talks to TA. An organiser's presses are recorded on the
+// map; the worker, which holds the connection to TA (see the tournament's TA
+// page), sees them, does the TA side, and writes back how it is going and the
+// scores TA recorded. These are the site's half: the requests.
+//
+// Two presses per map, because most of the wait is players getting into their
+// headsets, not TA: "Load map" gets the map onto every lineup player's game,
+// and "Start song", once they are all ready, starts it for all of them at once.
 
 const TA_PICKS =
   'This match runs through TournamentAssistant, so only an organiser picks and bans. Tell them your choice.';
 const TA_NO_PULL =
   'This match runs through TournamentAssistant: its scores come from TA, not BeatLeader. An organiser can type them in if TA did not report them.';
 
-/** Clears a start request and whatever the bridge said about it. */
-const NO_START = { startRequestedAt: null, startRequestedById: null, taStatus: Prisma.DbNull };
+/** Clears a start request and whatever was said about it. */
+const NO_START = { startRequestedAt: null, startRequestedById: null, playRequestedAt: null, taStatus: Prisma.DbNull };
 
 /** A TA step's outcome. `status` is the HTTP status the API answers a refusal with. */
 export type TaOutcome = { ok: true } | TaRefusal;
@@ -998,6 +1004,8 @@ async function taTarget(matchId: string, matchMapId: string) {
       isTiebreaker: true,
       scoresClosedAt: true,
       startRequestedAt: true,
+      playRequestedAt: true,
+      taStatus: true,
       poolMap: { select: { leaderboard: { select: { map: { select: { name: true } } } } } },
       lineups: { select: { teamId: true, slots: { select: { playerId: true } } } },
     },
@@ -1008,9 +1016,10 @@ async function taTarget(matchId: string, matchMapId: string) {
 }
 
 /**
- * Ask for a map to be started in TA, or started again after a failed or
- * aborted start (`restart`): a new request time, and the bridge's last report
- * cleared. Staff only, on the map being played next, once both lineups are set.
+ * Ask for a map to be loaded in TA for the players in its lineups, or loaded
+ * again after a failed or aborted start (`restart`): a new request time, and
+ * the last report cleared. Staff only, on the map being played next, once both
+ * lineups are set and the tournament is connected to TA.
  */
 export async function startMapInTa(matchId: string, matchMapId: string, restart = false): Promise<TaOutcome> {
   const t = await taTarget(matchId, matchMapId);
@@ -1031,22 +1040,66 @@ export async function startMapInTa(matchId: string, matchMapId: string, restart 
   );
   if (unset) return { error: 'Set both teams\' lineups for this map first.', status: 409 };
 
+  // Nothing would act on the request without a link; say so now rather than leave it "waiting for TA".
+  const link = await prisma.taLink.findUnique({ where: { tournamentId: match.tournamentId }, select: { enabled: true } });
+  if (!link?.enabled) {
+    return {
+      error: 'This tournament is not connected to TournamentAssistant yet. A tournament admin sets that up on its TA page.',
+      status: 409,
+    };
+  }
+
   // Conditional, so two organisers pressing at once make one request, not two.
   const operator = (await realUser())?.id ?? actor.userId;
   const updated = await prisma.matchMap.updateMany({
     where: { id: matchMapId, startRequestedAt: restart ? { not: null } : null },
-    data: { startRequestedAt: new Date(), startRequestedById: operator || null, taStatus: Prisma.DbNull },
+    data: { startRequestedAt: new Date(), startRequestedById: operator || null, playRequestedAt: null, taStatus: Prisma.DbNull },
   });
   if (updated.count === 0) {
     return restart
       ? { error: 'There is no start to restart: none was requested for this map.', status: 409 }
-      : { error: 'A start was already requested for this map. Restart it or cancel it.', status: 409 };
+      : { error: 'This map is already being loaded in TournamentAssistant. Restart it or cancel it.', status: 409 };
   }
   await matchChanged(match.tournament.slug, matchId);
+  await taPoke(match.tournamentId);
   return { ok: true };
 }
 
-/** Take back a start request. Staff only; nothing to cancel is not an error. */
+/**
+ * Start the song for everyone, once every lineup player has the map loaded.
+ * Staff only. Refused until TA reports them all ready, so a press cannot start
+ * the song for some players and not others.
+ */
+export async function playMapInTa(matchId: string, matchMapId: string): Promise<TaOutcome> {
+  const t = await taTarget(matchId, matchMapId);
+  if ('error' in t) return t;
+  const { match, map } = t;
+  if (!map.startRequestedAt) return { error: 'Load the map for the players first.', status: 409 };
+  const phase = readTaStatus(map.taStatus)?.phase;
+  if (phase !== 'ready') {
+    return {
+      error:
+        phase === 'playing'
+          ? 'The song is already playing.'
+          : phase === 'finished'
+            ? 'This run is over. Restart the map to play it again.'
+            : phase === 'error'
+              ? 'The last start failed. Restart the map first.'
+              : 'Not every player has the map loaded yet.',
+      status: 409,
+    };
+  }
+  const updated = await prisma.matchMap.updateMany({
+    where: { id: matchMapId, startRequestedAt: map.startRequestedAt, playRequestedAt: null },
+    data: { playRequestedAt: new Date() },
+  });
+  if (updated.count === 0) return { error: 'The song was already started, or the request changed a moment ago.', status: 409 };
+  await matchChanged(match.tournament.slug, matchId);
+  await taPoke(match.tournamentId);
+  return { ok: true };
+}
+
+/** Take back a start request: players go back to the menu. Staff only; nothing to cancel is not an error. */
 export async function cancelMapStart(matchId: string, matchMapId: string): Promise<TaOutcome> {
   const t = await taTarget(matchId, matchMapId);
   if ('error' in t) return t;
@@ -1054,50 +1107,14 @@ export async function cancelMapStart(matchId: string, matchMapId: string): Promi
     where: { id: matchMapId, startRequestedAt: { not: null } },
     data: NO_START,
   });
-  if (updated.count > 0) await matchChanged(t.match.tournament.slug, matchId);
+  if (updated.count > 0) {
+    await matchChanged(t.match.tournament.slug, matchId);
+    await taPoke(t.match.tournamentId);
+  }
   return { ok: true };
 }
 
-/**
- * The bridge says how the start is going. Shown to everyone on the match page.
- * `requestedAt`, where given, names the request the report is about: a report
- * for one that has since been cancelled or restarted is refused, so a late
- * message from an old start cannot overwrite the new one's.
- */
-export async function reportTaStatus(
-  matchId: string,
-  matchMapId: string,
-  input: unknown,
-  requestedAt?: string | null,
-): Promise<TaOutcome> {
-  const t = await taTarget(matchId, matchMapId);
-  if ('error' in t) return t;
-  const { map } = t;
-  if (!map.startRequestedAt) {
-    return { error: 'No start is requested for this map: it was cancelled, or never asked for.', status: 409 };
-  }
-  if (requestedAt != null && Date.parse(requestedAt) !== map.startRequestedAt.getTime()) {
-    return {
-      error: `That start was cancelled or restarted. The current request is from ${map.startRequestedAt.toISOString()}.`,
-      status: 409,
-    };
-  }
-  const parsed = parseTaStatus(input);
-  if ('error' in parsed) return { error: parsed.error, status: 400 };
-  const fielded = new Set(map.lineups.flatMap((l) => l.slots.map((s) => s.playerId)));
-  const stranger = parsed.status.players?.find((p) => !fielded.has(p.playerId));
-  if (stranger) return { error: `status.players: ${stranger.playerId} is not in this map's lineups.`, status: 400 };
-
-  const updated = await prisma.matchMap.updateMany({
-    where: { id: matchMapId, startRequestedAt: map.startRequestedAt },
-    data: { taStatus: parsed.status as unknown as Prisma.InputJsonValue },
-  });
-  if (updated.count === 0) return { error: 'That start was cancelled or restarted a moment ago.', status: 409 };
-  await matchChanged(t.match.tournament.slug, matchId);
-  return { ok: true };
-}
-
-/** The match page's buttons: start, restart, cancel. Refusals come back on the page. */
+/** The match page's buttons: load, start the song, restart, cancel. Refusals come back on the page. */
 export async function taStartForm(formData: FormData): Promise<void> {
   const matchId = String(formData.get('matchId'));
   const matchMapId = String(formData.get('matchMapId'));
@@ -1105,7 +1122,9 @@ export async function taStartForm(formData: FormData): Promise<void> {
   const outcome =
     step === 'cancel'
       ? await cancelMapStart(matchId, matchMapId)
-      : await startMapInTa(matchId, matchMapId, step === 'restart');
+      : step === 'play'
+        ? await playMapInTa(matchId, matchMapId)
+        : await startMapInTa(matchId, matchMapId, step === 'restart');
   if ('error' in outcome) {
     const match = await prisma.match.findUnique({ where: { id: matchId }, select: { tournament: { select: { slug: true } } } });
     failBack(`/t/${match?.tournament.slug ?? ''}/match/${matchId}`, outcome.error);

@@ -507,8 +507,46 @@ model Tournament {
   members   TournamentMember[]
   brackets  Bracket[]
   apiKeys   ApiKey[]
+  taLink    TaLink?
 
   @@index([ownerId])
+}
+
+/// A tournament's connection to a TournamentAssistant server. The worker holds
+/// the connection: it signs in with `token`, joins `taTournamentId`, starts
+/// maps for TA-mode matches and brings their scores back. What it sees right
+/// now (who is connected, how a start is going) is not stored here; it lives
+/// in Redis for as long as it is true.
+model TaLink {
+  id           String     @id @default(cuid())
+  tournamentId String     @unique
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  /// Off: the worker stays disconnected and the settings are kept.
+  enabled Boolean @default(true)
+  /// The TA server's address and websocket port (TA's public server by default).
+  host    String  @default("server.tournamentassistant.net")
+  port    Int     @default(8676)
+
+  /// What the worker signs in to TA with: a bot token made for this site, or
+  /// one pasted by an organiser. Never sent to a browser. Null until signed in.
+  token       String?
+  /// Who that token is in TA, for display: the bot's name, or a person's.
+  tokenName   String?
+  /// The token's TA user id (a bot's guid, or a Discord id).
+  tokenUserId String?
+  /// The Discord name of whoever signed in to make the bot token.
+  signedInBy  String?
+
+  /// The TA tournament players join in game. Null until one is chosen or made.
+  taTournamentId   String?
+  taTournamentName String?
+
+  /// How songs are started: { disableFail, disablePause, showScoreboard }. Null is the defaults.
+  options Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model TournamentMember {
@@ -725,8 +763,8 @@ model Match {
   doubleFailedRuns Boolean @default(false)
 
   /// Run through TournamentAssistant: organisers pick and ban and start each
-  /// map, a bridge program starts it in TA, and the scores come from TA rather
-  /// than BeatLeader. Fixed when the match is made.
+  /// map, the worker starts it in TA (see TaLink), and the scores come from TA
+  /// rather than BeatLeader. Fixed when the match is made.
   taMode Boolean @default(false)
 
   scheduledAt DateTime?
@@ -807,14 +845,18 @@ model MatchMap {
   /// typed in after that until an organiser reopens them.
   scoresClosedAt DateTime?
 
-  /// TA mode: an organiser asked for this map to be started in TournamentAssistant.
-  /// Cleared by a cancel, a lineup change or a replay; a restart sets it anew.
+  /// TA mode: an organiser asked for this map to be loaded in TournamentAssistant
+  /// for the players in its lineups. Cleared by a cancel, a lineup change or a
+  /// replay; a restart sets it anew.
   startRequestedAt   DateTime?
   startRequestedById String?
   startRequestedBy   User?     @relation("StartRequestedBy", fields: [startRequestedById], references: [id], onDelete: SetNull)
-  /// What the TA bridge last reported for that request: phase, per-player
-  /// state, an error. Shape checked by core match/ta. Null until it reports.
+  /// How that request is going in TA: phase, per-player state, an error.
+  /// Shape checked by core match/ta. Null until there is anything to say.
   taStatus           Json?
+  /// An organiser pressed "Start song": everyone has the map loaded and the
+  /// song should begin for all of them at once. Cleared with the request.
+  playRequestedAt    DateTime?
 
   createdAt DateTime @default(now())
 

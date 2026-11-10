@@ -9,6 +9,11 @@ const schema = z.object({
     .string()
     .default('true')
     .transform((v) => v !== 'false'),
+  /** Off: no BeatLeader/ScoreSaber syncing at all, only TournamentAssistant. For the local test stack. */
+  ENABLE_SCORE_SYNC: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false'),
   SCORE_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   BEATLEADER_CONCURRENCY: z.coerce.number().int().positive().default(4),
   DISCORD_WEBHOOK_URL: z.string().optional(),

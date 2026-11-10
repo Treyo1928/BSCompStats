@@ -8,6 +8,7 @@ import { syncHistories } from './history.js';
 import { syncProfiles } from './profiles.js';
 import { syncScoreSaber } from './scoresaber.js';
 import { syncAttempts } from './attempts.js';
+import { startTa, stopTa } from './ta/index.js';
 
 /**
  * The ingestion worker.
@@ -16,6 +17,10 @@ import { syncAttempts } from './attempts.js';
  *   1. the live BeatLeader score feed, which reacts within a second
  *   2. an on-demand refresh, when somebody presses the button in the app
  *   3. a periodic poll, which is the safety net behind both
+ *
+ * It also holds the connections to TournamentAssistant (see ./ta), since it
+ * is the one long-lived process: starting maps for TA-mode matches and
+ * bringing their scores back.
  */
 
 const socket = new ScoreSocket();
@@ -134,24 +139,32 @@ async function main(): Promise<void> {
   });
   log.info('listening for refresh requests');
 
-  if (config.ENABLE_LIVE_SOCKET) {
-    await socket.start();
-  } else {
-    log.info('live socket disabled - polling only');
-  }
+  // Connections to TournamentAssistant for the tournaments that have one set up.
+  await startTa();
 
-  // One poll at boot so a fresh instance is populated without waiting.
-  void poll('startup');
-  pollTimer = setInterval(
-    () => void poll('scheduled'),
-    config.SCORE_POLL_INTERVAL_SECONDS * 1000,
-  );
-  log.info(`polling every ${config.SCORE_POLL_INTERVAL_SECONDS}s`);
+  if (!config.ENABLE_SCORE_SYNC) {
+    log.info('score syncing disabled - TournamentAssistant only');
+  } else {
+    if (config.ENABLE_LIVE_SOCKET) {
+      await socket.start();
+    } else {
+      log.info('live socket disabled - polling only');
+    }
+
+    // One poll at boot so a fresh instance is populated without waiting.
+    void poll('startup');
+    pollTimer = setInterval(
+      () => void poll('scheduled'),
+      config.SCORE_POLL_INTERVAL_SECONDS * 1000,
+    );
+    log.info(`polling every ${config.SCORE_POLL_INTERVAL_SECONDS}s`);
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`${signal} received, shutting down`);
     if (pollTimer) clearInterval(pollTimer);
     await socket.stop();
+    await stopTa();
     await subscriber.quit();
     await closeBus();
     await prisma.$disconnect();

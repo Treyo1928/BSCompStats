@@ -371,7 +371,17 @@ describe('TournamentAssistant mode', () => {
     expect((await act(K.captainMaroon!, match.id, { action: 'startMap', matchMapId: map1.matchMapId })).status).toBe(403);
   });
 
-  it('records the start request, tells the events stream, and refuses a second one', async () => {
+  it('will not start a map until the tournament is connected to TournamentAssistant', async () => {
+    const unlinked = await act(K.organiser!, match.id, { action: 'startMap', matchMapId: map1.matchMapId });
+    expect(unlinked.status).toBe(409);
+    expect(unlinked.json.error).toMatch(/not connected to TournamentAssistant/);
+    // The link an admin sets up on the TA page. No worker runs in these tests, so nothing acts on it.
+    await prisma.taLink.create({ data: { tournamentId: F.tournament.id, host: 'ta.invalid', taTournamentName: 'Test' } });
+    expect(match.ta).toBeNull();
+    expect((await get(K.organiserRead!, match.id)).ta).toEqual({ host: 'ta.invalid', port: 8676, liveUrl: 'wss://ta.invalid:8676/live/u/{platformId}' });
+  });
+
+  it('records the load request, tells the events stream, and refuses a second one', async () => {
     const events = await followMatch(K.organiserRead!, match.id);
     expect((await events.next()).plannedMaps[0].start).toBeNull();
     const res = await act(K.organiser!, match.id, { action: 'startMap', matchMapId: map1.matchMapId });
@@ -380,41 +390,40 @@ describe('TournamentAssistant mode', () => {
     expect(Date.parse(start.requestedAt)).toBeGreaterThan(Date.now() - 60_000);
     expect(start.requestedBy.id).toBe(F.users.organiser);
     expect(start.status).toBeNull();
+    expect(start.playRequestedAt).toBeNull();
     const pushed = await events.next();
     expect(pushed.plannedMaps.find((pm: Json) => pm.order === 1).start?.requestedAt).toBe(start.requestedAt);
     events.close();
     expect((await act(K.organiser!, match.id, { action: 'startMap', matchMapId: map1.matchMapId })).status).toBe(409);
   });
 
-  it('takes the bridge’s reports, checked, and hands them back', async () => {
-    const before = (await get(K.organiser!, match.id)).plannedMaps[0].start;
-    const status = {
-      phase: 'loading',
-      players: [
-        { playerId: a1, state: 'ready' }, { playerId: a2, state: 'loading' },
-        { playerId: b1, state: 'ready' }, { playerId: b2, state: 'missing' },
-      ],
-    };
-    expect((await act(K.captainMaroon!, match.id, { action: 'taStatus', matchMapId: map1.matchMapId, status })).status).toBe(403);
-    expect((await act(K.organiser!, match.id, { action: 'taStatus', matchMapId: map1.matchMapId, status: { phase: 'started' } })).status).toBe(400);
-    const stranger = await act(K.organiser!, match.id, {
-      action: 'taStatus', matchMapId: map1.matchMapId, status: { phase: 'loading', players: [{ playerId: a3, state: 'ready' }] },
-    });
-    expect(stranger.status).toBe(400);
-    expect((await act(K.organiser!, match.id, {
-      action: 'taStatus', matchMapId: map1.matchMapId, status, requestedAt: '2020-01-01T00:00:00Z',
-    })).status).toBe(409);
+  it('starts the song only once TA says every player is ready, and only once', async () => {
+    // What the worker writes as the start goes along, written here in its place.
+    const report = (status: Json) => prisma.matchMap.update({ where: { id: map1.matchMapId }, data: { taStatus: { ...status, reportedAt: new Date().toISOString() } } });
+    const players = (state: string) => [a1, a2, b1, b2].map((playerId) => ({ playerId, state }));
 
-    const ok = await act(K.organiser!, match.id, { action: 'taStatus', matchMapId: map1.matchMapId, status, requestedAt: before.requestedAt });
-    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    const early = await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId });
+    expect(early.status).toBe(409);
+    await report({ phase: 'loading', players: [...players('ready').slice(0, 3), { playerId: b2, state: 'loading' }] });
+    const loading = await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId });
+    expect(loading.status).toBe(409);
+    expect(loading.json.error).toMatch(/Not every player has the map loaded/);
+
+    await report({ phase: 'ready', players: players('ready') });
     const seen = (await get(K.captainWhite!, match.id)).plannedMaps[0].start.status;
-    expect(seen).toMatchObject(status);
+    expect(seen).toMatchObject({ phase: 'ready' });
     expect(seen.reportedAt).toBeTruthy();
-    const playing = await act(K.organiser!, match.id, {
-      action: 'taStatus', matchMapId: map1.matchMapId,
-      status: { phase: 'error', message: 'Player b2 never loaded', startedAt: new Date().toISOString() },
-    });
-    expect(playing.json.match.plannedMaps[0].start.status).toMatchObject({ phase: 'error', message: 'Player b2 never loaded' });
+    expect((await act(K.captainMaroon!, match.id, { action: 'playMap', matchMapId: map1.matchMapId })).status).toBe(403);
+    const go = await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId });
+    expect(go.status, JSON.stringify(go.json)).toBe(200);
+    expect(Date.parse(go.json.match.plannedMaps[0].start.playRequestedAt)).toBeGreaterThan(Date.now() - 60_000);
+    expect((await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId })).status).toBe(409);
+
+    await report({ phase: 'playing', players: players('playing'), startedAt: new Date().toISOString() });
+    const playing = await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId });
+    expect(playing.json.error).toMatch(/already playing/);
+    // Reporting is the worker's job now: there is no API action for it.
+    expect((await act(K.organiser!, match.id, { action: 'taStatus', matchMapId: map1.matchMapId, status: { phase: 'ready' } })).status).toBe(400);
   });
 
   it('restarts, and drops the request when a lineup changes', async () => {
@@ -424,6 +433,8 @@ describe('TournamentAssistant mode', () => {
     const restarted = again.json.match.plannedMaps[0].start;
     expect(Date.parse(restarted.requestedAt)).toBeGreaterThan(Date.parse(before.requestedAt));
     expect(restarted.status).toBeNull();
+    // A restart is a fresh load: "Start song" has to be pressed again.
+    expect(restarted.playRequestedAt).toBeNull();
 
     // The same lineup saved again changes nothing; a different one cancels the start.
     await act(K.captainMaroon!, match.id, { action: 'lineup', matchMapId: map1.matchMapId, teamId: maroon(), playerIds: [a1, a2] });
@@ -439,7 +450,7 @@ describe('TournamentAssistant mode', () => {
     expect(cancelled.status, JSON.stringify(cancelled.json)).toBe(200);
     expect(cancelled.json.match.plannedMaps[0].start).toBeNull();
     expect((await act(K.organiser!, match.id, { action: 'cancelStart', matchMapId: map1.matchMapId })).status).toBe(200);
-    expect((await act(K.organiser!, match.id, { action: 'taStatus', matchMapId: map1.matchMapId, status: { phase: 'waiting' } })).status).toBe(409);
+    expect((await act(K.organiser!, match.id, { action: 'playMap', matchMapId: map1.matchMapId })).status).toBe(409);
   });
 
   it('takes its scores from TA, not BeatLeader', async () => {

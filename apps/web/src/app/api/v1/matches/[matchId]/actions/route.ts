@@ -12,7 +12,7 @@ import {
   pullMapScores,
   reopenMapScores,
   reopenMatch,
-  reportTaStatus,
+  playMapInTa,
   saveLineup,
   saveScores,
   startMapInTa,
@@ -43,10 +43,10 @@ export const dynamic = 'force-dynamic';
  *   reopen           {}
  *
  * TA mode (staff only; see docs/api.md):
- *   startMap         { matchMapId }                  ask for the next map to be started in TournamentAssistant
- *   restartMap       { matchMapId }                  ask again after a failed or aborted start
- *   cancelStart      { matchMapId }                  take the request back
- *   taStatus         { matchMapId, status, requestedAt? }   the TA bridge reports how the start is going
+ *   startMap         { matchMapId }                  load the next map in TournamentAssistant for its lineup players
+ *   playMap          { matchMapId }                  start the song for all of them, once TA reports them ready
+ *   restartMap       { matchMapId }                  load again after a failed or aborted start
+ *   cancelStart      { matchMapId }                  take the request back; players return to the menu
  *
  * Answers `{ ok: true, match }` with the match as it now stands, or `{ error }`.
  */
@@ -184,13 +184,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ mat
       case 'cancelStart':
         ta(await cancelMapStart(matchId, str('matchMapId')));
         break;
-      case 'taStatus': {
-        // A report is a handful of fields per player; anything far bigger is a mistake.
-        if (JSON.stringify(body.status ?? null).length > 16_384) throw new ApiError(413, '"status" is too big.');
-        if (body.requestedAt !== undefined && typeof body.requestedAt !== 'string') throw new ApiError(400, '"requestedAt" is an ISO date string.');
-        ta(await reportTaStatus(matchId, str('matchMapId'), body.status, body.requestedAt as string | undefined));
+      case 'playMap':
+        ta(await playMapInTa(matchId, str('matchMapId')));
         break;
-      }
       case 'reopen':
         await run(() => reopenMatch(form({})));
         break;

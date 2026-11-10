@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { nextMapToPlay, parseTaStatus, readTaStatus, TA_MAX_PLAYERS } from './ta.js';
+import { DEFAULT_TA_OPTIONS, nextMapToPlay, parseTaOptions, parseTaStatus, readTaStatus, TA_MAX_PLAYERS, TA_PHASES } from './ta.js';
 
 const now = new Date('2026-10-29T20:00:00Z');
 
-describe('a TA bridge report', () => {
+describe('a report on a TA start', () => {
   it('is stored with the time it arrived', () => {
     const out = parseTaStatus(
       {
@@ -79,5 +79,26 @@ describe('the map to play next', () => {
   it('is none once every map is closed', () => {
     expect(nextMapToPlay([map(1, true), map(2, true)])).toBeNull();
     expect(nextMapToPlay([])).toBeNull();
+  });
+});
+
+describe('a start with two presses', () => {
+  it('knows the ready phase and a player who left the song', () => {
+    const parsed = parseTaStatus({ phase: 'ready', players: [{ playerId: 'p1', state: 'ready' }, { playerId: 'p2', state: 'quit' }] });
+    expect('status' in parsed && parsed.status.phase).toBe('ready');
+    expect(TA_PHASES).toEqual(['waiting', 'loading', 'ready', 'playing', 'finished', 'error']);
+  });
+});
+
+describe('parseTaOptions', () => {
+  it('defaults to players who cannot fail, and keeps what was stored', () => {
+    expect(parseTaOptions(null)).toEqual(DEFAULT_TA_OPTIONS);
+    expect(DEFAULT_TA_OPTIONS.disableFail).toBe(true);
+    expect(parseTaOptions({ disableFail: false, disablePause: true })).toEqual({ disableFail: false, disablePause: true, showScoreboard: false });
+  });
+
+  it('ignores anything that is not a yes or no', () => {
+    expect(parseTaOptions({ disableFail: 'no', showScoreboard: 1, extra: true })).toEqual(DEFAULT_TA_OPTIONS);
+    expect(parseTaOptions('nonsense')).toEqual(DEFAULT_TA_OPTIONS);
   });
 });

@@ -39,13 +39,14 @@ orders: every pick and ban first, or each map played as soon as it is picked
 (pick, play, pick, play, ban, ban, …, tiebreaker last). The tournament sets the
 default and each match can choose the other.
 
-**Matches run through TournamentAssistant.** A match can be set to run through
-TA instead: organisers make the picks and bans, and once both lineups for the
-next map are in, one "Start map in TA" button asks a bridge program to start the
-song for every player at once. The bridge reports back - who is loading, ready,
-playing, finished - and enters the scores TA recorded, marked "from TA";
-BeatLeader is not asked. The tournament sets the default; see
-[docs/api.md](docs/api.md#ta-mode) for the bridge's side.
+**Matches run through TournamentAssistant.** A tournament connects to a TA server once, on its **TA** page: pick
+the server (TA's public one, or your own), sign in with Discord through TA, and choose or make the TA tournament
+your players join in game. From then on the site does what TA's coordinator app would: the TA page shows who is
+connected, and on a match set to run through TA an organiser presses **Load map in TA** (the map goes onto every
+lineup player's game, waiting for anyone not connected yet) and then **Start song** (it starts for all of them at
+once). Their scores come back from TA onto the match, and live scores go out to overlays while they play. The
+worker holds the TA connection, so it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay
+or script sees.
 
 **Lineups without nagging.** The app only refuses lineups that cannot be real:
 a player twice on one map, more players than the format fields, or someone who
@@ -398,7 +399,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres re
 npm run db:migrate
 npm run db:seed        # loads the real MSU setup from the spreadsheets
 npm run dev            # http://localhost:3000
-npm run dev:worker     # score ingestion, in another terminal
+npm run dev:worker     # score ingestion and the TournamentAssistant link, in another terminal (rebuilds, then runs)
 ```
 
 The dev overlay publishes Postgres and Redis on the host. The plain compose file

@@ -9,6 +9,12 @@
 #                                   and brackets (same seeds, no results) plus the players' replays. This is the default
 #                                   (MSU's October 2026 tourney). MOCK_FROM=fixture: the made-up test tournament instead.
 #
+#
+#   With a test TournamentAssistant server (the whole-stack start.sh one level up runs one), also set
+#   MOCK_TA_HOST, MOCK_TA_PORT, MOCK_TA_TOKEN (a token that server accepts) and MOCK_TA_TOURNAMENT (the TA tournament's
+#   name): the mock tournament is then linked to it, and the worker, which holds the TA connection, is started too.
+#   MOCK_WORKER_LOG: where the worker's log goes.
+#
 # Its data stores have their own names and ports, so it never touches a real dev database or the tests.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -31,8 +37,10 @@ unset DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET BEATLEADER_CLIENT_ID BEATLEADER_CL
 command -v docker >/dev/null || { echo "Docker is needed for the data stores (Postgres + Redis)."; exit 1; }
 compose() { docker compose -f docker-compose.mock.yml "$@"; }
 app_pid=""
+worker_pid=""
 cleanup() {
   echo; echo "== stopping"
+  [ -n "$worker_pid" ] && kill "$worker_pid" 2>/dev/null || true
   # the app runs in its own process group (setsid below): stop all of it, not just npx
   [ -n "$app_pid" ] && { kill -TERM -- "-$app_pid" 2>/dev/null || kill "$app_pid" 2>/dev/null; } || true
   compose down -v >/dev/null 2>&1 || true
@@ -55,6 +63,15 @@ elif ! MOCK_FROM="$MOCK_FROM" node --experimental-strip-types --no-warnings apps
   compose down -v >/dev/null 2>&1; compose up -d --wait >/dev/null
   npx prisma migrate deploy --schema packages/db/prisma/schema.prisma >/dev/null
   made_up
+fi
+
+if [ -n "${MOCK_TA_HOST:-}" ]; then
+  echo "== worker (holds the TournamentAssistant connection)"
+  WORKER_LOG="${MOCK_WORKER_LOG:-$(dirname "$APP_LOG")/bscs-mock-worker.log}"
+  npx tsc -b packages/db/tsconfig.json >/dev/null
+  npm run build --workspace @bscs/worker >/dev/null
+  ENABLE_SCORE_SYNC=false node apps/worker/dist/index.js > "$WORKER_LOG" 2>&1 &
+  worker_pid=$!
 fi
 
 echo "== app on :$PORT (first page load compiles, give it a few seconds)"

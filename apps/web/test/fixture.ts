@@ -102,6 +102,21 @@ async function main() {
   const privateCup = await prisma.tournament.create({
     data: { slug: 'private-cup', name: 'Private Cup', ownerId: admin.id, isPublic: false },
   });
+
+  // A TournamentAssistant link for the local test stack (scripts/mock.sh sets these when a test TA server runs).
+  if (process.env.MOCK_TA_HOST && process.env.MOCK_TA_TOKEN) {
+    await prisma.taLink.create({
+      data: {
+        tournamentId: tournament.id,
+        host: process.env.MOCK_TA_HOST,
+        port: Number(process.env.MOCK_TA_PORT || 8676),
+        token: process.env.MOCK_TA_TOKEN,
+        tokenName: 'Local test organiser',
+        tokenUserId: process.env.MOCK_TA_USER_ID || null,
+        taTournamentName: process.env.MOCK_TA_TOURNAMENT || tournament.name,
+      },
+    });
+  }
   const division = await prisma.division.create({ data: { tournamentId: tournament.id, name: 'Main' } });
 
   const teams: Record<string, { id: string; players: Record<string, string> }> = {};

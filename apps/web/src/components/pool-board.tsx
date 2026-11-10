@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Avatar, DifficultyChip, MapCover, heat, pct, num, teamInk, teamWash } from './ui';
 import type { PoolBoard, BoardCell, BoardMap } from '@/server/board';
 import { PlayerLink } from './player-card';
+import { rankTiers } from '@bscs/core/stats';
 
 /**
  * The pool board.
@@ -40,6 +41,8 @@ export function PoolBoardTable({
           : [],
       ),
   );
+  // "teams": the spreadsheet's layout. "rank": everyone in one list, best average first.
+  const [view, setView] = useState<'teams' | 'rank'>('teams');
   const toggle = (key: string) =>
     setCollapsed((current) => {
       const next = new Set(current);
@@ -70,7 +73,96 @@ export function PoolBoardTable({
   const avgRange =
     averages.length >= 2 ? { min: Math.min(...averages), max: Math.max(...averages) } : undefined;
 
+  const playerRow = (row: PoolBoard['teams'][number]['rows'][number], color: string, place?: number) => (
+                <tr key={row.playerId} className="group">
+                  <th
+                    scope="row"
+                    // Narrow on a phone, with a hairline so scores sliding under it read as "more that way".
+                    className="sticky left-0 z-10 max-w-28 border-r border-edge/70 bg-panel px-2 py-1 text-left font-medium group-hover:bg-raised sm:max-w-none sm:border-r-0 sm:px-4"
+                  >
+                    <PlayerLink
+                      playerId={row.playerId}
+                      name={row.playerName}
+                      className="flex w-full items-center gap-1.5 hover:underline sm:gap-2.5"
+                    >
+                      <span className="hidden sm:inline-flex">
+                        <Avatar src={row.avatar} name={row.playerName} size={26} ring={color} />
+                      </span>
+                      {place != null && <span className="w-5 shrink-0 text-right text-xs tabular text-faint">{place}</span>}
+                      <span className="min-w-0">
+                        <span
+                          className={`block truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
+                          title={row.available ? undefined : 'Not available - left out of lineups'}
+                        >
+                          {row.playerName}
+                        </span>
+                        {place != null && row.teamName && (
+                          <span className="block truncate text-[10px] font-normal text-faint">{row.teamName}</span>
+                        )}
+                      </span>
+                    </PlayerLink>
+                  </th>
+
+                  {row.cells.map((cell) => (
+                    <Cell
+                      key={cell.leaderboardId}
+                      cell={cell}
+                      range={columnRange.get(cell.leaderboardId)}
+                    />
+                  ))}
+
+                  <td className="px-4 py-1 text-right">
+                    {row.meanAcc != null ? (
+                      <span
+                        className="inline-block rounded-md px-2 py-1 text-sm font-semibold tabular"
+                        style={
+                          avgRange && avgRange.max > avgRange.min
+                            ? heat((row.meanAcc - avgRange.min) / (avgRange.max - avgRange.min))
+                            : undefined
+                        }
+                        title={`${row.played} of ${board.maps.length} maps played`}
+                      >
+                        {pct(row.meanAcc)}
+                      </span>
+                    ) : (
+                      <span className="text-faint">—</span>
+                    )}
+                  </td>
+                </tr>
+  );
+
+  const tiers = rankTiers(allRows, board.maps.length);
+  const teamColor = new Map(board.teams.flatMap((t) => t.rows.map((r) => [r.playerId, t.color] as const)));
+
   return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs">
+        <span className="text-faint">Order</span>
+        <div className="inline-flex overflow-hidden rounded-md border border-edge" role="group" aria-label="Order of the board">
+          {(
+            [
+              ['teams', 'By team'],
+              ['rank', 'By average'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={view === value}
+              onClick={() => setView(value)}
+              className={`px-2.5 py-1 font-medium ${view === value ? 'bg-accent/20 text-ink' : 'text-muted hover:bg-raised hover:text-ink'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {view === 'rank' && (
+          <span className="text-faint">
+            Best average first, among players with the same number of maps played: an average over fewer maps is not
+            comparable, so it never ranks above one over more.
+          </span>
+        )}
+      </div>
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-separate border-spacing-0 text-sm sm:min-w-[760px]">
         <thead>
@@ -87,7 +179,7 @@ export function PoolBoardTable({
           </tr>
         </thead>
 
-        {board.teams.map((team) => {
+        {view === 'teams' && board.teams.map((team) => {
           const ink = teamInk(team.color, team.rows[0]?.teamColorSecondary);
           const key = keyOf(team.teamId);
           const isCollapsed = collapsed.has(key);
@@ -126,60 +218,27 @@ export function PoolBoardTable({
                 </td>
               </tr>
 
-              {!isCollapsed && team.rows.map((row) => (
-                <tr key={row.playerId} className="group">
-                  <th
-                    scope="row"
-                    // Narrow on a phone, with a hairline so scores sliding under it read as "more that way".
-                    className="sticky left-0 z-10 max-w-28 border-r border-edge/70 bg-panel px-2 py-1 text-left font-medium group-hover:bg-raised sm:max-w-none sm:border-r-0 sm:px-4"
-                  >
-                    <PlayerLink
-                      playerId={row.playerId}
-                      name={row.playerName}
-                      className="flex w-full items-center gap-1.5 hover:underline sm:gap-2.5"
-                    >
-                      <span className="hidden sm:inline-flex">
-                        <Avatar src={row.avatar} name={row.playerName} size={26} ring={team.color} />
-                      </span>
-                      <span
-                        className={`truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
-                        title={row.available ? undefined : 'Not available - left out of lineups'}
-                      >
-                        {row.playerName}
-                      </span>
-                    </PlayerLink>
-                  </th>
-
-                  {row.cells.map((cell) => (
-                    <Cell
-                      key={cell.leaderboardId}
-                      cell={cell}
-                      range={columnRange.get(cell.leaderboardId)}
-                    />
-                  ))}
-
-                  <td className="px-4 py-1 text-right">
-                    {row.meanAcc != null ? (
-                      <span
-                        className="inline-block rounded-md px-2 py-1 text-sm font-semibold tabular"
-                        style={
-                          avgRange && avgRange.max > avgRange.min
-                            ? heat((row.meanAcc - avgRange.min) / (avgRange.max - avgRange.min))
-                            : undefined
-                        }
-                        title={`${row.played} of ${board.maps.length} maps played`}
-                      >
-                        {pct(row.meanAcc)}
-                      </span>
-                    ) : (
-                      <span className="text-faint">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {!isCollapsed && team.rows.map((row) => playerRow(row, team.color))}
             </tbody>
           );
         })}
+
+        {view === 'rank' &&
+          tiers.map((tier) => (
+            <tbody key={tier.played}>
+              <tr>
+                <td colSpan={board.maps.length + 2} className="border-y border-edge bg-raised/40 p-0">
+                  <span className="sticky left-0 inline-flex items-center gap-2 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
+                    {tier.label}
+                    <span className="font-normal normal-case tracking-normal text-faint">
+                      {tier.rows.length} {tier.rows.length === 1 ? 'player' : 'players'}
+                    </span>
+                  </span>
+                </td>
+              </tr>
+              {tier.rows.map(({ row, place }) => playerRow(row, teamColor.get(row.playerId) ?? '#888', place ?? undefined))}
+            </tbody>
+          ))}
 
         <tfoot>
           <tr>
@@ -198,6 +257,7 @@ export function PoolBoardTable({
           </tr>
         </tfoot>
       </table>
+    </div>
     </div>
   );
 }
