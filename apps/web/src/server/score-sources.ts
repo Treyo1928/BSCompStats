@@ -251,9 +251,11 @@ async function clearsWithin(
       missedNotes: true,
       badCuts: true,
       fullCombo: true,
+      // The score's, where the worker has read them: BeatLeader leaves them off the run itself.
       modifiers: true,
       timeset: true,
       replayUrl: true,
+      beatLeaderScoreId: true,
     },
   });
   const boardOf = new Map(stale.map((s) => [`${s.playerId}::${s.leaderboardId}`, s.leaderboard]));
@@ -281,7 +283,7 @@ async function clearsWithin(
     timeset: r.timeset,
     pp: 0,
     modifiers: r.modifiers,
-    beatLeaderScoreId: null,
+    beatLeaderScoreId: r.beatLeaderScoreId,
     replayUrl: r.replayUrl,
     leaderboard: boardOf.get(key)!,
   }));

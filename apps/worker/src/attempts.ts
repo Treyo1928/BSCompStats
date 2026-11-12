@@ -83,6 +83,7 @@ export async function syncAttempts(
         visible = true;
         written += await storeAttempts(player.id, leaderboardId, result);
       }
+      if (visible) await resolveModifiers(player.id);
 
       if (visible === false) {
         hidden++;
@@ -118,6 +119,7 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
       playerId,
       leaderboardId,
       beatLeaderAttemptId: a.id,
+      beatLeaderScoreId: a.scoreId && a.scoreId > 0 ? a.scoreId : null,
       endType: (BL_END_TYPES[a.type as keyof typeof BL_END_TYPES] ?? 'UNKNOWN') as AttemptEnd,
       time: a.time,
       accuracy: a.accuracy,
@@ -136,5 +138,56 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
     if (ids.length === 0) continue;
     await prisma.attempt.updateMany({ where: { beatLeaderAttemptId: { in: ids }, fullCombo: null }, data: { fullCombo } });
   }
+  // Likewise the score a clear became.
+  const linked = rows.filter((r) => r.beatLeaderScoreId != null);
+  if (linked.length > 0) {
+    const missing = await prisma.attempt.findMany({
+      where: { beatLeaderAttemptId: { in: linked.map((r) => r.beatLeaderAttemptId) }, beatLeaderScoreId: null },
+      select: { beatLeaderAttemptId: true },
+    });
+    const scoreOf = new Map(linked.map((r) => [r.beatLeaderAttemptId, r.beatLeaderScoreId]));
+    for (const { beatLeaderAttemptId } of missing) {
+      await prisma.attempt.update({ where: { beatLeaderAttemptId }, data: { beatLeaderScoreId: scoreOf.get(beatLeaderAttemptId) } });
+    }
+  }
   return count;
+}
+
+/**
+ * BeatLeader leaves a run's modifiers off its record - No Fail kicking in, Pro
+ * Mode, a slower song, all of it - though the score the run became has them.
+ * So a clear's modifiers are read from that score once: from the scores
+ * already stored where one is, else from BeatLeader. A run that never became a
+ * score keeps an empty, unchecked list.
+ */
+async function resolveModifiers(playerId: string): Promise<void> {
+  const open = await prisma.attempt.findMany({
+    where: { playerId, endType: 'CLEAR', modifiersChecked: false, beatLeaderScoreId: { not: null } },
+    select: { id: true, beatLeaderScoreId: true },
+  });
+  if (open.length === 0) return;
+  const scoreIds = open.map((a) => a.beatLeaderScoreId!);
+  const query = { where: { beatLeaderScoreId: { in: scoreIds } }, select: { beatLeaderScoreId: true, modifiers: true } };
+  const stored = [...(await prisma.scoreEvent.findMany(query)), ...(await prisma.score.findMany(query))];
+  const known = new Map<number, string>();
+  for (const r of stored) if (r.beatLeaderScoreId != null) known.set(r.beatLeaderScoreId, r.modifiers);
+  for (const attempt of open) {
+    const scoreId = attempt.beatLeaderScoreId!;
+    let modifiers = known.get(scoreId);
+    if (modifiers === undefined) {
+      try {
+        const score = await client.getScore(String(scoreId));
+        if (!score) {
+          // Gone from BeatLeader: nothing more will be learned, so it is settled as it stands.
+          await prisma.attempt.update({ where: { id: attempt.id }, data: { modifiersChecked: true } });
+          continue;
+        }
+        modifiers = score.modifiers ?? '';
+      } catch (err) {
+        log.warn(`attempts: could not read score ${scoreId}; trying again next sync`, err);
+        return;
+      }
+    }
+    await prisma.attempt.update({ where: { id: attempt.id }, data: { modifiers, modifiersChecked: true } });
+  }
 }

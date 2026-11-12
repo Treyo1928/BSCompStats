@@ -357,6 +357,8 @@ model Attempt {
 
   /// BeatLeader's own id for the record.
   beatLeaderAttemptId Int @unique
+  /// The score a clear became, where it became one.
+  beatLeaderScoreId Int?
 
   endType AttemptEnd
   /// Seconds into the song when the run ended. A clear runs the full length.
@@ -364,7 +366,11 @@ model Attempt {
   /// Accuracy up to that point, 0..1.
   accuracy Float
   baseScore Int
+  /// BeatLeader leaves a run's modifiers out (No Fail kicking in included), so
+  /// a clear's are taken from the score it became; see modifiersChecked.
   modifiers String @default("")
+  /// True once `modifiers` was read from the clear's score. False: unknown.
+  modifiersChecked Boolean @default(false)
   missedNotes Int @default(0)
   badCuts     Int @default(0)
   /// BeatLeader's own flag: no misses, bad cuts, bombs or walls. Null on runs

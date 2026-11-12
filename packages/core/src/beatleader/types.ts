@@ -195,6 +195,8 @@ export interface BLAttempt {
   wallsHit?: number;
   /** No misses, bad cuts, bombs or walls, up to where the run ended. */
   fullCombo?: boolean;
+  /** The score this run became (a clear), else 0. */
+  scoreId?: number;
   /** The .bsor of the run, kept even for a fail. */
   replay?: string | null;
   /** Unix seconds. */
@@ -208,6 +210,8 @@ export interface BLScoreDetail {
   playerId: string;
   /** 0..1 */
   accuracy: number;
+  /** Comma-separated, "NF" where No Fail kicked in. */
+  modifiers?: string | null;
   replay?: string;
   player?: { id: string; name: string };
   song?: { name?: string; subName?: string; author?: string; mapper?: string; hash?: string; cover?: string };
