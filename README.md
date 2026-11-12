@@ -47,8 +47,10 @@ lineup player's game, waiting for anyone not connected yet) and then **Start son
 once). Their scores come back from TA onto the match, and live scores go out to overlays while they play. A song
 where every lineup player's score came in closes its own map, so the next one can be loaded straight away; if
 someone left the song or dropped off TA the map stays open for an organiser to sort out, and a closed map can
-always be reopened (the TA page has the switch: "Close the map by itself"). The worker holds the TA connection, so
-it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay or script sees.
+always be reopened (the TA page has the switch: "Close the map by itself"). A TA tournament the site makes is shown
+in game only to the tournament's own players: the site gives TA the roster (each player's TA id, BeatLeader id and,
+where known, Discord id) and keeps it in step; "Only this tournament's players see it in game" on the TA page opens
+it to everyone. The worker holds the TA connection, so it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay or script sees.
 
 **Teams and players as the stream shows them.** On the Teams page a team gets a logo: the default star, the MSU
 Esports shield, or an uploaded picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most; kept in the database, so a

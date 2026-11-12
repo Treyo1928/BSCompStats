@@ -19,6 +19,7 @@ import {
   taSignOut,
   taSyncAdmins,
   taUseToken,
+  taSyncPlayers,
 } from '@/server/ta-actions';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +34,8 @@ const SAVED: Record<string, string> = {
   setting: 'Saved in TournamentAssistant.',
   menu: 'Sent back to the menu.',
   people: 'Saved in TournamentAssistant.',
+  playersOnly: 'Only this tournament\'s players and staff see it in game now. The roster has been given to TournamentAssistant.',
+  playersSynced: 'TournamentAssistant\'s list of players matches the roster.',
   removed: 'TournamentAssistant removed from this tournament.',
 };
 
@@ -99,7 +102,11 @@ export default async function TaPage({
   const phase = state?.phase ?? 'off';
   const signInUrl = state?.authUrl ? taSignInUrl(state.authUrl, `${env.APP_URL.replace(/\/+$/, '')}/t/${slug}/ta/signed-in`) : null;
   const authorized = phase === 'ready' ? await taCommand(tournament.id, { type: 'listAuthorizedUsers' }, 6000) : null;
-  const people = authorized?.ok ? ((authorized.data as TaAuthorizedUser[]) ?? []) : null;
+  const everyoneWithAccess = authorized?.ok ? ((authorized.data as TaAuthorizedUser[]) ?? []) : null;
+  // Roster players the site put there (TA's player role and nothing else) are counted, not listed.
+  const isRosterEntry = (u: TaAuthorizedUser) => u.roles.length === 1 && u.roles[0] === 'player';
+  const people = everyoneWithAccess?.filter((u) => !isRosterEntry(u)) ?? null;
+  const playerIds = everyoneWithAccess?.filter(isRosterEntry).length ?? 0;
 
   // Roster players, to show who has not connected yet.
   const roster =
@@ -245,6 +252,22 @@ export default async function TaPage({
               <Toggle tournamentId={tournament.id} setting="replayStreaming" on={state.tournament.replayStreaming} label="Live replay streaming">
                 Each player&apos;s game sends its replay to TA as they play, which is what the stream overlay draws. Needs TA 1.3 or newer in game.
               </Toggle>
+              <Toggle tournamentId={tournament.id} setting="playersOnly" on={state.tournament.playersOnly} label="Only this tournament's players see it in game">
+                Hides the TA tournament from everyone except the people on this site&apos;s Teams page (and its staff), and keeps TA&apos;s list of
+                players in step with the roster. TA recognises a player by their TA id (Teams page), their BeatLeader id, which is the Steam
+                id for Steam players, or their Discord id if they signed in here with Discord. A Quest player whose TA id is not set yet
+                may not see the tournament: leave this off until everyone has joined once and shows as matched under &quot;Connected right
+                now&quot;, or set their TA id first.
+                {state.tournament.playersOnly ? ` TA holds ${playerIds} player id${playerIds === 1 ? '' : 's'} for the roster.` : ''}
+              </Toggle>
+              {state.tournament.playersOnly && (
+                <form action={taSyncPlayers} className="flex items-start">
+                  {hidden}
+                  <Button type="submit" variant="ghost" className="h-8 text-xs" title="Happens by itself every couple of minutes; this does it now">
+                    Give TA the roster now
+                  </Button>
+                </form>
+              )}
               <Toggle tournamentId={tournament.id} setting="allowMockClients" on={state.tournament.allowMockClients} label="Allow mock players">
                 Lets TA&apos;s fake test players join. For rehearsing without anyone in a headset; leave off on match day.
               </Toggle>

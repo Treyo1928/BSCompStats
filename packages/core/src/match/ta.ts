@@ -203,6 +203,11 @@ export interface TaLinkState {
   tournament: (TaTournamentSummary & {
     replayStreaming: boolean;
     allowMockClients: boolean;
+    /**
+     * Only people with a role in the TA tournament see it in game (TA's "allow unauthorized view" switched off).
+     * The site then keeps the roster in TA as players, by the id TA knows each of them by.
+     */
+    playersOnly: boolean;
     scoreUpdateFrequency: number;
     /** Permissions this sign-in holds in it, as TA names them. */
     permissions: string[];
@@ -240,6 +245,10 @@ export type TaCommand = { id: string; tournamentId: string } & (
   | { type: 'createTournament'; name: string }
   | { type: 'setReplayStreaming'; on: boolean }
   | { type: 'setAllowMockClients'; on: boolean }
+  /** Hide the TA tournament from everyone but its players and staff (and give TA the roster), or open it again. */
+  | { type: 'setPlayersOnly'; on: boolean }
+  /** Bring TA's list of players in step with the roster now. Answers with { added, removed, players }. */
+  | { type: 'syncPlayers' }
   | { type: 'setScoreUpdateFrequency'; frames: number }
   /** Send these TA users (by guid) back to the menu. */
   | { type: 'returnToMenu'; guids: string[] }

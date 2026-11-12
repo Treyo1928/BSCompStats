@@ -333,6 +333,12 @@ export class TaSession {
     const signedIn = this.row.token ? readTaToken(this.row.token) : null;
     const roster = await this.rosterIds().catch(() => this.roster);
     const tournament = this.taTournament ? this.tournamentOf(this.taTournament) : undefined;
+    // A hidden tournament's players are whoever is on the roster now: a player added since, or one whose TA id was
+    // just set, is passed on within a couple of minutes without anyone pressing a button.
+    if (this.phase === 'ready' && tournament && tournament.settings?.allowUnauthorizedView === false && Date.now() - this.playersSyncedAt > 120_000) {
+      this.playersSyncedAt = Date.now();
+      void this.syncPlayers().catch((err) => log.warn(`ta[${this.slug}]: could not bring TA's players in step with the roster`, err));
+    }
     const users: TaUser[] = (tournament ? this.users() : [])
       .filter((u) => u.guid !== ta.stateManager.getSelfGuid())
       .map((u) => ({
@@ -383,6 +389,7 @@ export class TaSession {
             users: users.length,
             replayStreaming: tournament.settings?.enableReplayStreaming ?? false,
             allowMockClients: tournament.settings?.allowMockClients ?? false,
+            playersOnly: !(tournament.settings?.allowUnauthorizedView ?? true),
             scoreUpdateFrequency: tournament.settings?.scoreUpdateFrequency ?? 0,
             permissions: tournament.settings?.myPermissions ?? [],
           }
@@ -440,6 +447,16 @@ export class TaSession {
         case 'setReplayStreaming':
           this.need('ready');
           return this.reply(await this.ta.setTournamentEnableReplayStreaming(this.taTournament, cmd.on), 'change replay streaming');
+        case 'setPlayersOnly': {
+          this.need('ready');
+          // The roster goes in first, so nobody on it loses sight of the tournament for a moment.
+          const synced = cmd.on ? await this.syncPlayers() : null;
+          const reply = this.reply(await this.ta.setTournamentAllowUnauthorizedView(this.taTournament, !cmd.on), 'change who can see the tournament');
+          return reply.ok && synced ? { ok: true, data: synced } : reply;
+        }
+        case 'syncPlayers':
+          this.need('ready');
+          return { ok: true, data: await this.syncPlayers() };
         case 'setAllowMockClients':
           this.need('ready');
           return this.reply(await this.ta.setTournamentAllowMockClients(this.taTournament, cmd.on), 'change the mock player setting');
@@ -597,6 +614,53 @@ export class TaSession {
     if (setup) await ta.addAuthorizedUser(made.guid, setup.discordId, ['admin']).catch(() => {});
     return made.guid;
   }
+
+  /**
+   * Give TA the roster: everyone on a team of this tournament gets TA's "player" role (see the tournament in game,
+   * join it), under every id TA might know them by - the TA id an organiser set, their BeatLeader id (the Steam id
+   * for Steam players) and, where they signed in to this site with Discord, their Discord id. Someone who already
+   * has a role (an admin, a coordinator) is left exactly as they are. Ids that hold only the player role and are no
+   * longer on the roster are taken out again.
+   */
+  private async syncPlayers(): Promise<{ added: number; removed: number; players: number }> {
+    const members = await prisma.teamMember.findMany({
+      where: { team: { division: { tournamentId: this.tournamentId } } },
+      select: {
+        player: {
+          select: {
+            id: true,
+            beatLeaderId: true,
+            taPlatformId: true,
+            user: { select: { accounts: { where: { provider: 'discord' }, select: { providerAccountId: true } } } },
+          },
+        },
+      },
+    });
+    const wanted = new Set<string>();
+    const players = new Set<string>();
+    for (const { player } of members) {
+      players.add(player.id);
+      for (const id of [player.taPlatformId, player.beatLeaderId, ...(player.user?.accounts.map((a) => a.providerAccountId) ?? [])]) {
+        if (id && /^[A-Za-z0-9_-]{1,64}$/.test(id)) wanted.add(id);
+      }
+    }
+    const existing = await this.authorizedUsers();
+    const have = new Map(existing.map((u) => [u.discordId, u.roles]));
+    let added = 0;
+    let removed = 0;
+    for (const id of wanted) {
+      if (have.has(id)) continue;
+      if (ok(await this.ta.addAuthorizedUser(this.taTournament, id, ['player']))) added++;
+    }
+    for (const [id, roles] of have) {
+      if (wanted.has(id) || roles.length !== 1 || roles[0] !== 'player') continue;
+      if (ok(await this.ta.removeAuthorizedUser(this.taTournament, id))) removed++;
+    }
+    this.playersSyncedAt = Date.now();
+    if (added || removed) log.info(`ta[${this.slug}]: players in TA brought in step with the roster: ${added} added, ${removed} removed`);
+    return { added, removed, players: players.size };
+  }
+  private playersSyncedAt = 0;
 
   private async authorizedUsers(): Promise<TaAuthorizedUser[]> {
     const response = await this.ta.getAuthorizedUsers(this.taTournament);

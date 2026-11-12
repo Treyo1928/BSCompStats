@@ -142,6 +142,7 @@ export async function taSetting(formData: FormData): Promise<void> {
   const on = formData.get('value') === 'on';
   if (setting === 'replayStreaming') await run(tournament.id, back, { type: 'setReplayStreaming', on }, 'setting');
   if (setting === 'allowMockClients') await run(tournament.id, back, { type: 'setAllowMockClients', on }, 'setting');
+  if (setting === 'playersOnly') await run(tournament.id, back, { type: 'setPlayersOnly', on }, on ? 'playersOnly' : 'setting');
   if (setting === 'scoreUpdateFrequency') {
     const frames = Number(formData.get('frames'));
     if (!Number.isFinite(frames) || frames < 1) failBack(back, 'Give a number of frames, 1 or more (30 is about three times a second at 90 fps).');
@@ -156,6 +157,12 @@ export async function taReturnToMenu(formData: FormData): Promise<void> {
   const guids = formData.getAll('guid').map(String).filter(Boolean);
   if (!guids.length) failBack(back, 'Nobody to send back to the menu.');
   await run(tournament.id, back, { type: 'returnToMenu', guids }, 'menu');
+}
+
+/** Bring TA's list of players in step with the roster now (it also happens by itself every couple of minutes). */
+export async function taSyncPlayers(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  await run(tournament.id, back, { type: 'syncPlayers' }, 'playersSynced');
 }
 
 const TA_ROLES = ['admin', 'coordinator', 'view_only'] as const;
