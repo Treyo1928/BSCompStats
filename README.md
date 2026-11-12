@@ -44,9 +44,19 @@ the server (TA's public one, or your own), sign in with Discord through TA, and 
 your players join in game. From then on the site does what TA's coordinator app would: the TA page shows who is
 connected, and on a match set to run through TA an organiser presses **Load map in TA** (the map goes onto every
 lineup player's game, waiting for anyone not connected yet) and then **Start song** (it starts for all of them at
-once). Their scores come back from TA onto the match, and live scores go out to overlays while they play. The
-worker holds the TA connection, so it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay
-or script sees.
+once). Their scores come back from TA onto the match, and live scores go out to overlays while they play. A song
+where every lineup player's score came in closes its own map, so the next one can be loaded straight away; if
+someone left the song or dropped off TA the map stays open for an organiser to sort out, and a closed map can
+always be reopened (the TA page has the switch: "Close the map by itself"). The worker holds the TA connection, so
+it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay or script sees.
+
+**Teams and players as the stream shows them.** On the Teams page a team gets a logo: the default star, the MSU
+Esports shield, or an uploaded picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most; kept in the database, so a
+backup has it and no file volume is needed). Under each player, "On stream" holds the replays they want shown
+off while their team is up next - a player or their captain can set two of the player's own BeatLeader replays,
+an organiser up to eight of anything - and, for organisers, a nickname and a picture that replace the player's
+BeatLeader name and avatar in that tournament only (match pages, pool boards, the API). A stream overlay reads
+all of it from the API: every team's logo, players and replays on the tournament, and on a match's two teams.
 
 **Lineups without nagging.** The app only refuses lineups that cannot be real:
 a player twice on one map, more players than the format fields, or someone who
@@ -377,6 +387,10 @@ troubleshooting, is in [docs/auth-setup.md](docs/auth-setup.md).
 (the default) promotes the first account to sign in. Turn it off once your
 admins exist if the instance is reachable from the internet, and use
 `BOOTSTRAP_ADMINS` — a comma-separated list of Discord IDs or emails — instead.
+
+**TournamentAssistant** needs nothing in `.env` for TA's public server: it is set up per tournament on its TA
+page. A TA server of your own with a self-signed certificate needs that certificate given to the worker
+(`NODE_EXTRA_CA_CERTS=/path/to/server.crt` in the worker's environment), or the worker cannot connect.
 
 ### HTTPS
 
