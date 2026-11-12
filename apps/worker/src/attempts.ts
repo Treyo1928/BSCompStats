@@ -1,5 +1,5 @@
 import { prisma, type AttemptEnd } from '@bscs/db';
-import { BL_END_TYPES, type BLAttempt } from '@bscs/core/beatleader';
+import { BL_END_TYPES, readReplayInfo, type BLAttempt, type ReplayInfo } from '@bscs/core/beatleader';
 import { client } from './sync.js';
 import { log } from './log.js';
 
@@ -83,7 +83,7 @@ export async function syncAttempts(
         visible = true;
         written += await storeAttempts(player.id, leaderboardId, result);
       }
-      if (visible) await resolveModifiers(player.id);
+      if (visible) await resolveModifiers(player.id, player.beatLeaderId);
 
       if (visible === false) {
         hidden++;
@@ -155,39 +155,88 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
 
 /**
  * BeatLeader leaves a run's modifiers off its record - No Fail kicking in, Pro
- * Mode, a slower song, all of it - though the score the run became has them.
- * So a clear's modifiers are read from that score once: from the scores
- * already stored where one is, else from BeatLeader. A run that never became a
- * score keeps an empty, unchecked list.
+ * Mode, a slower song, all of it. A clear's are read once: from the score it
+ * became, where that is stored here, else from the start of its replay, which
+ * is where BeatLeader reads a score's own from, else from BeatLeader's copy of
+ * the score. Most clears never became a score (only a new best does), so the
+ * replay is the usual source.
  */
-async function resolveModifiers(playerId: string): Promise<void> {
+async function resolveModifiers(playerId: string, beatLeaderId: string): Promise<void> {
   const open = await prisma.attempt.findMany({
-    where: { playerId, endType: 'CLEAR', modifiersChecked: false, beatLeaderScoreId: { not: null } },
-    select: { id: true, beatLeaderScoreId: true },
+    where: { playerId, endType: 'CLEAR', modifiersChecked: false },
+    select: { id: true, beatLeaderScoreId: true, baseScore: true, replayUrl: true },
   });
   if (open.length === 0) return;
-  const scoreIds = open.map((a) => a.beatLeaderScoreId!);
+  const scoreIds = open.flatMap((a) => (a.beatLeaderScoreId != null ? [a.beatLeaderScoreId] : []));
   const query = { where: { beatLeaderScoreId: { in: scoreIds } }, select: { beatLeaderScoreId: true, modifiers: true } };
-  const stored = [...(await prisma.scoreEvent.findMany(query)), ...(await prisma.score.findMany(query))];
+  const stored = scoreIds.length ? [...(await prisma.scoreEvent.findMany(query)), ...(await prisma.score.findMany(query))] : [];
   const known = new Map<number, string>();
   for (const r of stored) if (r.beatLeaderScoreId != null) known.set(r.beatLeaderScoreId, r.modifiers);
+
   for (const attempt of open) {
-    const scoreId = attempt.beatLeaderScoreId!;
-    let modifiers = known.get(scoreId);
-    if (modifiers === undefined) {
+    let modifiers = attempt.beatLeaderScoreId != null ? known.get(attempt.beatLeaderScoreId) : undefined;
+    if (modifiers === undefined && attempt.replayUrl) {
+      let info: ReplayInfo | null | 'gone';
       try {
-        const score = await client.getScore(String(scoreId));
-        if (!score) {
-          // Gone from BeatLeader: nothing more will be learned, so it is settled as it stands.
-          await prisma.attempt.update({ where: { id: attempt.id }, data: { modifiersChecked: true } });
-          continue;
-        }
-        modifiers = score.modifiers ?? '';
+        info = await readReplayStart(attempt.replayUrl);
       } catch (err) {
-        log.warn(`attempts: could not read score ${scoreId}; trying again next sync`, err);
+        log.warn(`attempts: could not read replay ${attempt.replayUrl}; trying again next sync`, err);
+        return;
+      }
+      if (info && info !== 'gone' && replayIsRun(info, beatLeaderId, attempt.baseScore)) modifiers = info.modifiers;
+    }
+    if (modifiers === undefined && attempt.beatLeaderScoreId != null) {
+      try {
+        const score = await client.getScore(String(attempt.beatLeaderScoreId));
+        if (score) modifiers = score.modifiers ?? '';
+      } catch (err) {
+        log.warn(`attempts: could not read score ${attempt.beatLeaderScoreId}; trying again next sync`, err);
         return;
       }
     }
-    await prisma.attempt.update({ where: { id: attempt.id }, data: { modifiers, modifiersChecked: true } });
+    if (modifiers === undefined) log.warn(`attempts: no modifiers to be had for run ${attempt.id}; left unknown`);
+    await prisma.attempt.update({
+      where: { id: attempt.id },
+      data: modifiers === undefined ? { modifiersChecked: true } : { modifiers, modifiersChecked: true },
+    });
+  }
+}
+
+/**
+ * Whether a replay is this run's. BeatLeader re-scores old replays, so the
+ * header's score can be a few points off the run's: same player and within 1%.
+ */
+function replayIsRun(info: ReplayInfo, beatLeaderId: string, baseScore: number): boolean {
+  return info.playerId === beatLeaderId && Math.abs(info.score - baseScore) <= Math.max(1, baseScore) * 0.01;
+}
+
+/** Replays run to megabytes; the info section is in the first few hundred bytes. */
+const REPLAY_HEAD_BYTES = 4096;
+
+/**
+ * The info section of a replay, reading only as much of the file as that takes
+ * (BeatLeader ignores range requests, so the download is cut short instead).
+ * 'gone' where BeatLeader no longer has it; null where it is not a replay.
+ */
+async function readReplayStart(url: string): Promise<ReplayInfo | null | 'gone'> {
+  const res = await fetch(url, { headers: { 'User-Agent': 'BSCompStats' }, signal: AbortSignal.timeout(30_000) });
+  if (res.status === 404 || res.status === 410) return 'gone';
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const head = new Uint8Array(REPLAY_HEAD_BYTES);
+  let filled = 0;
+  try {
+    while (filled < REPLAY_HEAD_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const take = Math.min(value.byteLength, REPLAY_HEAD_BYTES - filled);
+      head.set(value.subarray(0, take), filled);
+      filled += take;
+      const info = readReplayInfo(head.subarray(0, filled));
+      if (info) return info;
+    }
+    return readReplayInfo(head.subarray(0, filled));
+  } finally {
+    await reader.cancel().catch(() => {});
   }
 }

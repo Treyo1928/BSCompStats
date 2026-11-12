@@ -367,9 +367,10 @@ model Attempt {
   accuracy Float
   baseScore Int
   /// BeatLeader leaves a run's modifiers out (No Fail kicking in included), so
-  /// a clear's are taken from the score it became; see modifiersChecked.
+  /// a clear's are taken from the score it became or else its replay; see
+  /// modifiersChecked.
   modifiers String @default("")
-  /// True once `modifiers` was read from the clear's score. False: unknown.
+  /// True once the worker has looked for a clear's modifiers. False: unknown.
   modifiersChecked Boolean @default(false)
   missedNotes Int @default(0)
   badCuts     Int @default(0)
