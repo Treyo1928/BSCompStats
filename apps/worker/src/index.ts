@@ -110,6 +110,20 @@ async function poll(reason: string): Promise<void> {
   await pollBackground();
 }
 
+// moons-ta-client awaits its own first request inside an event handler during connect(), so when TA refuses
+// the saved sign-in that rejection escapes where no caller can catch it (and Node would kill the worker,
+// taking the score feed down with it). The session already sees the refusal through the client's
+// "authorizationRequestedFromServer" event and asks for a new sign-in. The client rejects with bare strings,
+// so only those are let through; anything else is a real bug and still crashes.
+const TA_CLIENT_REJECTIONS = new Set(['Authorization token invalid or not provided', 'Server timed out']);
+process.on('unhandledRejection', (reason) => {
+  if (typeof reason === 'string' && TA_CLIENT_REJECTIONS.has(reason)) {
+    log.warn(`ta: TournamentAssistant client: ${reason}`);
+    return;
+  }
+  throw reason;
+});
+
 async function main(): Promise<void> {
   log.info('BSCompStats worker starting');
 

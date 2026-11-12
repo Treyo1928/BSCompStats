@@ -218,6 +218,9 @@ export class TaSession {
       }
     } catch (err) {
       if (this.ta !== ta || this.disposed) return;
+      // TA refused the saved token on the connect request itself: the handler above has already asked for a
+      // fresh sign-in, and the client's connect then only ever times out. Retrying would just be refused again.
+      if (this.phase === 'signIn') return;
       this.set('error', `Could not reach TournamentAssistant at ${this.row.host}:${this.row.port} (${err instanceof Error ? err.message : String(err)}).`);
       this.scheduleRetry();
       return;
