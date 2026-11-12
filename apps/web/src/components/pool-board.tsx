@@ -73,7 +73,7 @@ export function PoolBoardTable({
   const avgRange =
     averages.length >= 2 ? { min: Math.min(...averages), max: Math.max(...averages) } : undefined;
 
-  const playerRow = (row: PoolBoard['teams'][number]['rows'][number], color: string, place?: number) => (
+  const playerRow = (row: PoolBoard['teams'][number]['rows'][number], color: string, showTeam = false) => (
                 <tr key={row.playerId} className="group">
                   <th
                     scope="row"
@@ -88,7 +88,6 @@ export function PoolBoardTable({
                       <span className="hidden sm:inline-flex">
                         <Avatar src={row.avatar} name={row.playerName} size={26} ring={color} />
                       </span>
-                      {place != null && <span className="w-5 shrink-0 text-right text-xs tabular text-faint">{place}</span>}
                       <span className="min-w-0">
                         <span
                           className={`block truncate ${row.available ? '' : 'text-muted line-through decoration-faint'}`}
@@ -96,7 +95,7 @@ export function PoolBoardTable({
                         >
                           {row.playerName}
                         </span>
-                        {place != null && row.teamName && (
+                        {showTeam && row.teamName && (
                           <span className="block truncate text-[10px] font-normal text-faint">{row.teamName}</span>
                         )}
                       </span>
@@ -156,12 +155,6 @@ export function PoolBoardTable({
             </button>
           ))}
         </div>
-        {view === 'rank' && (
-          <span className="text-faint">
-            Best average first, among players with the same number of maps played: an average over fewer maps is not
-            comparable, so it never ranks above one over more.
-          </span>
-        )}
       </div>
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-separate border-spacing-0 text-sm sm:min-w-[760px]">
@@ -236,7 +229,7 @@ export function PoolBoardTable({
                   </span>
                 </td>
               </tr>
-              {tier.rows.map(({ row, place }) => playerRow(row, teamColor.get(row.playerId) ?? '#888', place ?? undefined))}
+              {tier.rows.map(({ row }) => playerRow(row, teamColor.get(row.playerId) ?? '#888', true))}
             </tbody>
           ))}
 
