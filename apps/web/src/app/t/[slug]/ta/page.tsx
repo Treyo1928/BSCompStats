@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can, parseTaOptions, TA_DEFAULT_HOST, TA_DEFAULT_PORT, type TaAuthorizedUser, type TaLinkState, type TaUser } from '@bscs/core/match';
+import { can, parseTaOptions, TA_DEFAULT_HOST, TA_DEFAULT_PORT, TA_MODIFIERS, TA_MODIFIER_LABELS, type TaAuthorizedUser, type TaLinkState, type TaUser } from '@bscs/core/match';
 import { Badge, Button, Field, FieldAction, FormError, PageHeader, Panel, inputClass } from '@/components/ui';
 import { TaLive } from '@/components/ta-live';
 import { env } from '@/lib/env';
@@ -20,6 +20,8 @@ import {
   taSyncAdmins,
   taUseToken,
   taSyncPlayers,
+  taPlayerCommand,
+  taDeleteTournament,
 } from '@/server/ta-actions';
 
 export const dynamic = 'force-dynamic';
@@ -36,6 +38,8 @@ const SAVED: Record<string, string> = {
   people: 'Saved in TournamentAssistant.',
   playersOnly: 'Only this tournament\'s players and staff see it in game now. The roster has been given to TournamentAssistant.',
   playersSynced: 'TournamentAssistant\'s list of players matches the roster.',
+  sent: 'Sent to the ticked players.',
+  deleted: 'The TA tournament was deleted from TournamentAssistant.',
   removed: 'TournamentAssistant removed from this tournament.',
 };
 
@@ -271,6 +275,58 @@ export default async function TaPage({
               <Toggle tournamentId={tournament.id} setting="allowMockClients" on={state.tournament.allowMockClients} label="Allow mock players">
                 Lets TA&apos;s fake test players join. For rehearsing without anyone in a headset; leave off on match day.
               </Toggle>
+              <Toggle tournamentId={tournament.id} setting="showTournamentButton" on={state.tournament.showTournamentButton} label={'Show the "Tournament" button in game'}>
+                The button players press to enter the tournament room, where the site loads maps for them.
+              </Toggle>
+              <Toggle tournamentId={tournament.id} setting="showQualifierButton" on={state.tournament.showQualifierButton} label={'Show the "Qualifier" button in game'}>
+                Only useful with TA qualifiers, which this site does not manage yet.
+              </Toggle>
+              <Toggle tournamentId={tournament.id} setting="replayRecording" on={state.tournament.replayRecording} label="Record replays in TA">
+                TA keeps a replay file of every song played in the tournament.
+              </Toggle>
+              {state.tournament.replayRecording && (
+                <form action={taSetting} className="flex items-start gap-2">
+                  {hidden}
+                  <input type="hidden" name="setting" value="replayRetention" />
+                  <Field label="Keep recorded replays for">
+                    <select name="retention" defaultValue={state.tournament.replayRetention} className={`${inputClass} w-32`}>
+                      <option value="30d">30 days</option>
+                      <option value="90d">90 days</option>
+                      <option value="1y">1 year</option>
+                      <option value="3y">3 years</option>
+                    </select>
+                  </Field>
+                  <FieldAction>
+                    <Button type="submit" variant="ghost">Save</Button>
+                  </FieldAction>
+                </form>
+              )}
+              <Toggle tournamentId={tournament.id} setting="enableTeams" on={state.tournament.enableTeams} label="TA teams">
+                TA&apos;s own teams, picked by players in game. Not needed: this site knows the teams.
+              </Toggle>
+              <Toggle tournamentId={tournament.id} setting="enablePools" on={state.tournament.enablePools} label="TA map pools">
+                TA&apos;s own map pools. Not needed: maps are loaded from this site&apos;s pools.
+              </Toggle>
+              <form action={taSetting} className="flex items-start gap-2">
+                {hidden}
+                <input type="hidden" name="setting" value="name" />
+                <Field label="Name in game" hint="What players look for in the game's tournament list.">
+                  <input name="name" defaultValue={state.tournament.name} maxLength={80} required className={`${inputClass} w-64`} />
+                </Field>
+                <FieldAction>
+                  <Button type="submit" variant="ghost">Rename</Button>
+                </FieldAction>
+              </form>
+              <form action={taSetting} className="flex items-start gap-2">
+                {hidden}
+                <input type="hidden" name="setting" value="bannedMods" />
+                <Field label="Banned mods" hint="Mod names, separated by commas. A player with one installed is told to remove it.">
+                  <input name="mods" defaultValue={state.tournament.bannedMods.join(', ')} placeholder="IntroSkip, AutoPauseStealth" className={`${inputClass} w-72`} />
+                </Field>
+                <FieldAction>
+                  <Button type="submit" variant="ghost">Save</Button>
+                </FieldAction>
+              </form>
               <form action={taSetting} className="flex items-start gap-2">
                 {hidden}
                 <input type="hidden" name="setting" value="scoreUpdateFrequency" />
@@ -317,8 +373,30 @@ export default async function TaPage({
                     ))}
                   </tbody>
                 </table>
-                <div className="flex items-center justify-end gap-3 border-t border-edge px-4 py-2">
-                  <span className="text-xs text-faint">Pulls the ticked players out of a song or a loaded map, back to the TA waiting screen.</span>
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-edge px-4 py-2">
+                  <span className="mr-auto text-xs text-faint">
+                    For the ticked players. &quot;To menu&quot; pulls them out of a song or a loaded map; the rest change their game as it is
+                    played (for a player on the wrong hand or colours, or a one-saber map).
+                  </span>
+                  {(
+                    [
+                      ['flipColors', 'Flip colours', 'Swap red and blue for these players'],
+                      ['flipHands', 'Flip hands', 'Swap which hand holds which saber'],
+                      ['disableBlueNotes', 'No blue notes', 'Hide the blue notes for these players'],
+                      ['disableRedNotes', 'No red notes', 'Hide the red notes for these players'],
+                    ] as const
+                  ).map(([command, text, title]) => (
+                    <button
+                      key={command}
+                      type="submit"
+                      formAction={taPlayerCommand.bind(null, command)}
+                      data-command={command}
+                      title={title}
+                      className="h-8 rounded-lg border border-edge-strong px-3 text-xs text-muted hover:border-faint hover:text-ink"
+                    >
+                      {text}
+                    </button>
+                  ))}
                   <Button type="submit" variant="ghost" className="h-8 text-xs">
                     Send ticked to menu
                   </Button>
@@ -396,6 +474,7 @@ export default async function TaPage({
                 <select name="role" className={inputClass} defaultValue="coordinator">
                   <option value="admin">Admin</option>
                   <option value="coordinator">Coordinator</option>
+                  <option value="player">Player (sees and joins it in game)</option>
                   <option value="view_only">View only</option>
                 </select>
               </Field>
@@ -429,6 +508,28 @@ export default async function TaPage({
             </Check>
           </fieldset>
           <fieldset className="space-y-2 border-t border-edge pt-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">Modifiers on every song</legend>
+            <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+              {TA_MODIFIERS.map((m) => (
+                <label key={m} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" name="modifier" value={m} defaultChecked={options.modifiers.includes(m)} /> {TA_MODIFIER_LABELS[m]}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-faint">
+              Beat Saber&apos;s own modifiers, the same list TA&apos;s app has. Leave them all off for a normal match: a modifier changes the
+              score a map can give, and this site works accuracy out against the map&apos;s normal maximum. Of the speed ones, and of No
+              Fail / One Life / Four Lives, only one is kept.
+            </p>
+            <Check name="disableScoresaberSubmission" checked={options.disableScoresaberSubmission}>
+              Do not submit these scores to ScoreSaber
+            </Check>
+            <Check name="disableCustomNotesOnStream" checked={options.disableCustomNotesOnStream}>
+              Switch off players&apos; custom notes
+              <Note>Everyone plays with the normal notes, so the stream shows the same thing for every player.</Note>
+            </Check>
+          </fieldset>
+          <fieldset className="space-y-2 border-t border-edge pt-3">
             <legend className="mb-1 text-xs font-medium uppercase tracking-wider text-faint">When a song ends</legend>
             <Check name="autoClose" checked={options.autoClose}>
               Close the map by itself
@@ -459,6 +560,23 @@ export default async function TaPage({
             </Button>
           </form>
         </div>
+        {phase === 'ready' && state?.tournament && (
+          <details className="mt-4 border-t border-edge pt-3 text-sm">
+            <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">Delete the TA tournament</summary>
+            <form action={taDeleteTournament} className="mt-3 flex flex-wrap items-end gap-2">
+              {hidden}
+              <Field
+                label={`Type "${state.tournament.name}" to delete it from TournamentAssistant`}
+                hint="TA's End Tournament: it is gone from TA for everyone, with its settings and who had access. Nothing on this site is deleted; you can make or choose another TA tournament afterwards."
+              >
+                <input name="confirm" autoComplete="off" className={`${inputClass} w-72`} />
+              </Field>
+              <FieldAction>
+                <Button type="submit" variant="danger">Delete from TA</Button>
+              </FieldAction>
+            </form>
+          </details>
+        )}
       </Panel>
     </div>
   );

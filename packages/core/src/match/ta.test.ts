@@ -94,7 +94,12 @@ describe('parseTaOptions', () => {
   it('defaults to players who cannot fail, and keeps what was stored', () => {
     expect(parseTaOptions(null)).toEqual(DEFAULT_TA_OPTIONS);
     expect(DEFAULT_TA_OPTIONS.disableFail).toBe(true);
-    expect(parseTaOptions({ disableFail: false, disablePause: true })).toEqual({ disableFail: false, disablePause: true, showScoreboard: false, autoClose: true });
+    expect(parseTaOptions({ disableFail: false, disablePause: true })).toEqual({
+      disableFail: false, disablePause: true, showScoreboard: false, autoClose: true,
+      modifiers: [], disableScoresaberSubmission: false, disableCustomNotesOnStream: false,
+    });
+    // modifiers: unknown names go, and of a group that cannot be on together only the first in TA's order stays
+    expect(parseTaOptions({ modifiers: ['SlowSong', 'NoBombs', 'FastSong', 'Nonsense', 'GhostNotes', 'DisappearingArrows'] }).modifiers).toEqual(['GhostNotes', 'NoBombs', 'FastSong']);
     expect(parseTaOptions({ autoClose: false }).autoClose).toBe(false);
   });
 

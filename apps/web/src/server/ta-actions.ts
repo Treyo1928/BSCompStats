@@ -3,7 +3,15 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { assertCan, TA_DEFAULT_HOST, TA_DEFAULT_PORT, type TaCommandBody } from '@bscs/core/match';
+import {
+  assertCan,
+  cleanTaModifiers,
+  TA_DEFAULT_HOST,
+  TA_DEFAULT_PORT,
+  TA_PLAYER_COMMANDS,
+  TA_REPLAY_RETENTIONS,
+  type TaCommandBody,
+} from '@bscs/core/match';
 import { getActor } from './session';
 import { failBack } from './form-errors';
 import { taCommand } from './ta';
@@ -69,6 +77,9 @@ export async function saveTaLink(formData: FormData): Promise<void> {
     disablePause: formData.get('disablePause') === 'on',
     showScoreboard: formData.get('showScoreboard') === 'on',
     autoClose: formData.get('autoClose') === 'on',
+    modifiers: cleanTaModifiers(formData.getAll('modifier').map(String)),
+    disableScoresaberSubmission: formData.get('disableScoresaberSubmission') === 'on',
+    disableCustomNotesOnStream: formData.get('disableCustomNotesOnStream') === 'on',
   };
   const enabled = formData.get('enabled') === 'on';
   const existing = await prisma.taLink.findUnique({ where: { tournamentId: tournament.id }, select: { host: true, port: true } });
@@ -143,6 +154,23 @@ export async function taSetting(formData: FormData): Promise<void> {
   if (setting === 'replayStreaming') await run(tournament.id, back, { type: 'setReplayStreaming', on }, 'setting');
   if (setting === 'allowMockClients') await run(tournament.id, back, { type: 'setAllowMockClients', on }, 'setting');
   if (setting === 'playersOnly') await run(tournament.id, back, { type: 'setPlayersOnly', on }, on ? 'playersOnly' : 'setting');
+  const flags = ['showTournamentButton', 'showQualifierButton', 'enableTeams', 'enablePools', 'replayRecording'] as const;
+  const flagKey = flags.find((f) => f === setting);
+  if (flagKey) await run(tournament.id, back, { type: 'setTournamentSetting', setting: { key: flagKey, value: on } }, 'setting');
+  if (setting === 'name') {
+    const name = String(formData.get('name') ?? '').trim();
+    if (!name) failBack(back, 'Give the TA tournament a name.');
+    await run(tournament.id, back, { type: 'setTournamentSetting', setting: { key: 'name', value: name } }, 'setting');
+  }
+  if (setting === 'bannedMods') {
+    const mods = String(formData.get('mods') ?? '').split(/[,\n]/).map((m) => m.trim()).filter(Boolean);
+    await run(tournament.id, back, { type: 'setTournamentSetting', setting: { key: 'bannedMods', value: mods } }, 'setting');
+  }
+  if (setting === 'replayRetention') {
+    const value = TA_REPLAY_RETENTIONS.find((r) => r === formData.get('retention'));
+    if (!value) failBack(back, 'Choose how long replays are kept.');
+    await run(tournament.id, back, { type: 'setTournamentSetting', setting: { key: 'replayRetention', value } }, 'setting');
+  }
   if (setting === 'scoreUpdateFrequency') {
     const frames = Number(formData.get('frames'));
     if (!Number.isFinite(frames) || frames < 1) failBack(back, 'Give a number of frames, 1 or more (30 is about three times a second at 90 fps).');
@@ -165,7 +193,28 @@ export async function taSyncPlayers(formData: FormData): Promise<void> {
   await run(tournament.id, back, { type: 'syncPlayers' }, 'playersSynced');
 }
 
-const TA_ROLES = ['admin', 'coordinator', 'view_only'] as const;
+/** Change the ticked players' games right now: swap colours or hands, or hide one colour's notes. */
+export async function taPlayerCommand(which: string, formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  const command = TA_PLAYER_COMMANDS.find((c) => c === which);
+  if (!command) failBack(back, 'Unknown command.');
+  const guids = formData.getAll('guid').map(String).filter(Boolean);
+  if (!guids.length) failBack(back, 'Tick the players it is for.');
+  await run(tournament.id, back, { type: 'playerCommand', command, guids }, 'sent');
+}
+
+/** Delete the TA tournament from TournamentAssistant itself. The name must be typed, so it is no accident. */
+export async function taDeleteTournament(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  const link = await prisma.taLink.findUnique({ where: { tournamentId: tournament.id }, select: { taTournamentName: true } });
+  if (!link?.taTournamentName) failBack(back, 'No TA tournament is chosen.');
+  if (String(formData.get('confirm') ?? '').trim() !== link.taTournamentName) {
+    failBack(back, `Type the TA tournament's name (${link.taTournamentName}) to delete it.`);
+  }
+  await run(tournament.id, back, { type: 'deleteTournament' }, 'deleted');
+}
+
+const TA_ROLES = ['admin', 'coordinator', 'player', 'view_only'] as const;
 
 /** Let someone into the TA tournament in TA's own app, by Discord id. */
 export async function taAddUser(formData: FormData): Promise<void> {

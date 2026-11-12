@@ -13,6 +13,7 @@ import {
 } from '@bscs/core/match';
 import { prisma } from '@bscs/db';
 import {
+  ReplayRetention,
   Response_ResponseType,
   TAClient,
   User_ClientTypes,
@@ -43,6 +44,10 @@ const RETRY_MS = 5_000;
 const SETUP_MS = 30 * 60_000;
 
 const ok = (r: { type: Response_ResponseType }) => r.type === Response_ResponseType.Success;
+const RETENTION_VALUES = { '30d': ReplayRetention.ThirtyDays, '90d': ReplayRetention.NinetyDays, '1y': ReplayRetention.OneYear, '3y': ReplayRetention.ThreeYears } as const;
+const RETENTION_NAMES: Record<number, '30d' | '90d' | '1y' | '3y'> = {
+  [ReplayRetention.ThirtyDays]: '30d', [ReplayRetention.NinetyDays]: '90d', [ReplayRetention.OneYear]: '1y', [ReplayRetention.ThreeYears]: '3y',
+};
 
 /** What a TA token says about who it is, without trusting it: TA checks the signature, we only read the name. */
 export function readTaToken(token: string): { id: string; name: string; isBot: boolean; expiresAt: number | null } | null {
@@ -390,6 +395,13 @@ export class TaSession {
             replayStreaming: tournament.settings?.enableReplayStreaming ?? false,
             allowMockClients: tournament.settings?.allowMockClients ?? false,
             playersOnly: !(tournament.settings?.allowUnauthorizedView ?? true),
+            showTournamentButton: tournament.settings?.showTournamentButton ?? true,
+            showQualifierButton: tournament.settings?.showQualifierButton ?? false,
+            enableTeams: tournament.settings?.enableTeams ?? false,
+            enablePools: tournament.settings?.enablePools ?? false,
+            replayRecording: tournament.settings?.enableReplayRecording ?? false,
+            replayRetention: RETENTION_NAMES[tournament.settings?.replayRetention ?? ReplayRetention.ThirtyDays] ?? '30d',
+            bannedMods: tournament.settings?.bannedMods ?? [],
             scoreUpdateFrequency: tournament.settings?.scoreUpdateFrequency ?? 0,
             permissions: tournament.settings?.myPermissions ?? [],
           }
@@ -466,6 +478,51 @@ export class TaSession {
             await this.ta.setTournamentScoreUpdateFrequency(this.taTournament, Math.max(1, Math.min(300, Math.round(cmd.frames)))),
             'change how often scores are sent',
           );
+        case 'setTournamentSetting': {
+          this.need('ready');
+          const t = this.taTournament;
+          const s = cmd.setting;
+          const change = 'change that setting';
+          switch (s.key) {
+            case 'name': {
+              const name = s.value.trim().slice(0, 80);
+              if (!name) throw new Error('Give the TA tournament a name.');
+              const reply = this.reply(await this.ta.setTournamentName(t, name), 'rename the tournament');
+              if (reply.ok) await prisma.taLink.update({ where: { tournamentId: this.tournamentId }, data: { taTournamentName: name } }).catch(() => {});
+              return reply;
+            }
+            case 'bannedMods':
+              return this.reply(await this.ta.setTournamentBannedMods(t, s.value.map((m) => m.trim()).filter(Boolean).slice(0, 50)), change);
+            case 'showTournamentButton':
+              return this.reply(await this.ta.setTournamentShowTournamentButton(t, s.value), change);
+            case 'showQualifierButton':
+              return this.reply(await this.ta.setTournamentShowQualifierButton(t, s.value), change);
+            case 'enableTeams':
+              return this.reply(await this.ta.setTournamentEnableTeams(t, s.value), change);
+            case 'enablePools':
+              return this.reply(await this.ta.setTournamentEnablePools(t, s.value), change);
+            case 'replayRecording':
+              return this.reply(await this.ta.setTournamentEnableReplayRecording(t, s.value), change);
+            case 'replayRetention':
+              return this.reply(await this.ta.setTournamentReplayRetention(t, RETENTION_VALUES[s.value]), change);
+          }
+          throw new Error('Unknown setting.');
+        }
+        case 'deleteTournament': {
+          this.need('ready');
+          const reply = this.reply(await this.ta.deleteTournament(this.taTournament), 'delete the tournament');
+          if (reply.ok) {
+            await prisma.taLink.update({ where: { tournamentId: this.tournamentId }, data: { taTournamentId: null, taTournamentName: null } }).catch(() => {});
+            setTimeout(() => void this.connect().catch(() => {}), 0);
+          }
+          return reply;
+        }
+        case 'playerCommand': {
+          this.need('ready');
+          if (!cmd.guids.length) throw new Error('Tick the players it is for.');
+          this.ta[cmd.command](this.taTournament, cmd.guids);
+          return { ok: true };
+        }
         case 'returnToMenu':
           this.need('ready');
           this.ta.returnToMenu(this.taTournament, cmd.guids);

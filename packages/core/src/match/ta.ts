@@ -132,15 +132,53 @@ export interface TaOptions {
    * An organiser can always reopen a closed map.
    */
   autoClose: boolean;
+  /** Beat Saber's own modifiers, applied to every song started from the site (TA's names, see TA_MODIFIERS). */
+  modifiers: TaModifier[];
+  /** Scores from these songs are not submitted to ScoreSaber. */
+  disableScoresaberSubmission: boolean;
+  /** Players' custom notes are switched off, so the stream sees the normal ones. */
+  disableCustomNotesOnStream: boolean;
 }
 
-export const DEFAULT_TA_OPTIONS: TaOptions = { disableFail: true, disablePause: false, showScoreboard: false, autoClose: true };
+/** The gameplay modifiers TA can start a song with, as TA names them, in the order its own app lists them. */
+export const TA_MODIFIERS = [
+  'NoFail', 'GhostNotes', 'DisappearingArrows', 'NoBombs', 'NoObstacles', 'NoArrows', 'FastSong', 'SuperFastSong', 'FastNotes',
+  'SlowSong', 'InstaFail', 'FailOnClash', 'BatteryEnergy', 'ProMode', 'ZenMode', 'SmallCubes', 'StrictAngles',
+] as const;
+export type TaModifier = (typeof TA_MODIFIERS)[number];
+export const TA_MODIFIER_LABELS: Record<TaModifier, string> = {
+  NoFail: 'No Fail', GhostNotes: 'Ghost Notes', DisappearingArrows: 'Disappearing Arrows', NoBombs: 'No Bombs', NoObstacles: 'No Walls',
+  NoArrows: 'No Arrows', FastSong: 'Faster Song', SuperFastSong: 'Super Fast Song', FastNotes: 'Fast Notes', SlowSong: 'Slower Song',
+  InstaFail: 'One Life', FailOnClash: 'Fail on Saber Clash', BatteryEnergy: 'Four Lives', ProMode: 'Pro Mode', ZenMode: 'Zen Mode',
+  SmallCubes: 'Small Notes', StrictAngles: 'Strict Angles',
+};
+/** Modifiers that cannot be on together: only the first of each group that is set is kept. */
+const TA_MODIFIER_GROUPS: TaModifier[][] = [
+  ['FastSong', 'SuperFastSong', 'SlowSong'],
+  ['NoFail', 'InstaFail', 'BatteryEnergy'],
+  ['GhostNotes', 'DisappearingArrows'],
+];
+export function cleanTaModifiers(raw: unknown): TaModifier[] {
+  const asked = new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []);
+  const kept = TA_MODIFIERS.filter((m) => asked.has(m));
+  return kept.filter((m) => {
+    const group = TA_MODIFIER_GROUPS.find((g) => g.includes(m));
+    return !group || kept.find((k) => group.includes(k)) === m;
+  });
+}
+
+export const DEFAULT_TA_OPTIONS: TaOptions = { disableFail: true, disablePause: false, showScoreboard: false, autoClose: true, modifiers: [], disableScoresaberSubmission: false, disableCustomNotesOnStream: false };
 
 /** Stored options read back; anything missing or odd falls to the default. */
 export function parseTaOptions(stored: unknown): TaOptions {
   const o = stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : {};
-  const flag = (key: keyof TaOptions) => (typeof o[key] === 'boolean' ? (o[key] as boolean) : DEFAULT_TA_OPTIONS[key]);
-  return { disableFail: flag('disableFail'), disablePause: flag('disablePause'), showScoreboard: flag('showScoreboard'), autoClose: flag('autoClose') };
+  type Flag = 'disableFail' | 'disablePause' | 'showScoreboard' | 'autoClose' | 'disableScoresaberSubmission' | 'disableCustomNotesOnStream';
+  const flag = (key: Flag) => (typeof o[key] === 'boolean' ? (o[key] as boolean) : DEFAULT_TA_OPTIONS[key]);
+  return {
+    disableFail: flag('disableFail'), disablePause: flag('disablePause'), showScoreboard: flag('showScoreboard'), autoClose: flag('autoClose'),
+    modifiers: cleanTaModifiers(o.modifiers),
+    disableScoresaberSubmission: flag('disableScoresaberSubmission'), disableCustomNotesOnStream: flag('disableCustomNotesOnStream'),
+  };
 }
 
 /** Where the worker's connection to TA stands. */
@@ -208,6 +246,16 @@ export interface TaLinkState {
      * The site then keeps the roster in TA as players, by the id TA knows each of them by.
      */
     playersOnly: boolean;
+    /** The rest of TA's own tournament settings, as its coordinator app shows them. */
+    showTournamentButton: boolean;
+    showQualifierButton: boolean;
+    enableTeams: boolean;
+    enablePools: boolean;
+    replayRecording: boolean;
+    /** How long TA keeps recorded replays: '30d' | '90d' | '1y' | '3y'. */
+    replayRetention: TaReplayRetention;
+    /** Mods players may not have installed, by name. */
+    bannedMods: string[];
     scoreUpdateFrequency: number;
     /** Permissions this sign-in holds in it, as TA names them. */
     permissions: string[];
@@ -250,12 +298,28 @@ export type TaCommand = { id: string; tournamentId: string } & (
   /** Bring TA's list of players in step with the roster now. Answers with { added, removed, players }. */
   | { type: 'syncPlayers' }
   | { type: 'setScoreUpdateFrequency'; frames: number }
+  /** One of TA's own tournament settings. */
+  | { type: 'setTournamentSetting'; setting: TaTournamentSetting }
+  /** Delete the TA tournament from TA for good (TA's "End Tournament"). */
+  | { type: 'deleteTournament' }
+  /** A change to these players' games right now (TA users, by guid): swap colours or hands, or hide one colour's notes. */
+  | { type: 'playerCommand'; command: TaPlayerCommand; guids: string[] }
   /** Send these TA users (by guid) back to the menu. */
   | { type: 'returnToMenu'; guids: string[] }
   | { type: 'listAuthorizedUsers' }
-  | { type: 'addAuthorizedUser'; discordId: string; role: 'admin' | 'coordinator' | 'view_only' }
+  | { type: 'addAuthorizedUser'; discordId: string; role: 'admin' | 'coordinator' | 'player' | 'view_only' }
   | { type: 'removeAuthorizedUser'; discordId: string }
 );
+export const TA_REPLAY_RETENTIONS = ['30d', '90d', '1y', '3y'] as const;
+export type TaReplayRetention = (typeof TA_REPLAY_RETENTIONS)[number];
+export type TaTournamentSetting =
+  | { key: 'name'; value: string }
+  | { key: 'bannedMods'; value: string[] }
+  | { key: 'showTournamentButton' | 'showQualifierButton' | 'enableTeams' | 'enablePools' | 'replayRecording'; value: boolean }
+  | { key: 'replayRetention'; value: TaReplayRetention };
+export const TA_PLAYER_COMMANDS = ['flipColors', 'flipHands', 'disableBlueNotes', 'disableRedNotes'] as const;
+export type TaPlayerCommand = (typeof TA_PLAYER_COMMANDS)[number];
+
 /** A TaCommand without the fields the sender fills in for every command. */
 export type TaCommandBody = TaCommand extends infer C ? (C extends unknown ? Omit<C, 'id' | 'tournamentId'> : never) : never;
 
