@@ -50,7 +50,15 @@ someone left the song or dropped off TA the map stays open for an organiser to s
 always be reopened (the TA page has the switch: "Close the map by itself"). A TA tournament the site makes is shown
 in game only to the tournament's own players: the site gives TA the roster (each player's TA id, BeatLeader id and,
 where known, Discord id) and keeps it in step; "Only this tournament's players see it in game" on the TA page opens
-it to everyone. The worker holds the TA connection, so it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay or script sees.
+it to everyone. The TA page also holds the rest of what TA's coordinator app does on a match night: the TA
+tournament's picture and settings, the song settings (TA's "cannot fail", Beat Saber's modifiers), live commands for
+connected players, a **free room** (any BeatSaver map for any ticked connected players, outside a match, for
+warm-ups and map checks; its scores are shown and not stored) and the **replays TA recorded** (list, download,
+delete; needs a TA server with replay storage, which the public one has). A player who runs out of health in a TA
+song is entered as a failed run at their whole score, whichever way the song was set up (TA's "cannot fail" keeps
+the whole score; with the No Fail modifier instead the game halves it and the site doubles it back), and counts in
+full or halved by the tournament's "Count a failed run double" rule, the same as a BeatLeader or typed score. TA
+qualifiers, webhooks and bot tokens are left to TA's own app. The worker holds the TA connection, so it must be running. See [docs/api.md](docs/api.md#ta-mode) for what an overlay or script sees.
 
 **Teams and players as the stream shows them.** On the Teams page a team gets a logo: the default star, the MSU
 Esports shield, or an uploaded picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most; kept in the database, so a

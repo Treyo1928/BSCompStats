@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_TA_OPTIONS, nextMapToPlay, parseTaOptions, parseTaStatus, readTaStatus, TA_MAX_PLAYERS, TA_PHASES } from './ta.js';
+import { parseSongRef, DEFAULT_TA_OPTIONS, taCountedScore, taHalvedByNoFail, taModifierMultiplier, nextMapToPlay, parseTaOptions, parseTaStatus, readTaStatus, TA_MAX_PLAYERS, TA_PHASES } from './ta.js';
 
 const now = new Date('2026-10-29T20:00:00Z');
 
@@ -106,5 +106,43 @@ describe('parseTaOptions', () => {
   it('ignores anything that is not a yes or no', () => {
     expect(parseTaOptions({ disableFail: 'no', showScoreboard: 1, extra: true })).toEqual(DEFAULT_TA_OPTIONS);
     expect(parseTaOptions('nonsense')).toEqual(DEFAULT_TA_OPTIONS);
+  });
+});
+
+describe('a death in a TA song', () => {
+  const nf = { disableFail: false, modifiers: ['NoFail' as const] };
+  it('is seen when the No Fail modifier has halved the score', () => {
+    expect(taHalvedByNoFail(nf, 400_000, 800_000)).toBe(true);
+    expect(taHalvedByNoFail(nf, 800_000, 800_000)).toBe(false);
+    // The final score against a slightly older plain score from the live feed.
+    expect(taHalvedByNoFail(nf, 410_000, 800_000)).toBe(true);
+    expect(taHalvedByNoFail(nf, 0, 0)).toBe(false);
+  });
+  it('is not read into a score other modifiers lowered', () => {
+    const both = { disableFail: false, modifiers: ['NoFail' as const, 'NoArrows' as const] };
+    expect(taModifierMultiplier(both.modifiers)).toBeCloseTo(0.7);
+    expect(taHalvedByNoFail(both, 560_000, 800_000)).toBe(false);
+    expect(taHalvedByNoFail(both, 280_000, 800_000)).toBe(true);
+  });
+  it("is never read from the score under TA's own cannot-fail, which halves nothing", () => {
+    expect(taHalvedByNoFail({ disableFail: true, modifiers: ['NoFail'] }, 400_000, 800_000)).toBe(false);
+    expect(taHalvedByNoFail({ disableFail: false, modifiers: [] }, 400_000, 800_000)).toBe(false);
+  });
+  it('is recorded at the whole score, flagged', () => {
+    expect(taCountedScore({ shown: 400_000, halved: true, reportedFailed: false, maxScore: 1_000_000 })).toEqual({ score: 800_000, failed: true });
+    expect(taCountedScore({ shown: 520_000, halved: true, reportedFailed: false, maxScore: 1_000_000 })).toEqual({ score: 1_000_000, failed: true });
+    expect(taCountedScore({ shown: 800_000, halved: false, reportedFailed: true, maxScore: 1_000_000 })).toEqual({ score: 800_000, failed: true });
+    expect(taCountedScore({ shown: 800_000, halved: false, reportedFailed: false, maxScore: 1_000_000 })).toEqual({ score: 800_000, failed: false });
+  });
+});
+
+describe('a map typed for the free room', () => {
+  it('is read from a key, a !bsr, a link or a hash', () => {
+    expect(parseSongRef(' 2F4a1 ')).toEqual({ key: '2f4a1' });
+    expect(parseSongRef('!bsr 2f4a1')).toEqual({ key: '2f4a1' });
+    expect(parseSongRef('https://beatsaver.com/maps/2f4a1/')).toEqual({ key: '2f4a1' });
+    expect(parseSongRef('custom_level_' + 'ab'.repeat(20))).toEqual({ hash: 'AB'.repeat(20) });
+    expect(parseSongRef('not a map')).toBeNull();
+    expect(parseSongRef('')).toBeNull();
   });
 });

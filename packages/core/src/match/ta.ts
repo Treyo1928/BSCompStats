@@ -167,6 +167,43 @@ export function cleanTaModifiers(raw: unknown): TaModifier[] {
   });
 }
 
+/** What Beat Saber's score-changing modifiers multiply a score by, No Fail's own halving left out. */
+const TA_MODIFIER_WEIGHTS: Partial<Record<TaModifier, number>> = {
+  NoBombs: -0.1, NoObstacles: -0.05, NoArrows: -0.3, SlowSong: -0.3, GhostNotes: 0.11, DisappearingArrows: 0.07, FastSong: 0.08, SuperFastSong: 0.1,
+};
+export function taModifierMultiplier(modifiers: readonly TaModifier[]): number {
+  return Math.max(0, modifiers.reduce((total, m) => total + (TA_MODIFIER_WEIGHTS[m] ?? 0), 1));
+}
+
+/**
+ * The No Fail modifier is really on in the game: asked for, and not replaced by TA's own "cannot fail" (which
+ * keeps a dead player playing at their whole score and reports them as failed at the end).
+ */
+export function taNoFailModifier(options: Pick<TaOptions, 'disableFail' | 'modifiers'>): boolean {
+  return !options.disableFail && options.modifiers.includes('NoFail');
+}
+
+/**
+ * No Fail has kicked in: the score with modifiers sits at half of what the modifiers alone make of the plain one.
+ * `plain` is the score before modifiers (TA's live feed carries both).
+ */
+export function taHalvedByNoFail(options: Pick<TaOptions, 'disableFail' | 'modifiers'>, withModifiers: number, plain: number): boolean {
+  if (!taNoFailModifier(options) || plain <= 0) return false;
+  return withModifiers < plain * taModifierMultiplier(options.modifiers) * 0.75;
+}
+
+/**
+ * What a result from TA is recorded as. TA sends the score the results screen shows: halved once the No Fail
+ * modifier has kicked in, whole when TA's "cannot fail" carried a dead player to the end. Either way a death is
+ * stored like every other source stores one: at the whole score, flagged as a fail, for the match's scoring to
+ * count in full or halved.
+ */
+export function taCountedScore(input: { shown: number; halved: boolean; reportedFailed: boolean; maxScore: number }): { score: number; failed: boolean } {
+  const shown = Math.max(0, Math.round(input.shown));
+  if (!input.halved) return { score: shown, failed: input.reportedFailed };
+  return { score: input.maxScore > 0 ? Math.min(input.maxScore, shown * 2) : shown * 2, failed: true };
+}
+
 export const DEFAULT_TA_OPTIONS: TaOptions = { disableFail: true, disablePause: false, showScoreboard: false, autoClose: true, modifiers: [], disableScoresaberSubmission: false, disableCustomNotesOnStream: false };
 
 /** Stored options read back; anything missing or odd falls to the default. */
@@ -259,8 +296,12 @@ export interface TaLinkState {
     scoreUpdateFrequency: number;
     /** Permissions this sign-in holds in it, as TA names them. */
     permissions: string[];
+    /** Where the picture shown beside it in the game's tournament list is served; null when it has none. */
+    image: string | null;
   }) | null;
   users: TaUser[];
+  /** The free room: a song loaded for any connected players, outside the site's matches. Null when there is none. */
+  room: TaRoom | null;
   /** Unix ms the worker wrote this. */
   at: number;
 }
@@ -309,7 +350,75 @@ export type TaCommand = { id: string; tournamentId: string } & (
   | { type: 'listAuthorizedUsers' }
   | { type: 'addAuthorizedUser'; discordId: string; role: 'admin' | 'coordinator' | 'player' | 'view_only' }
   | { type: 'removeAuthorizedUser'; discordId: string }
+  /** The TA tournament's picture: a stored upload of this tournament (PNG, JPEG or GIF), or null to take it off. */
+  | { type: 'setImage'; uploadId: string | null }
+  /** Free room: load a BeatSaver map (key or hash) for these connected players. */
+  | { type: 'roomLoad'; guids: string[]; song: string; difficulty: TaDifficulty; characteristic: string }
+  | { type: 'roomPlay' }
+  /** Free room: pull the players out and close it. */
+  | { type: 'roomEnd' }
+  /** Replays TA recorded for the tournament, newest first; answers with a TaReplayPage. */
+  | { type: 'listReplays'; page: number }
+  /** Where one recorded replay downloads from; answers with { url, fileName }. */
+  | { type: 'replayFile'; guid: string }
+  | { type: 'deleteReplay'; guid: string }
 );
+
+export const TA_DIFFICULTIES = ['Easy', 'Normal', 'Hard', 'Expert', 'ExpertPlus'] as const;
+export type TaDifficulty = (typeof TA_DIFFICULTIES)[number];
+export const TA_DIFFICULTY_LABELS: Record<TaDifficulty, string> = { Easy: 'Easy', Normal: 'Normal', Hard: 'Hard', Expert: 'Expert', ExpertPlus: 'Expert+' };
+
+/** A BeatSaver map as typed: its key ("2f4a1", "!bsr 2f4a1", a beatsaver.com link) or its 40-character hash. */
+export function parseSongRef(raw: string): { key: string } | { hash: string } | null {
+  const text = raw.trim();
+  const hash = /^(?:custom_level_)?([0-9a-f]{40})$/i.exec(text);
+  if (hash) return { hash: hash[1]!.toUpperCase() };
+  const key = /^(?:!bsr\s+|(?:https?:\/\/)?(?:www\.)?(?:beatsaver\.com\/maps\/|bsaber\.com\/songs\/))?([0-9a-f]{1,8})\/?$/i.exec(text);
+  return key ? { key: key[1]!.toLowerCase() } : null;
+}
+
+export const TA_ROOM_PHASES = ['loading', 'ready', 'playing', 'finished', 'error'] as const;
+export interface TaRoomPlayer {
+  guid: string;
+  name: string;
+  state: TaPlayerState;
+  score: number;
+  /** 0 to 1, of the whole map once finished, of the notes reached while playing. */
+  accuracy: number;
+  misses: number;
+  /** They died: the score is the whole one (doubled back if the No Fail modifier halved it). */
+  failed: boolean;
+}
+export interface TaRoom {
+  phase: (typeof TA_ROOM_PHASES)[number];
+  message: string | null;
+  song: { key: string | null; hash: string; name: string; mapper: string; difficulty: TaDifficulty; characteristic: string; duration: number };
+  players: TaRoomPlayer[];
+  /** When the song was started, ms; 0 before. */
+  startedAt: number;
+}
+
+export interface TaReplay {
+  guid: string;
+  playerName: string;
+  platformId: string;
+  mapHash: string;
+  characteristic: string;
+  difficulty: number;
+  /** ms since 1970 */
+  recordedAt: number;
+  expiresAt: number;
+  size: number;
+  fileName: string;
+}
+export interface TaReplayPage {
+  replays: TaReplay[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** False when the TA server keeps no replays (it has no replay storage set up). */
+  storage: boolean;
+}
 export const TA_REPLAY_RETENTIONS = ['30d', '90d', '1y', '3y'] as const;
 export type TaReplayRetention = (typeof TA_REPLAY_RETENTIONS)[number];
 export type TaTournamentSetting =

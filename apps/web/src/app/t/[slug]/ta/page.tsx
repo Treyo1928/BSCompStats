@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can, parseTaOptions, TA_DEFAULT_HOST, TA_DEFAULT_PORT, TA_MODIFIERS, TA_MODIFIER_LABELS, type TaAuthorizedUser, type TaLinkState, type TaUser } from '@bscs/core/match';
+import { can, parseTaOptions, TA_DEFAULT_HOST, TA_DEFAULT_PORT, TA_DIFFICULTIES, TA_DIFFICULTY_LABELS, TA_MODIFIERS, TA_MODIFIER_LABELS, type TaAuthorizedUser, type TaLinkState, type TaReplayPage, type TaRoom, type TaUser } from '@bscs/core/match';
 import { Badge, Button, Field, FieldAction, FormError, PageHeader, Panel, inputClass } from '@/components/ui';
 import { TaLive } from '@/components/ta-live';
 import { env } from '@/lib/env';
@@ -22,6 +22,11 @@ import {
   taSyncPlayers,
   taPlayerCommand,
   taDeleteTournament,
+  taSetImage,
+  taRoomLoad,
+  taRoomPlay,
+  taRoomEnd,
+  taDeleteReplay,
 } from '@/server/ta-actions';
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +46,12 @@ const SAVED: Record<string, string> = {
   sent: 'Sent to the ticked players.',
   deleted: 'The TA tournament was deleted from TournamentAssistant.',
   removed: 'TournamentAssistant removed from this tournament.',
+  image: 'Picture set. Players see it beside the tournament in game the next time their list loads.',
+  imageRemoved: 'Picture removed.',
+  roomLoading: 'The map is loading for the ticked players. Start the song once everyone has it.',
+  roomPlaying: 'Song started.',
+  roomClosed: 'Free room closed.',
+  replayDeleted: 'Replay deleted.',
 };
 
 /**
@@ -54,10 +65,10 @@ export default async function TaPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ error?: string; saved?: string }>;
+  searchParams: Promise<{ error?: string; saved?: string; replays?: string }>;
 }) {
   const { slug } = await params;
-  const { error, saved } = await searchParams;
+  const { error, saved, replays: replaysPage } = await searchParams;
   const tournament = await prisma.tournament.findUnique({
     where: { slug },
     select: {
@@ -111,6 +122,19 @@ export default async function TaPage({
   const isRosterEntry = (u: TaAuthorizedUser) => u.roles.length === 1 && u.roles[0] === 'player';
   const people = everyoneWithAccess?.filter((u) => !isRosterEntry(u)) ?? null;
   const playerIds = everyoneWithAccess?.filter(isRosterEntry).length ?? 0;
+
+  // What TA recorded, a page at a time.
+  const recorded = phase === 'ready' && state?.tournament ? await taCommand(tournament.id, { type: 'listReplays', page: Math.max(1, Number(replaysPage) || 1) }, 6000) : null;
+  const replays = recorded?.ok ? (recorded.data as TaReplayPage) : null;
+
+  // Names for the maps in that list, where the site knows the map.
+  const hashes = [...new Set((replays?.replays ?? []).map((r) => r.mapHash.toUpperCase()).filter(Boolean))];
+  const known = hashes.length
+    ? await prisma.beatMap.findMany({ where: { hash: { in: hashes.map((h) => h.toLowerCase()) } }, select: { hash: true, name: true } })
+    : [];
+  const mapNames = new Map(known.map((m) => [m.hash.toUpperCase(), m.name]));
+  const when = (ms: number, time = true) =>
+    ms > 0 ? new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', ...(time ? { hour: 'numeric', minute: '2-digit' } : { year: 'numeric' }), timeZone: 'UTC' }) + (time ? ' UTC' : '') : '';
 
   // Roster players, to show who has not connected yet.
   const roster =
@@ -252,6 +276,35 @@ export default async function TaPage({
               </form>
             }
           >
+            <form action={taSetImage} className="mb-4 flex flex-wrap items-center gap-3 border-b border-edge pb-4 text-sm">
+              {hidden}
+              {state.tournament.image ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={`/t/${slug}/ta/image?v=${encodeURIComponent(state.tournament.image.slice(-12))}`} alt="The TA tournament's picture" className="h-16 w-16 rounded-lg border border-edge object-cover" />
+              ) : (
+                <div className="grid h-16 w-16 place-items-center rounded-lg border border-dashed border-warn text-center text-[10px] leading-tight text-warn">no picture</div>
+              )}
+              <div className="min-w-56 flex-1">
+                <Field
+                  label="Picture in the game's tournament list"
+                  hint={
+                    state.tournament.image
+                      ? 'PNG, JPEG or GIF, up to 1 MB. Square works best. Choosing a new one replaces it.'
+                      : 'This TA tournament has no picture yet, so it shows blank in game. PNG, JPEG or GIF, up to 1 MB. Square works best.'
+                  }
+                >
+                  <input type="file" name="image" accept="image/png,image/jpeg,image/gif" className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border file:border-edge-strong file:bg-transparent file:px-3 file:py-1.5 file:text-xs file:text-ink" />
+                </Field>
+              </div>
+              <Button type="submit" variant="ghost">
+                Set picture
+              </Button>
+              {state.tournament.image && (
+                <button type="submit" name="remove" value="1" className="h-8 rounded-lg border border-edge-strong px-3 text-xs text-muted hover:border-faint hover:text-ink">
+                  Remove
+                </button>
+              )}
+            </form>
             <div className="flex flex-wrap gap-x-8 gap-y-3 text-sm">
               <Toggle tournamentId={tournament.id} setting="replayStreaming" on={state.tournament.replayStreaming} label="Live replay streaming">
                 Each player&apos;s game sends its replay to TA as they play, which is what the stream overlay draws. Needs TA 1.3 or newer in game.
@@ -279,10 +332,10 @@ export default async function TaPage({
                 The button players press to enter the tournament room, where the site loads maps for them.
               </Toggle>
               <Toggle tournamentId={tournament.id} setting="showQualifierButton" on={state.tournament.showQualifierButton} label={'Show the "Qualifier" button in game'}>
-                Only useful with TA qualifiers, which this site does not manage yet.
+                Only useful with TA qualifiers. Qualifiers here run on BeatLeader, so leave it off.
               </Toggle>
               <Toggle tournamentId={tournament.id} setting="replayRecording" on={state.tournament.replayRecording} label="Record replays in TA">
-                TA keeps a replay file of every song played in the tournament.
+                TA keeps a replay file of every song played in the tournament. They are listed at the bottom of this page.
               </Toggle>
               {state.tournament.replayRecording && (
                 <form action={taSetting} className="flex items-start gap-2">
@@ -302,10 +355,10 @@ export default async function TaPage({
                 </form>
               )}
               <Toggle tournamentId={tournament.id} setting="enableTeams" on={state.tournament.enableTeams} label="TA teams">
-                TA&apos;s own teams, picked by players in game. Not needed: this site knows the teams.
+                Makes every player pick one of TA&apos;s own teams on a screen in game when they join. Not needed: this site knows the teams.
               </Toggle>
               <Toggle tournamentId={tournament.id} setting="enablePools" on={state.tournament.enablePools} label="TA map pools">
-                TA&apos;s own map pools. Not needed: maps are loaded from this site&apos;s pools.
+                TA&apos;s own map pools are only a song list inside TA&apos;s coordinator app; players never see them in game. Not needed: maps are loaded from this site&apos;s pools.
               </Toggle>
               <form action={taSetting} className="flex items-start gap-2">
                 {hidden}
@@ -364,7 +417,7 @@ export default async function TaPage({
                       <th className="px-4 py-2 font-medium">Player in TA</th>
                       <th className="px-2 py-2 font-medium">On the roster as</th>
                       <th className="px-2 py-2 font-medium">Doing</th>
-                      <th className="px-4 py-2 text-right font-medium">Send to menu</th>
+                      <th className="px-4 py-2 text-right font-medium">Tick</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -401,6 +454,30 @@ export default async function TaPage({
                     Send ticked to menu
                   </Button>
                 </div>
+                <div className="flex flex-wrap items-end gap-2 border-t border-edge px-4 py-3">
+                  <div className="min-w-56 flex-1">
+                    <Field label="Free room: any map for the ticked players" hint="A BeatSaver key (2f4a1), a beatsaver.com link or a map hash. For warm-ups and map checks; nothing is written to a match.">
+                      <input name="song" placeholder="2f4a1" className={`${inputClass} font-mono`} autoComplete="off" />
+                    </Field>
+                  </div>
+                  <Field label="Difficulty">
+                    <select name="difficulty" defaultValue="ExpertPlus" className={`${inputClass} w-32`}>
+                      {TA_DIFFICULTIES.map((d) => (
+                        <option key={d} value={d}>
+                          {TA_DIFFICULTY_LABELS[d]}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Mode">
+                    <input name="characteristic" defaultValue="Standard" className={`${inputClass} w-32`} title="Standard, OneSaber, NoArrows, Lawless, 90Degree, 360Degree…" />
+                  </Field>
+                  <FieldAction>
+                    <button type="submit" formAction={taRoomLoad} data-command="roomLoad" className="h-9 rounded-lg border border-edge-strong px-3 text-sm text-ink hover:border-faint">
+                      Load for ticked players
+                    </button>
+                  </FieldAction>
+                </div>
               </form>
             )}
             {absent.length > 0 && (
@@ -424,6 +501,8 @@ export default async function TaPage({
               </p>
             )}
           </Panel>
+
+          {state.room && <RoomPanel room={state.room} hidden={hidden} />}
 
           <Panel
             title="Who else can open it in TA"
@@ -484,6 +563,97 @@ export default async function TaPage({
                 </Button>
               </FieldAction>
             </form>
+          </Panel>
+          <Panel
+            title="Replays recorded in TA"
+            subtitle={
+              replays
+                ? !replays.storage
+                  ? 'This TA server keeps no replays'
+                  : `${replays.total} kept${state.tournament.replayRecording ? '' : '; recording is switched off'}`
+                : undefined
+            }
+            flush={!!replays?.replays.length}
+          >
+            {!replays ? (
+              <p className="text-sm text-muted">{recorded && !recorded.ok ? recorded.error : 'Could not read the list.'}</p>
+            ) : !replays.storage ? (
+              <p className="text-sm text-muted">
+                This TournamentAssistant server has no replay storage set up, so &quot;Record replays in TA&quot; has nowhere to put them. The
+                public server has it; on a server of your own it is the <span className="font-mono">replayDatabaseUrl</span> setting.
+              </p>
+            ) : replays.replays.length === 0 ? (
+              <p className="text-sm text-muted">
+                None yet.{' '}
+                {state.tournament.replayRecording
+                  ? 'Every song played in the tournament from now on is kept here.'
+                  : 'Switch on "Record replays in TA" above and every song played in the tournament is kept here.'}
+              </p>
+            ) : (
+              <>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-faint">
+                      <th className="px-4 py-2 font-medium">Player</th>
+                      <th className="px-2 py-2 font-medium">Map</th>
+                      <th className="px-2 py-2 font-medium">Played</th>
+                      <th className="px-2 py-2 font-medium">Kept until</th>
+                      <th className="px-2 py-2 text-right font-medium">Size</th>
+                      <th className="px-4 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {replays.replays.map((r) => (
+                      <tr key={r.guid} className="border-t border-edge">
+                        <td className="px-4 py-1.5 font-medium">{r.playerName || r.platformId}</td>
+                        <td className="px-2 py-1.5">
+                          {mapNames.get(r.mapHash.toUpperCase()) ?? <span className="font-mono text-xs text-muted">{r.mapHash.slice(0, 10)}</span>}{' '}
+                          <span className="text-xs text-faint">
+                            {r.characteristic && r.characteristic !== 'Standard' ? `${r.characteristic} ` : ''}
+                            {TA_DIFFICULTY_LABELS[TA_DIFFICULTIES[r.difficulty] ?? 'ExpertPlus']}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-muted">{when(r.recordedAt)}</td>
+                        <td className="px-2 py-1.5 text-muted">{when(r.expiresAt, false)}</td>
+                        <td className="px-2 py-1.5 text-right tabular text-muted">{r.size >= 1048576 ? `${(r.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(r.size / 1024))} KB`}</td>
+                        <td className="px-4 py-1.5">
+                          <div className="flex items-center justify-end gap-2">
+                            <a href={`/t/${slug}/ta/replay/${r.guid}`} className="text-xs text-accent hover:underline" download>
+                              Download
+                            </a>
+                            <form action={taDeleteReplay}>
+                              {hidden}
+                              <input type="hidden" name="guid" value={r.guid} />
+                              <Button type="submit" variant="ghost" className="h-7 px-2 text-xs" title="Deletes it from TournamentAssistant for good">
+                                Delete
+                              </Button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {replays.total > replays.pageSize && (
+                  <p className="flex items-center gap-3 border-t border-edge px-4 py-2 text-xs text-muted">
+                    Page {replays.page} of {Math.ceil(replays.total / replays.pageSize)}
+                    {replays.page > 1 && (
+                      <a className="text-accent hover:underline" href={`/t/${slug}/ta?replays=${replays.page - 1}`}>
+                        Newer
+                      </a>
+                    )}
+                    {replays.page * replays.pageSize < replays.total && (
+                      <a className="text-accent hover:underline" href={`/t/${slug}/ta?replays=${replays.page + 1}`}>
+                        Older
+                      </a>
+                    )}
+                  </p>
+                )}
+                <p className="border-t border-edge px-4 py-2 text-xs text-faint">
+                  These are TA&apos;s own replay files (.tarf), which open in TA&apos;s replay tools. They are not BeatLeader replays.
+                </p>
+              </>
+            )}
           </Panel>
         </>
       )}
@@ -614,6 +784,85 @@ function ServerFields({ host, port }: { host: string; port: number }) {
   );
 }
 
+const ROOM_STATES: Record<string, string> = {
+  loading: 'Fetching the map',
+  ready: 'Ready',
+  playing: 'Playing',
+  finished: 'Finished',
+  failed: 'Finished, ran out of health',
+  quit: 'Quit',
+  missing: 'Left TA',
+};
+
+/** The free room: what is loaded, for whom, and their scores as they come. */
+function RoomPanel({ room, hidden }: { room: TaRoom; hidden: React.ReactNode }) {
+  const scored = room.phase === 'playing' || room.phase === 'finished';
+  const order = scored ? [...room.players].sort((a, b) => b.score - a.score) : room.players;
+  return (
+    <Panel
+      title={
+        <>
+          Free room: <span className="text-accent">{room.song.name}</span>
+        </>
+      }
+      subtitle={`${room.song.characteristic === 'Standard' ? '' : `${room.song.characteristic} `}${TA_DIFFICULTY_LABELS[room.song.difficulty]}${room.song.mapper ? `, mapped by ${room.song.mapper}` : ''}${room.song.key ? `, key ${room.song.key}` : ''}. ${
+        room.phase === 'loading'
+          ? 'Loading for the players.'
+          : room.phase === 'ready'
+            ? 'Everyone has the map.'
+            : room.phase === 'playing'
+              ? 'Being played.'
+              : room.phase === 'finished'
+                ? 'Finished.'
+                : 'Did not load.'
+      } Played with the song settings below.`}
+      actions={
+        <div className="flex gap-2">
+          {(room.phase === 'ready' || room.phase === 'finished') && (
+            <form action={taRoomPlay}>
+              {hidden}
+              <Button type="submit" className="h-8 text-xs">
+                {room.phase === 'finished' ? 'Play it again' : 'Start song'}
+              </Button>
+            </form>
+          )}
+          <form action={taRoomEnd}>
+            {hidden}
+            <Button type="submit" variant="ghost" className="h-8 text-xs" title="Sends the players back to waiting and closes the room">
+              Close the room
+            </Button>
+          </form>
+        </div>
+      }
+      flush
+    >
+      {room.message && <p className="px-4 pt-3 text-sm text-warn">{room.message}</p>}
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-[10px] uppercase tracking-wider text-faint">
+            <th className="px-4 py-2 font-medium">Player</th>
+            <th className="px-2 py-2 font-medium">Doing</th>
+            <th className="px-2 py-2 text-right font-medium">Score</th>
+            <th className="px-2 py-2 text-right font-medium">Accuracy</th>
+            <th className="px-4 py-2 text-right font-medium">Misses</th>
+          </tr>
+        </thead>
+        <tbody>
+          {order.map((p) => (
+            <tr key={p.guid} className="border-t border-edge">
+              <td className="px-4 py-1.5 font-medium">{p.name}</td>
+              <td className={`px-2 py-1.5 ${p.state === 'quit' || p.state === 'missing' ? 'text-lose' : 'text-muted'}`}>{ROOM_STATES[p.state] ?? p.state}</td>
+              <td className="px-2 py-1.5 text-right tabular">{scored && p.state !== 'quit' ? p.score.toLocaleString('en-US') : ''}</td>
+              <td className="px-2 py-1.5 text-right tabular">{scored && p.state !== 'quit' ? `${(p.accuracy * 100).toFixed(2)}%` : ''}</td>
+              <td className="px-4 py-1.5 text-right tabular text-muted">{scored && p.state !== 'quit' ? p.misses : ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
 function PlayerRow({ user, rosterName }: { user: TaUser; rosterName: string | null }) {
   const doing =
     user.playState === 'inGame'
@@ -641,7 +890,7 @@ function PlayerRow({ user, rosterName }: { user: TaUser; rosterName: string | nu
       <td className="px-2 py-1.5">{rosterName ?? <span className="text-warn">not matched to anyone</span>}</td>
       <td className={`px-2 py-1.5 ${user.downloadState === 'error' ? 'text-lose' : 'text-muted'}`}>{doing}</td>
       <td className="px-4 py-1.5 text-right">
-        <input type="checkbox" name="guid" value={user.guid} aria-label={`Send ${user.name} to the menu`} />
+        <input type="checkbox" name="guid" value={user.guid} aria-label={`Tick ${user.name}`} />
       </td>
     </tr>
   );

@@ -1,5 +1,7 @@
 import {
   DEFAULT_TA_OPTIONS,
+  TA_DEFAULT_HOST,
+  TA_DIFFICULTIES,
   TA_KEYS,
   TA_STATE_TTL_SECONDS,
   parseTaOptions,
@@ -8,6 +10,8 @@ import {
   type TaLinkPhase,
   type TaLinkState,
   type TaOptions,
+  type TaReplay,
+  type TaReplayPage,
   type TaReply,
   type TaUser,
 } from '@bscs/core/match';
@@ -24,6 +28,7 @@ import {
 } from 'moons-ta-client';
 import { getPublisher } from '../bus.js';
 import { log } from '../log.js';
+import { FreeRoom } from './room.js';
 import { MapRuns } from './runs.js';
 
 /** The stored half of a link: what an organiser set, and the sign-in. */
@@ -82,6 +87,9 @@ export class TaSession {
   taTournament = '';
   options: TaOptions = DEFAULT_TA_OPTIONS;
   readonly runs: MapRuns;
+  readonly room: FreeRoom;
+  /** Recorded replays as last listed: where each downloads from. */
+  private replayFiles = new Map<string, { url: string; fileName: string }>();
 
   private row: LinkRow;
   private phase: TaLinkPhase = 'connecting';
@@ -104,6 +112,7 @@ export class TaSession {
     this.tournamentId = row.tournamentId;
     this.options = parseTaOptions(row.options);
     this.runs = new MapRuns(this);
+    this.room = new FreeRoom(this);
     // The state key expires by itself; refresh it while we are alive.
     this.keepAlive = setInterval(() => void this.publish(true), (TA_STATE_TTL_SECONDS * 1000) / 3);
     void this.connect();
@@ -141,6 +150,7 @@ export class TaSession {
     if (this.retry) clearTimeout(this.retry);
     await this.runs.abandon(reason);
     this.runs.stop();
+    await this.room.close().catch(() => {});
     this.dropSetup();
     this.ta.disconnect();
     await getPublisher().del(TA_KEYS.state(this.tournamentId)).catch(() => {});
@@ -170,6 +180,9 @@ export class TaSession {
     this.taTournament = '';
     this.authUrl = null;
     const ta = (this.ta = new TAClient());
+    this.room.drop();
+    // Pictures are uploaded to the server's own API. The client library only knows the public server's.
+    (ta as unknown as { _imageServer: string })._imageServer = this.apiBase();
     this.set('connecting');
     ta.setAuthToken(this.row.token ?? '');
 
@@ -192,6 +205,7 @@ export class TaSession {
       log.warn(`ta[${this.slug}]: lost ${this.row.host}, reconnecting`);
       this.taTournament = '';
       void this.runs.abandon('The connection to TournamentAssistant dropped. Restart the map once it is back.');
+      this.room.drop();
       this.set('connecting', 'The connection to TournamentAssistant dropped; reconnecting.');
       this.scheduleRetry();
     });
@@ -209,8 +223,14 @@ export class TaSession {
     ta.stateManager.on('userDisconnected', () => this.runs.poke());
     ta.stateManager.on('userConnected', () => this.runs.poke());
     ta.stateManager.on('userUpdated', () => this.runs.userChanged());
-    ta.on('realtimeScore', (score) => this.runs.onScore(score));
-    ta.on('songFinished', (finished) => this.runs.onFinished(finished));
+    ta.on('realtimeScore', (score) => {
+      this.runs.onScore(score);
+      this.room.onScore(score);
+    });
+    ta.on('songFinished', (finished) => {
+      this.runs.onFinished(finished);
+      this.room.onFinished(finished);
+    });
 
     try {
       const response = await ta.connect(this.row.host, String(this.row.port));
@@ -295,6 +315,14 @@ export class TaSession {
     } finally {
       if (this.ta === ta) this.entering = false;
     }
+  }
+
+  /**
+   * The TA server's web API (pictures, replay downloads). TA serves it two ports above the websocket: 8678 beside
+   * 8676 on the public server and on a server set up the standard way.
+   */
+  private apiBase(): string {
+    return this.row.host === TA_DEFAULT_HOST ? `https://${TA_DEFAULT_HOST}:8678` : `https://${this.row.host}:${this.row.port + 2}`;
   }
 
   private tournamentOf(guid: string): Tournament | undefined {
@@ -404,9 +432,11 @@ export class TaSession {
             bannedMods: tournament.settings?.bannedMods ?? [],
             scoreUpdateFrequency: tournament.settings?.scoreUpdateFrequency ?? 0,
             permissions: tournament.settings?.myPermissions ?? [],
+            image: tournament.settings?.tournamentImage ? `${this.apiBase()}/api/file/${encodeURIComponent(tournament.settings.tournamentImage)}` : null,
           }
         : null,
       users,
+      room: tournament ? this.room.view() : null,
       at: Date.now(),
     };
   }
@@ -536,6 +566,48 @@ export class TaSession {
         case 'removeAuthorizedUser':
           this.need('ready');
           return this.reply(await this.ta.removeAuthorizedUser(this.taTournament, cmd.discordId), 'remove that person');
+        case 'setImage': {
+          this.need('ready');
+          let bytes = new Uint8Array(1);
+          if (cmd.uploadId) {
+            const upload = await prisma.upload.findFirst({ where: { id: cmd.uploadId, tournamentId: this.tournamentId }, select: { bytes: true } });
+            if (!upload) throw new Error('That picture is no longer stored. Choose it again.');
+            bytes = new Uint8Array(upload.bytes);
+          }
+          // One byte is how the client library says "no picture".
+          return this.reply(await this.ta.setTournamentImage(this.taTournament, bytes), cmd.uploadId ? 'set the picture' : 'remove the picture');
+        }
+        case 'roomLoad':
+          this.need('ready');
+          await this.room.load(cmd.guids, cmd.song, TA_DIFFICULTIES.includes(cmd.difficulty) ? cmd.difficulty : 'ExpertPlus', cmd.characteristic);
+          return { ok: true };
+        case 'roomPlay':
+          this.need('ready');
+          await this.room.play();
+          return { ok: true };
+        case 'roomEnd':
+          await this.room.close();
+          return { ok: true };
+        case 'listReplays':
+          this.need('ready');
+          return { ok: true, data: await this.replays(cmd.page) };
+        case 'replayFile': {
+          this.need('ready');
+          // Not listed since the worker started: look through the list for it.
+          for (let page = 1; !this.replayFiles.has(cmd.guid) && page <= 20; page++) {
+            const listed = await this.replays(page);
+            if (page * listed.pageSize >= listed.total) break;
+          }
+          const file = this.replayFiles.get(cmd.guid);
+          if (!file) throw new Error('TournamentAssistant no longer has that replay.');
+          return { ok: true, data: file };
+        }
+        case 'deleteReplay': {
+          this.need('ready');
+          const reply = this.reply(await this.ta.deleteReplay(this.taTournament, cmd.guid), 'delete that replay');
+          if (reply.ok) this.replayFiles.delete(cmd.guid);
+          return reply;
+        }
       }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -718,6 +790,32 @@ export class TaSession {
     return { added, removed, players: players.size };
   }
   private playersSyncedAt = 0;
+
+  /** One page of the replays TA recorded for the tournament, newest first. */
+  private async replays(page: number): Promise<TaReplayPage> {
+    const pageSize = 50;
+    // TA counts pages from 0; the site shows them from 1.
+    const asked = Math.max(1, Math.round(page) || 1);
+    const response = await this.ta.getReplays(this.taTournament, asked - 1, pageSize);
+    const got = response.details.oneofKind === 'getReplays' ? response.details.getReplays : undefined;
+    if (!ok(response) || !got) throw new Error('TournamentAssistant would not list the recorded replays (this sign-in may not be allowed to see them).');
+    const replays: TaReplay[] = got.replays.map((r) => {
+      if (r.downloadUrl) this.replayFiles.set(r.guid, { url: r.downloadUrl, fileName: r.fileName || `${r.guid}.tarf` });
+      return {
+        guid: r.guid,
+        playerName: r.playerName,
+        platformId: r.platformId,
+        mapHash: r.mapHash,
+        characteristic: r.characteristic,
+        difficulty: r.difficulty,
+        recordedAt: Number(r.recordedAt),
+        expiresAt: Number(r.expiresAt),
+        size: Number(r.size),
+        fileName: r.fileName,
+      };
+    });
+    return { replays, total: got.totalCount, page: asked, pageSize: got.pageSize || pageSize, storage: got.storageAvailable };
+  }
 
   private async authorizedUsers(): Promise<TaAuthorizedUser[]> {
     const response = await this.ta.getAuthorizedUsers(this.taTournament);

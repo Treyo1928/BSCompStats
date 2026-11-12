@@ -1,4 +1,4 @@
-import { TA_KEYS, parseFormat, readTaStatus, type TaLive, type TaPhase, type TaPlayerState, type TaStatusInput } from '@bscs/core/match';
+import { TA_KEYS, parseFormat, readTaStatus, taCountedScore, taHalvedByNoFail, type TaLive, type TaOptions, type TaPhase, type TaPlayerState, type TaStatusInput } from '@bscs/core/match';
 import { Prisma, prisma } from '@bscs/db';
 import {
   GameplayModifiers_GameOptions,
@@ -28,7 +28,7 @@ const FINISH_GRACE_MS = 20_000;
 const LIVE_MS = 250;
 const SCAN_MS = 2_000;
 
-const DIFFICULTY: Record<string, number> = { Easy: 0, Normal: 1, Hard: 2, Expert: 3, ExpertPlus: 4 };
+export const DIFFICULTY: Record<string, number> = { Easy: 0, Normal: 1, Hard: 2, Expert: 3, ExpertPlus: 4 };
 
 interface Slot {
   teamId: string;
@@ -40,6 +40,39 @@ interface Slot {
   /** Their TA connection, once found. */
   guid: string | null;
   platformId: string;
+}
+
+/** How TA is told to start a song: the map, and the song settings from the TA page. */
+export function gameplayParams(options: TaOptions, map: { name: string; hash: string; characteristic: string; difficulty: number }): GameplayParameters {
+  return {
+    beatmap: {
+      name: map.name,
+      levelId: `custom_level_${map.hash.toUpperCase()}`,
+      characteristic: { serializedName: map.characteristic, difficulties: [] },
+      difficulty: map.difficulty,
+    },
+    playerSettings: {
+      playerHeight: 0,
+      sfxVolume: 0,
+      saberTrailIntensity: 0,
+      noteJumpStartBeatOffset: 0,
+      noteJumpFixedDuration: 0,
+      options: PlayerSpecificSettings_PlayerOptions.NoPlayerOptions,
+      noteJumpDurationTypeSettings: PlayerSpecificSettings_NoteJumpDurationTypeSettings.Dynamic,
+      arcVisibilityType: PlayerSpecificSettings_ArcVisibilityType.None,
+    },
+    gameplayModifiers: {
+      options: options.modifiers.reduce((bits, name) => bits | (GameplayModifiers_GameOptions[name] ?? 0), GameplayModifiers_GameOptions.None as number),
+    },
+    attempts: 0,
+    showScoreboard: options.showScoreboard,
+    disablePause: options.disablePause,
+    disableFail: options.disableFail,
+    disableScoresaberSubmission: options.disableScoresaberSubmission,
+    disableCustomNotesOnStream: options.disableCustomNotesOnStream,
+    useSync: false,
+    target: 0,
+  };
 }
 
 /** One map being started for its lineups: from the request to the scores. */
@@ -65,6 +98,12 @@ interface Run {
   loaded: Set<string>;
   loadFailed: Set<string>;
   scores: Map<string, RealtimeScore>;
+  /** Players the No Fail modifier caught this run: they died and the game halved their score from there on. */
+  died: Set<string>;
+  /** The song settings this run was started with. */
+  options: Pick<TaOptions, 'disableFail' | 'modifiers'>;
+  /** The match counts a fail doubled back. */
+  doubleFails: boolean;
   finished: Map<string, Push_SongFinished>;
   startedAt: number;
   lastStatus: string;
@@ -84,7 +123,7 @@ const requestRows = (tournamentId: string) =>
       playRequestedAt: true,
       taStatus: true,
       replayCalledByTeamIds: true,
-      match: { select: { id: true, name: true, teamAId: true, teamBId: true, format: true, tournament: { select: { defaultFormat: true } } } },
+      match: { select: { id: true, name: true, doubleFailedRuns: true, teamAId: true, teamBId: true, format: true, tournament: { select: { defaultFormat: true } } } },
       poolMap: {
         select: {
           leaderboard: {
@@ -235,39 +274,14 @@ export class MapRuns {
       loaded: new Set(),
       loadFailed: new Set(),
       scores: new Map(),
+      died: new Set(),
+      options: { disableFail: options.disableFail, modifiers: options.modifiers },
+      doubleFails: row.match.doubleFailedRuns,
       finished: new Map(),
       startedAt: 0,
       lastStatus: '',
       lastLive: 0,
-      params: {
-        beatmap: {
-          name: lb.map.name,
-          levelId: `custom_level_${lb.map.hash.toUpperCase()}`,
-          characteristic: { serializedName: lb.modeName || 'Standard', difficulties: [] },
-          difficulty: DIFFICULTY[lb.difficultyName] ?? 4,
-        },
-        playerSettings: {
-          playerHeight: 0,
-          sfxVolume: 0,
-          saberTrailIntensity: 0,
-          noteJumpStartBeatOffset: 0,
-          noteJumpFixedDuration: 0,
-          options: PlayerSpecificSettings_PlayerOptions.NoPlayerOptions,
-          noteJumpDurationTypeSettings: PlayerSpecificSettings_NoteJumpDurationTypeSettings.Dynamic,
-          arcVisibilityType: PlayerSpecificSettings_ArcVisibilityType.None,
-        },
-        gameplayModifiers: {
-          options: options.modifiers.reduce((bits, name) => bits | (GameplayModifiers_GameOptions[name] ?? 0), GameplayModifiers_GameOptions.None as number),
-        },
-        attempts: 0,
-        showScoreboard: options.showScoreboard,
-        disablePause: options.disablePause,
-        disableFail: options.disableFail,
-        disableScoresaberSubmission: options.disableScoresaberSubmission,
-        disableCustomNotesOnStream: options.disableCustomNotesOnStream,
-        useSync: false,
-        target: 0,
-      },
+      params: gameplayParams(options, { name: lb.map.name, hash: lb.map.hash, characteristic: lb.modeName || 'Standard', difficulty: DIFFICULTY[lb.difficultyName] ?? 4 }),
     };
   }
 
@@ -394,6 +408,7 @@ export class MapRuns {
     run.startedAt = Date.now();
     run.phase = 'playing';
     run.scores.clear();
+    run.died.clear();
     run.finished.clear();
     await this.report(run);
     await this.live(run, 'playing');
@@ -409,13 +424,14 @@ export class MapRuns {
       const f = slot.guid ? run.finished.get(slot.guid) : undefined;
       // A player who quit has no score worth recording; the referee decides what happens.
       if (!f || f.type === Push_SongFinished_CompletionType.Quit) continue;
-      const score = Math.max(0, Math.round(f.score));
+      const { score, failed, halved } = this.counted(run, slot.guid!, f);
       const data = {
         score,
         // Of the whole map, like every other score on the site (TA's own figure is of the notes reached).
-        accuracy: run.maxScore > 0 ? Math.min(1, score / run.maxScore) : Math.min(1, Math.max(0, f.accuracy)),
-        // TA reports the score as played: nothing was halved by No Fail, so nothing is doubled back.
-        failed: false,
+        accuracy: run.maxScore > 0 ? Math.min(1, score / run.maxScore) : Math.min(1, Math.max(0, f.accuracy * (halved ? 2 : 1))),
+        // A death is stored the way every other source stores one: at the full score, flagged, and the match's
+        // scoring decides whether it counts in full or halved.
+        failed,
         misses: f.misses + f.badCuts,
         source: 'TA',
         beatLeaderScoreId: null,
@@ -434,12 +450,12 @@ export class MapRuns {
     }
     const unreported = run.slots.filter((s) => !(s.guid && run.finished.has(s.guid)));
     const quit = run.slots.filter((s) => s.guid && run.finished.get(s.guid)?.type === Push_SongFinished_CompletionType.Quit);
-    const failed = run.slots.filter((s) => s.guid && run.finished.get(s.guid)?.type === Push_SongFinished_CompletionType.Failed);
+    const failed = run.slots.filter((s) => s.guid && run.finished.has(s.guid) && this.counted(run, s.guid, run.finished.get(s.guid)!).failed);
     run.message =
       [
         unreported.length ? `No score came from ${unreported.map((s) => s.name).join(', ')} (their game dropped off TournamentAssistant, or never answered): type theirs in, or play the map again.` : '',
         quit.length ? `${quit.map((s) => s.name).join(', ')} left the song before it ended, so no score was entered for them.` : '',
-        failed.length ? `${failed.map((s) => s.name).join(', ')} failed; the score is what they had when they did.` : '',
+        failed.length ? `${failed.map((s) => s.name).join(', ')} ran out of health: entered as a failed run, which ${run.doubleFails ? 'counts in full (this tournament counts a failed run double)' : 'counts halved (this tournament does not count a failed run double)'}.` : '',
       ]
         .filter(Boolean)
         .join(' ') || null;
@@ -507,6 +523,12 @@ export class MapRuns {
   //  What TA tells us
   // -------------------------------------------------------------------------
 
+  /** A site match has this player loading, ready or in a song. */
+  holds(guid: string): boolean {
+    const run = this.runOf(guid);
+    return !!run && (run.phase === 'loading' || run.phase === 'ready' || run.phase === 'playing');
+  }
+
   private runOf(guid: string): Run | undefined {
     for (const run of this.runs.values()) if (run.slots.some((s) => s.guid === guid)) return run;
     return undefined;
@@ -514,7 +536,19 @@ export class MapRuns {
 
   onScore(score: RealtimeScore): void {
     const run = this.runOf(score.userGuid);
-    if (run?.phase === 'playing') run.scores.set(score.userGuid, score);
+    if (run?.phase !== 'playing') return;
+    run.scores.set(score.userGuid, score);
+    if (taHalvedByNoFail(run.options, score.scoreWithModifiers, score.score)) run.died.add(score.userGuid);
+  }
+
+  /**
+   * What a finished player's result is recorded as: see `taCountedScore`. The death is known from the live feed,
+   * or failing that from the final score against the last plain score the feed gave.
+   */
+  private counted(run: Run, guid: string, f: Push_SongFinished): { score: number; failed: boolean; halved: boolean } {
+    const last = run.scores.get(guid);
+    const halved = run.died.has(guid) || (!!last && taHalvedByNoFail(run.options, f.score, last.score));
+    return { ...taCountedScore({ shown: f.score, halved, reportedFailed: f.type === Push_SongFinished_CompletionType.Failed, maxScore: run.maxScore }), halved };
   }
 
   onFinished(finished: Push_SongFinished): void {
@@ -602,6 +636,7 @@ export class MapRuns {
   private async live(run: Run, phase: TaLive['phase']): Promise<void> {
     if (!run.startedAt) return;
     const elapsed = Math.min(run.duration, (Date.now() - run.startedAt) / 1000);
+    const back = (guid: string | null) => run.doubleFails && !!guid && run.died.has(guid);
     const message: TaLive = {
       matchId: run.matchId,
       matchMapId: run.matchMapId,
@@ -616,8 +651,9 @@ export class MapRuns {
           teamId: slot.teamId,
           slot: slot.slot,
           platformId: slot.platformId,
-          score: Math.round(f?.score ?? rt?.scoreWithModifiers ?? rt?.score ?? 0),
-          accuracy: Math.min(1, Math.max(0, f?.accuracy ?? rt?.accuracy ?? 0)),
+          // A player No Fail has halved is shown at what the run will count for.
+          score: Math.round((f?.score ?? rt?.scoreWithModifiers ?? rt?.score ?? 0) * (back(slot.guid) ? 2 : 1)),
+          accuracy: Math.min(1, Math.max(0, (f?.accuracy ?? rt?.accuracy ?? 0) * (back(slot.guid) ? 2 : 1))),
           combo: f ? 0 : (rt?.combo ?? 0),
           misses: f ? f.misses + f.badCuts : (rt?.notesMissed ?? 0) + (rt?.badCuts ?? 0),
           songPosition: f?.endTime ?? rt?.songPosition ?? elapsed,

@@ -8,6 +8,7 @@ import {
   cleanTaModifiers,
   TA_DEFAULT_HOST,
   TA_DEFAULT_PORT,
+  TA_DIFFICULTIES,
   TA_PLAYER_COMMANDS,
   TA_REPLAY_RETENTIONS,
   type TaCommandBody,
@@ -15,6 +16,7 @@ import {
 import { getActor } from './session';
 import { failBack } from './form-errors';
 import { taCommand } from './ta';
+import { chosenFile, saveUpload, sniffImage, UploadError } from './uploads';
 
 /**
  * Setting up and running a tournament's TournamentAssistant link, from the
@@ -251,4 +253,59 @@ export async function taSyncAdmins(formData: FormData): Promise<void> {
     if (!reply.ok) failBack(back, reply.error);
   }
   done(back, 'people');
+}
+
+/**
+ * The picture beside the TA tournament in the game's tournament list. TA takes PNG, JPEG and GIF. The file passes
+ * through this site's own upload store on its way to the worker, which hands it to TA; it is not kept here.
+ */
+export async function taSetImage(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  if (formData.get('remove') === '1') await run(tournament.id, back, { type: 'setImage', uploadId: null }, 'imageRemoved');
+  const file = chosenFile(formData.get('image'));
+  if (!file) failBack(back, 'Choose a picture first.');
+  const mime = sniffImage(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
+  if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/gif') failBack(back, 'TournamentAssistant takes a PNG, JPEG or GIF for the tournament picture.');
+  if (file.size < 512) failBack(back, 'That picture is too small for TournamentAssistant (under 512 bytes). Use a larger one.');
+  let stored: string;
+  try {
+    stored = await saveUpload(tournament.id, file);
+  } catch (err) {
+    failBack(back, err instanceof UploadError ? err.message : 'The picture could not be stored.');
+  }
+  const uploadId = stored.split('/').pop()!;
+  const reply = await taCommand(tournament.id, { type: 'setImage', uploadId }, 30_000);
+  await prisma.upload.deleteMany({ where: { id: uploadId, tournamentId: tournament.id } });
+  if (!reply.ok) failBack(back, reply.error);
+  done(back, 'image');
+}
+
+/** Free room: load a BeatSaver map for the ticked connected players, outside any match. */
+export async function taRoomLoad(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  const guids = formData.getAll('guid').map(String).filter(Boolean);
+  if (!guids.length) failBack(back, 'Tick the connected players the song is for.');
+  const song = String(formData.get('song') ?? '').trim();
+  if (!song) failBack(back, 'Give the map: its BeatSaver key (like 2f4a1), its beatsaver.com link, or its hash.');
+  const difficulty = TA_DIFFICULTIES.find((d) => d === formData.get('difficulty')) ?? 'ExpertPlus';
+  const characteristic = String(formData.get('characteristic') ?? 'Standard').trim().slice(0, 40) || 'Standard';
+  await run(tournament.id, back, { type: 'roomLoad', guids, song, difficulty, characteristic }, 'roomLoading');
+}
+
+export async function taRoomPlay(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  await run(tournament.id, back, { type: 'roomPlay' }, 'roomPlaying');
+}
+
+export async function taRoomEnd(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  await run(tournament.id, back, { type: 'roomEnd' }, 'roomClosed');
+}
+
+/** Delete one replay TA recorded. It cannot be brought back. */
+export async function taDeleteReplay(formData: FormData): Promise<void> {
+  const { tournament, back } = await staffOf(formData);
+  const guid = String(formData.get('guid') ?? '');
+  if (!/^[0-9a-f-]{36}$/i.test(guid)) failBack(back, 'No such replay.');
+  await run(tournament.id, back, { type: 'deleteReplay', guid }, 'replayDeleted');
 }
