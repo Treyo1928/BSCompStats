@@ -191,6 +191,10 @@ export interface BLAttempt {
   modifiers?: string | null;
   missedNotes?: number;
   badCuts?: number;
+  bombCuts?: number;
+  wallsHit?: number;
+  /** No misses, bad cuts, bombs or walls, up to where the run ended. */
+  fullCombo?: boolean;
   /** The .bsor of the run, kept even for a fail. */
   replay?: string | null;
   /** Unix seconds. */

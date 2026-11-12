@@ -16,7 +16,8 @@ import { log } from './log.js';
  *
  * So each rostered player is asked, one pool map at a time. A 401 on the first
  * map settles it for that player until tomorrow. Records are immutable, keyed
- * by BeatLeader's id, so a sync is an insert of whatever is new.
+ * by BeatLeader's id, so a sync is an insert of whatever is new (plus the
+ * full-combo flag on runs stored before it was kept).
  */
 
 const HOUR = 60 * 60 * 1000;
@@ -124,9 +125,16 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
       modifiers: a.modifiers ?? '',
       missedNotes: a.missedNotes ?? 0,
       badCuts: a.badCuts ?? 0,
+      fullCombo: typeof a.fullCombo === 'boolean' ? a.fullCombo : null,
       replayUrl: a.replay ?? null,
       timeset: a.timeset || a.timepost || 0,
     }));
   const { count } = await prisma.attempt.createMany({ data: rows, skipDuplicates: true });
+  // Records never change, but ones stored before the full-combo flag was kept lack it: fill it in.
+  for (const fullCombo of [true, false]) {
+    const ids = rows.filter((r) => r.fullCombo === fullCombo).map((r) => r.beatLeaderAttemptId);
+    if (ids.length === 0) continue;
+    await prisma.attempt.updateMany({ where: { beatLeaderAttemptId: { in: ids }, fullCombo: null }, data: { fullCombo } });
+  }
   return count;
 }

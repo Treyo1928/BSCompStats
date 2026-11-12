@@ -250,6 +250,7 @@ async function clearsWithin(
       accuracy: true,
       missedNotes: true,
       badCuts: true,
+      fullCombo: true,
       modifiers: true,
       timeset: true,
       replayUrl: true,
@@ -271,8 +272,9 @@ async function clearsWithin(
     accuracy: r.accuracy,
     missedNotes: r.missedNotes,
     badCuts: r.badCuts,
-    // A run record does not say; bombs and walls would break one too.
-    fullCombo: false,
+    // BeatLeader's flag on the run (bombs and walls break one too). Unknown until the worker has re-read
+    // a run stored before the flag was kept.
+    fullCombo: r.fullCombo ?? false,
     pauses: 0,
     accLeft: 0,
     accRight: 0,

@@ -367,6 +367,9 @@ model Attempt {
   modifiers String @default("")
   missedNotes Int @default(0)
   badCuts     Int @default(0)
+  /// BeatLeader's own flag: no misses, bad cuts, bombs or walls. Null on runs
+  /// stored before it was kept, until the worker next reads them.
+  fullCombo   Boolean?
   /// BeatLeader keeps the replay for a failed run too.
   replayUrl String?
 
