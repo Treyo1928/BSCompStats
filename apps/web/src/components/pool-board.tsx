@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Avatar, DifficultyChip, MapCover, heat, pct, num, teamInk, teamWash } from './ui';
 import type { PoolBoard, BoardCell, BoardMap } from '@/server/board';
+import { ReplayLink, ReplayModal } from './replay-modal';
 import { PlayerLink } from './player-card';
 import { rankTiers } from '@bscs/core/stats';
 
@@ -107,6 +108,7 @@ export function PoolBoardTable({
                       key={cell.leaderboardId}
                       cell={cell}
                       range={columnRange.get(cell.leaderboardId)}
+                      replayTitle={`${row.playerName} · ${board.maps.find((m) => m.leaderboardId === cell.leaderboardId)?.name ?? ''}`}
                     />
                   ))}
 
@@ -135,6 +137,7 @@ export function PoolBoardTable({
 
   return (
     <div>
+      <ReplayModal />
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs">
         <span className="text-faint">Order</span>
         <div className="inline-flex overflow-hidden rounded-md border border-edge" role="group" aria-label="Order of the board">
@@ -292,9 +295,12 @@ function MapHeader({ map }: { map: BoardMap }) {
 function Cell({
   cell,
   range,
+  replayTitle,
 }: {
   cell: BoardCell;
   range?: { min: number; max: number };
+  /** Whose replay of what, for the window it plays in. */
+  replayTitle?: string;
 }) {
   // Tried, never cleared, and no run hit ten notes: no number of theirs to
   // show, so the cell stays empty and the tries are a mark in the corner.
@@ -392,9 +398,9 @@ function Cell({
         style={heat(t)}
       >
         {cell.replayUrl ? (
-          <a href={cell.replayUrl} target="_blank" rel="noreferrer noopener" className="block">
+          <ReplayLink href={cell.replayUrl} title={replayTitle} className="block">
             {inner}
-          </a>
+          </ReplayLink>
         ) : (
           inner
         )}
