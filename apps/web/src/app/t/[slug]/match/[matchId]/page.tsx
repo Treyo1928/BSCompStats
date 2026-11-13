@@ -516,6 +516,7 @@ export default async function MatchPage({
                                   value={map.difficultyValue}
                                   label={map.difficultyLabel}
                                 />
+                                {map.category && <Badge tone="accent" title="Map type">{map.category}</Badge>}
                               </span>
                             </span>
                           </button>
@@ -610,6 +611,7 @@ export default async function MatchPage({
                                   value={planned.map.difficultyValue}
                                   label={planned.map.difficultyLabel}
                                 />
+                                {planned.map.category && <Badge tone="accent" title="Map type">{planned.map.category}</Badge>}
                                 {planned.map.mapper && (
                                   <span className="text-xs text-muted">{planned.map.mapper}</span>
                                 )}

@@ -518,6 +518,12 @@ function PoolsByRound({ bracket, pools }: { bracket: BracketView; pools: Array<{
       ))}
     </select>
   );
+  // How many rounds "from here on" would set besides this one: the rest of its side, and the grand final.
+  const laterRounds = (section: string, round: number) =>
+    [...rounds.keys()].filter((k) => {
+      const [sec, r] = k.split('|');
+      return (sec === section && Number(r) > round) || (sec === 'GF' && (section === 'W' || section === 'L'));
+    }).length;
   return (
     <div className="mt-4 space-y-3 border-t border-edge pt-4">
       <h3 className="text-xs font-medium uppercase tracking-wider text-faint">Pools by round</h3>
@@ -529,8 +535,9 @@ function PoolsByRound({ bracket, pools }: { bracket: BracketView; pools: Array<{
         {[...rounds.entries()].map(([k, slots]) => {
           const [section, round] = k.split('|');
           const own = new Set(slots.map((s) => (s.ownPool ? s.pool?.id ?? '' : '')));
+          // each form is keyed by what is set, so a saved change is drawn afresh and the list shows the new pool
           return (
-            <form key={k} action={setRoundPool} className="flex items-end gap-2">
+            <form key={`${k}:${[...own].join(',')}`} action={setRoundPool} className="flex items-end gap-2">
               <input type="hidden" name="bracketId" value={bracket.id} />
               <input type="hidden" name="section" value={section} />
               <input type="hidden" name="round" value={round} />
@@ -542,6 +549,18 @@ function PoolsByRound({ bracket, pools }: { bracket: BracketView; pools: Array<{
               <Button type="submit" variant="ghost" className="h-8">
                 Set
               </Button>
+              {laterRounds(section!, Number(round)) > 0 && (
+                <Button
+                  type="submit"
+                  name="onward"
+                  value="on"
+                  variant="ghost"
+                  className="h-8 whitespace-nowrap"
+                  title={`Sets this round and the ${laterRounds(section!, Number(round))} after it${section === 'RR' ? '' : ' (grand final included)'}`}
+                >
+                  Set from here on
+                </Button>
+              )}
             </form>
           );
         })}
@@ -552,7 +571,7 @@ function PoolsByRound({ bracket, pools }: { bracket: BracketView; pools: Array<{
           {bracket.slots
             .filter((s) => !s.passThrough)
             .map((s) => (
-              <form key={s.key} action={setSlotPool} className="flex items-end gap-2">
+              <form key={`${s.key}:${s.ownPool ? s.pool?.id ?? '' : ''}`} action={setSlotPool} className="flex items-end gap-2">
                 <input type="hidden" name="bracketId" value={bracket.id} />
                 <input type="hidden" name="key" value={s.key} />
                 <label className="flex flex-1 flex-col gap-1 text-xs text-muted">

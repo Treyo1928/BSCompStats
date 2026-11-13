@@ -117,6 +117,33 @@ export async function setPlayerShown(formData: FormData): Promise<void> {
 }
 
 /**
+ * A player's saber colours in this tournament: what replay viewers and the
+ * stream draw their sabers (and notes) in. The player themself, their team's
+ * captain and organisers may set them. "clear" goes back to the game's own.
+ */
+export async function setPlayerSabers(formData: FormData): Promise<void> {
+  const { member, tournament, actor, back } = await memberOf(formData);
+  const own = !!actor.userId && member.player.userId === actor.userId;
+  if (!can(actor, 'MANAGE_TEAMS') && !own && !isCaptainOf(actor, member.teamId)) throw new Error("You cannot set this player's colours.");
+
+  const hex = (name: string) => {
+    const value = String(formData.get(name) ?? '').trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(value) ? value : null;
+  };
+  const clear = formData.get('clear') != null;
+  const left = clear ? null : hex('left');
+  const right = clear ? null : hex('right');
+  if (!clear && (!left || !right)) failBack(back, 'Choose a colour for each saber.');
+  const data = { saberLeft: left, saberRight: right };
+  await prisma.tournamentPlayer.upsert({
+    where: { tournamentId_playerId: { tournamentId: tournament.id, playerId: member.playerId } },
+    create: { tournamentId: tournament.id, playerId: member.playerId, ...data },
+    update: data,
+  });
+  done(back);
+}
+
+/**
  * The replays a player wants shown on stream, one link per line. The player
  * themself (signed in with their BeatLeader profile) and their team's captain
  * may set up to SHOWCASE_REPLAYS_PER_PLAYER, and only replays that player

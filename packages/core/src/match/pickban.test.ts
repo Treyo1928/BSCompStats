@@ -206,3 +206,35 @@ describe('designated tiebreaker', () => {
     expect(plan.at(-1)).toMatchObject({ poolMapId: 'girlsnight', isTiebreaker: true });
   });
 });
+
+describe('a pool with its own pick/ban order', () => {
+  it('plays 11 maps as six picks, four bans and the map left over', async () => {
+    const { FINALS_PICK_BAN_SEQUENCE, withPickBanSequence, expectedMapCount, requiredPoolSize, parsePickBanSequence, rulesForRoster } =
+      await import('./format.js');
+    const format = withPickBanSequence(MSU_DUOS_FORMAT, FINALS_PICK_BAN_SEQUENCE);
+    expect(requiredPoolSize(format)).toBe(11);
+    expect(expectedMapCount(format)).toBe(7);
+    // four players across six duo maps: everyone three times, and six maps is every pairing once
+    expect(format.rules.minAppearances).toBe(3);
+    expect(format.rules.maxAppearances).toBe(3);
+    expect(rulesForRoster(format, 4, 6).rules.duoRepeatsAllowed).toBe(0);
+    // each side picks three and bans two
+    const count = (actor: string, action: string) => format.pickBanSequence.filter((s) => s.actor === actor && s.action === action).length;
+    expect([count('COIN_WINNER', 'PICK'), count('COIN_LOSER', 'PICK'), count('COIN_WINNER', 'BAN'), count('COIN_LOSER', 'BAN')]).toEqual([3, 3, 2, 2]);
+
+    const maps = Array.from({ length: 11 }, (_, i) => `m${i}`);
+    let ctx: PickBanContext = { format, poolMapIds: maps, coinWinnerTeamId: 'W', coinLoserTeamId: 'L', actions: [] };
+    expect(() => assertPoolIsBigEnough(ctx)).not.toThrow();
+    expect(() => assertPoolIsBigEnough({ ...ctx, poolMapIds: maps.slice(0, 10) })).toThrow();
+    for (let step = currentStep(ctx); step; step = currentStep(ctx)) {
+      ctx = { ...ctx, actions: [...ctx.actions, { seq: step.seq, type: step.type, teamId: step.teamId, poolMapId: step.availableMapIds[0]! }] };
+    }
+    const plan = resolveMapPlan(ctx);
+    expect(plan).toHaveLength(7);
+    expect(plan.at(-1)!.isTiebreaker).toBe(true);
+
+    expect(parsePickBanSequence(FINALS_PICK_BAN_SEQUENCE)).toHaveLength(10);
+    expect(parsePickBanSequence(null)).toBeNull();
+    expect(parsePickBanSequence([{ actor: 'NOBODY', action: 'PICK' }])).toBeNull();
+  });
+});

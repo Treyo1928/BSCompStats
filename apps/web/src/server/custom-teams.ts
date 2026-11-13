@@ -1,6 +1,7 @@
 import type { PlayOrder } from '@bscs/core';
 import { randomInt } from 'node:crypto';
 import { prisma, type Prisma } from '@bscs/db';
+import { parsePickBanSequence, withPickBanSequence } from '@bscs/core/match';
 import { assertPoolIsBigEnough, parseFormat, PickBanError } from './match-helpers';
 import { parsePointsCurve, parseReplayCounting, parseScoringMode } from '@bscs/core/match';
 
@@ -135,7 +136,7 @@ export async function openMatch(input: {
   const [pool, tournament, teams] = await Promise.all([
     prisma.mapPool.findUnique({
       where: { id: poolId },
-      select: { tournamentId: true, maps: { select: { id: true, isTiebreaker: true } } },
+      select: { tournamentId: true, pickBanSequence: true, maps: { select: { id: true, isTiebreaker: true } } },
     }),
     prisma.tournament.findUnique({
       where: { id: tournamentId },
@@ -154,9 +155,12 @@ export async function openMatch(input: {
   if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
 
   const tournamentFormat = parseFormat(tournament.defaultFormat);
+  // A pool may have its own pick/ban order (a bigger finals pool has more bans); the rest is the tournament's.
+  const poolSequence = parsePickBanSequence(pool.pickBanSequence);
+  const poolFormat = poolSequence ? withPickBanSequence(tournamentFormat, poolSequence) : tournamentFormat;
   // A match that plays differently from the tournament keeps its own copy of the format.
-  const ownFormat = input.playOrder && input.playOrder !== tournamentFormat.playOrder
-    ? { ...tournamentFormat, playOrder: input.playOrder }
+  const ownFormat = poolSequence || (input.playOrder && input.playOrder !== tournamentFormat.playOrder)
+    ? { ...poolFormat, playOrder: input.playOrder ?? poolFormat.playOrder }
     : null;
   const format = ownFormat ?? tournamentFormat;
   try {

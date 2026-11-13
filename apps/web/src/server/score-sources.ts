@@ -50,6 +50,12 @@ export interface UnifiedScore {
    * set before the pool's cutoff (it has no score id). Otherwise absent.
    */
   replayUrl?: string | null;
+  /**
+   * A ScoreSaber score that beat the player's BeatLeader one on the same map:
+   * that other run, whose replay is the one there is to watch (ScoreSaber has
+   * none). Absent where the score shown has its own replay, or there is none.
+   */
+  otherRun?: { beatLeaderScoreId: number | null; replayUrl?: string | null; accuracy: number };
   leaderboard: { maxScore: number; ranked: boolean; accRating: number; passRating: number; techRating: number };
 }
 
@@ -197,8 +203,17 @@ export async function loadScores(
     const leaderboardId = chart?.id ?? `ss:${s.songHash}:${s.difficultyValue}`;
     const key = `${s.playerId}::${leaderboardId}`;
     const existing = best.get(key);
-    // The better run stands, whichever site it is on.
-    if (existing && existing.accuracy >= accuracy) continue;
+    // The better run stands, whichever site it is on. Most players run both
+    // mods, so the same run is usually on both: then it is BeatLeader's that
+    // stands, since that one has the replay. Compared on the score itself where
+    // the chart is known (one max score for both); the two sites' accuracy
+    // figures for the same run differ in the last decimals, which used to hand
+    // such ties to ScoreSaber and lose the replay.
+    if (existing && (chart ? existing.baseScore >= s.baseScore : existing.accuracy >= accuracy)) continue;
+    // A better run on ScoreSaber alone: its numbers, and the BeatLeader run's replay to watch.
+    const otherRun = existing && (existing.beatLeaderScoreId || existing.replayUrl)
+      ? { beatLeaderScoreId: existing.beatLeaderScoreId, replayUrl: existing.replayUrl, accuracy: existing.accuracy }
+      : undefined;
 
     best.set(key, {
       playerId: s.playerId,
@@ -217,6 +232,7 @@ export async function loadScores(
       pp: s.pp,
       modifiers: '',
       beatLeaderScoreId: null,
+      ...(otherRun ? { otherRun } : {}),
       leaderboard: chart
         ? { maxScore: chart.maxScore, ranked: chart.ranked, accRating: chart.accRating, passRating: chart.passRating, techRating: chart.techRating }
         : { maxScore, ranked: s.ranked, ...NO_RATINGS },

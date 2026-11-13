@@ -22,7 +22,9 @@ import { getActorOrAnonymous } from '@/server/session';
 import { createTeam, deleteTeam, setTaPlatformId, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls, RemoveFromPool } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
-import { createPlayerPool, makeDuosFromPool } from '@/server/pool-actions';
+import { createPlayerPool } from '@/server/pool-actions';
+import { DuoMaker } from '@/components/duo-maker';
+import { RosterBoard } from '@/components/roster-board';
 import { RunsVisibilityPanel } from '@/components/runs-visibility';
 import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
@@ -30,6 +32,8 @@ import { buildPoolBoard } from '@/server/board';
 import { tournamentAliases } from '@/server/aliases';
 import { setPlayerReplays, setPlayerShown, setTeamLogo } from '@/server/team-media-actions';
 import { TeamLogo } from '@/components/team-logo';
+import { SaberColors } from '@/components/saber-colors';
+import { viewerBase } from '@/lib/replay-viewer';
 import { SHOWCASE_REPLAYS_MAX, SHOWCASE_REPLAYS_PER_PLAYER } from '@bscs/core';
 
 export const dynamic = 'force-dynamic';
@@ -135,6 +139,34 @@ export default async function TeamsPage({
   // The pool's seeds start in BeatLeader pp order, or in order of accuracy on
   // one of the map pools: each player's mean over the maps they have played
   // there. Nobody with a score there goes after everyone who has one.
+  // What a saber colour preview can play: each player's own BeatLeader replays of this tournament's pool maps.
+  const viewer = viewerBase();
+  const poolReplays = new Map<string, Array<{ scoreId: number; label: string }>>();
+  if (actor.userId && viewer) {
+    const scores = await prisma.score.findMany({
+      where: {
+        beatLeaderScoreId: { not: null },
+        playerId: { in: teams.flatMap((t) => t.members.map((m) => m.player.id)) },
+        leaderboard: { poolMaps: { some: { pool: { tournamentId: tournament.id } } } },
+      },
+      orderBy: { accuracy: 'desc' },
+      select: {
+        playerId: true,
+        beatLeaderScoreId: true,
+        accuracy: true,
+        leaderboard: { select: { difficultyName: true, map: { select: { name: true } } } },
+      },
+    });
+    for (const s of scores) {
+      const list = poolReplays.get(s.playerId) ?? [];
+      list.push({
+        scoreId: s.beatLeaderScoreId!,
+        label: `${s.leaderboard.map.name} · ${s.leaderboard.difficultyName.replace('ExpertPlus', 'Expert+')} · ${(s.accuracy * 100).toFixed(2)}%`,
+      });
+      poolReplays.set(s.playerId, list);
+    }
+  }
+
   const seedPool = tournament.pools.find((p) => p.id === seedBy) ?? null;
   const seedBoard = seedPool && playerPool && playerPool.members.length > 0 ? await buildPoolBoard(seedPool.id) : null;
   const poolAcc = new Map(
@@ -180,7 +212,7 @@ export default async function TeamsPage({
       {showing === 'entered' && (playerPool || canManage) && (
         <Panel
           title="Player pool"
-          subtitle="Players signed up but not in a team yet. Make duos from them, or add them to a team by hand."
+          subtitle="Players signed up but not in a team yet"
         >
           {!playerPool ? (
             <form action={createPlayerPool} className="flex flex-wrap items-center gap-3 text-sm text-muted">
@@ -195,8 +227,7 @@ export default async function TeamsPage({
               {playerPool.members.length === 0 ? (
                 <Empty>Nobody in the pool.</Empty>
               ) : (
-                <form action={makeDuosFromPool} className="space-y-3">
-                  <input type="hidden" name="tournamentId" value={tournament.id} />
+                <div className="space-y-3">
                   {canManage && playerPool.members.length >= 2 && (
                     <div className="flex flex-wrap items-center gap-1.5 text-xs">
                       <span className="mr-1 text-faint">Seed by</span>
@@ -227,18 +258,7 @@ export default async function TeamsPage({
                       const acc = poolAcc.get(member.player.id);
                       return (
                         <li key={member.id} className="flex min-w-0 items-center gap-2 text-sm">
-                          {canManage && (
-                            <input
-                              // Keyed by the order shown, so switching what seeds them resets the numbers.
-                              key={`${seedPool?.id ?? 'pp'}:${i}`}
-                              name={`seed:${member.player.id}`}
-                              inputMode="numeric"
-                              defaultValue={i + 1}
-                              aria-label={`${member.player.name}'s seed`}
-                              title="Seed: 1 is the strongest. Seeded duos pair 1 with the last seed, 2 with the second-last..."
-                              className="h-8 w-11 shrink-0 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none"
-                            />
-                          )}
+                          {canManage && <span className="w-5 shrink-0 text-right text-xs tabular text-faint">{i + 1}</span>}
                           <PlayerLink
                             playerId={member.player.id}
                             name={member.player.name}
@@ -270,29 +290,53 @@ export default async function TeamsPage({
                     })}
                   </ul>
                   {canManage && playerPool.members.length >= 2 && (
-                    <div className="space-y-2 border-t border-edge pt-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <select name="method" defaultValue="SEEDED" className={`${inputClass} w-auto min-w-0 flex-1 sm:flex-none`}>
-                          <option value="SEEDED">Seeded</option>
-                          <option value="RANDOM">Random</option>
-                        </select>
-                        <Button type="submit">Make duos</Button>
-                      </div>
-                      <p className="text-xs text-faint">
-                        Seeded pairs seed 1 with the last seed, 2 with the second-last, and so on.{' '}
-                        {seedPool
-                          ? `Seeds are in order of mean accuracy on ${seedPool.name}; players with no scores there come last, by pp.`
-                          : 'Seeds are in BeatLeader pp order.'}{' '}
-                        Change the numbers to seed by hand. An odd player out stays here. Both players of a duo are
-                        made its captains.
-                      </p>
-                    </div>
+                    <DuoMaker
+                      // drawn afresh when the pool or what seeds it changes
+                      key={`${seedPool?.id ?? 'pp'}:${seededPool.map((m) => m.id).join()}`}
+                      tournamentId={tournament.id}
+                      format={seedPool ? 'acc' : 'pp'}
+                      players={seededPool.map((member) => {
+                        const acc = poolAcc.get(member.player.id);
+                        return {
+                          memberId: member.id,
+                          name: member.player.name,
+                          avatar: member.player.avatar,
+                          stat: seedPool
+                            ? acc
+                              ? `${(acc.acc * 100).toFixed(2)}%`
+                              : 'no scores'
+                            : member.player.pp > 0
+                              ? `${Math.round(member.player.pp).toLocaleString('en-US')}pp`
+                              : '—',
+                          value: seedPool ? (acc?.acc ?? null) : member.player.pp > 0 ? member.player.pp : null,
+                        };
+                      })}
+                    />
                   )}
-                </form>
+                </div>
               )}
               {canManage && <AddPlayerForm teamId={playerPool.id} teamName="the player pool" />}
             </>
           )}
+        </Panel>
+      )}
+
+      {showing === 'entered' && canManage && entered.length + (playerPool ? 1 : 0) >= 2 && (
+        <Panel title="Arrange rosters" subtitle="Swap two players, or move one to another team">
+          <RosterBoard
+            // drawn afresh once a change is saved
+            key={[...entered, ...(playerPool ? [playerPool] : [])].map((t) => `${t.id}:${t.members.map((m) => m.id).join()}`).join('|')}
+            tournamentId={tournament.id}
+            teams={[...entered, ...(playerPool ? [playerPool] : [])].map((t) => ({
+              id: t.id,
+              name: t.name,
+              color: t.color,
+              colorSecondary: t.colorSecondary,
+              pool: t.playerPool,
+              members: t.members.map((m) => ({ id: m.id, name: aliases.get(m.player.id)?.nickname || m.player.name, avatar: m.player.avatar })),
+              captainPlaces: t.members.map((m) => m.role === 'CAPTAIN'),
+            }))}
+          />
         </Panel>
       )}
 
@@ -429,6 +473,12 @@ export default async function TeamsPage({
                             On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
                             {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
                             {alias?.avatar ? ' · own picture' : ''}
+                            {alias?.sabers && (
+                              <span className="ml-1.5 inline-flex translate-y-px gap-0.5" title="Their saber colours">
+                                <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.left }} />
+                                <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.right }} />
+                              </span>
+                            )}
                           </summary>
                           {replays.length > 0 && (
                             <ul className="mt-1.5 space-y-0.5">
@@ -469,6 +519,16 @@ export default async function TeamsPage({
                                 </span>
                               </div>
                             </form>
+                          )}
+                          {maySetReplays && (
+                            <SaberColors
+                              key={`${alias?.sabers?.left}:${alias?.sabers?.right}`}
+                              memberId={member.id}
+                              playerName={shownName}
+                              sabers={alias?.sabers ?? null}
+                              replays={poolReplays.get(member.player.id) ?? []}
+                              viewer={viewer}
+                            />
                           )}
                           {canManage && (
                             <form action={setPlayerShown} className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-2">

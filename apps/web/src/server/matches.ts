@@ -163,6 +163,8 @@ export interface TeamView {
     avatar: string | null;
     /** Replays they chose to show on stream (viewer links). */
     replays: string[];
+    /** Their saber colours ("#rrggbb") where they chose any; null is the game's own. */
+    sabers: { left: string; right: string } | null;
     /** Steam64 for Steam players (TA's platform id too); BeatLeader's own id for Quest players. */
     beatLeaderId: string;
     /** The id TournamentAssistant knows them by, where an organiser set one; else use beatLeaderId. */
@@ -457,6 +459,7 @@ function toTeamView(team: {
       .map((m) => ({
         ...shownAs({ id: m.player.id, name: m.player.name, avatar: m.player.avatar }, aliases),
         replays: (aliases.get(m.player.id)?.replays ?? []).map((r) => r.ref),
+        sabers: aliases.get(m.player.id)?.sabers ?? null,
         beatLeaderId: m.player.beatLeaderId,
         taPlatformId: m.player.taPlatformId,
       })),

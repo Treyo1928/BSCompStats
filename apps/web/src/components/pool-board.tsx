@@ -375,6 +375,7 @@ function Cell({
             : null,
           cell.rank ? `#${cell.rank} in this pool` : null,
           cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
+          cell.replayOfAcc != null ? `The replay is their BeatLeader run (${pct(cell.replayOfAcc)}): ScoreSaber keeps none` : null,
           cell.noFail ? 'No Fail kicked in: they died partway and played the rest of the map on. The accuracy is without No Fail’s penalty.' : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
           cell.runs && cell.runs.total > 0

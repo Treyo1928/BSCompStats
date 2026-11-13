@@ -13,7 +13,7 @@
  */
 import { writeFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
-import { generateBracket, hashApiKey, MSU_DUOS_LIVE_FORMAT } from '@bscs/core';
+import { FINALS_PICK_BAN_SEQUENCE, generateBracket, hashApiKey, MSU_DUOS_LIVE_FORMAT } from '@bscs/core';
 
 const prisma = new PrismaClient();
 const fixedKey = (name: string) => `bscs_${(name.replace(/[^a-z0-9]/gi, '') + '0'.repeat(40)).slice(0, 40)}`;
@@ -47,7 +47,7 @@ function jsonAt(text: string, from: number): unknown {
 const title = (html: string) => (/<title>([^<]*)<\/title>/.exec(html)?.[1] ?? '').replace(/&amp;/g, '&').replace(/&#x27;|&#39;/g, "'");
 
 interface PublicMap { leaderboardId: string; name: string; isTiebreaker: boolean }
-interface PublicCell { leaderboardId: string; replayUrl: string | null; acc: number | null }
+interface PublicCell { leaderboardId: string; replayUrl: string | null; acc: number | null; score?: number | null; fullCombo?: boolean; misses?: number }
 interface PublicRow { playerName: string; avatar: string | null; beatLeaderId: string; cells: PublicCell[] }
 interface PublicTeam { teamName: string; color: string; teamColorSecondary?: string; rows: PublicRow[] }
 
@@ -115,6 +115,22 @@ async function saveLeaderboard(id: string) {
   });
 }
 
+/** Popular ranked Standard Expert+ maps that are not in `have`: the extra maps of the rehearsal's finals pool. */
+async function extraLeaderboards(count: number, have: Set<string>): Promise<string[]> {
+  const r = await fetch('https://api.beatleader.com/leaderboards?page=1&count=60&type=ranked&sortBy=playcount&order=desc&mode=Standard');
+  if (!r.ok) throw new Error(`BeatLeader leaderboards: ${r.status}`);
+  const list = ((await r.json()).data ?? []) as Array<{ id: string; song: { id: string }; difficulty: { value: number; modeName: string } }>;
+  const songs = new Set<string>();
+  return list
+    .filter((l) => l.difficulty?.value === 9 && l.difficulty?.modeName === 'Standard' && !have.has(l.id))
+    .filter((l) => !songs.has(l.song.id) && !!songs.add(l.song.id))
+    .slice(0, count)
+    .map((l) => l.id);
+}
+
+// Map types for the rehearsal's pools (a real pool's are typed in by the organisers on the pool page).
+const TYPES = ['True Acc', 'Tech Acc', 'Standard Acc', 'Midspeed', 'Tech', 'Low Tech', 'Speed', 'Speed Tech', 'Extreme', 'Burst', 'Stamina'];
+
 async function main() {
   const out = process.argv[2];
   const base = (process.env.MOCK_FROM ?? '').replace(/\/+$/, '');
@@ -164,6 +180,8 @@ async function main() {
   const captains: { team: string; userId: string; player: string }[] = [];
   const replays: Record<string, Record<string, number>> = {};     // BeatLeader player id -> leaderboard id -> score id
   const playlist: string[] = [];
+  // the scores behind those replays, saved once the maps are: the pool board then shows them and their replays open
+  const scores: { playerId: string; leaderboardId: string; scoreId: number; acc: number; score: number | null; fullCombo: boolean; misses: number }[] = [];
   for (const t of src.teams) {
     const team = await prisma.team.create({
       data: { divisionId: division.id, name: t.teamName, color: t.color, colorSecondary: t.teamColorSecondary ?? t.color },
@@ -180,9 +198,10 @@ async function main() {
       players[p.id] = r.beatLeaderId;
       if (captain) captains.push({ team: t.teamName, userId: captain.id, player: r.playerName });
       for (const c of r.cells) {
-        const id = Number(/scoreId=(\d+)/.exec(c.replayUrl ?? '')?.[1]);
+        const id = Number(/scoreId(?:BL)?=(\d+)/.exec(c.replayUrl ?? '')?.[1]);   // BeatLeader's viewer, or our own
         if (!id) continue;
         (replays[r.beatLeaderId] ??= {})[c.leaderboardId] = id;
+        if (c.acc != null) scores.push({ playerId: p.id, leaderboardId: c.leaderboardId, scoreId: id, acc: c.acc, score: c.score ?? null, fullCombo: !!c.fullCombo, misses: c.misses ?? 0 });
         playlist.push(`https://replay.beatleader.com/?scoreId=${id}`);
       }
     }
@@ -194,11 +213,42 @@ async function main() {
     const pool = await prisma.mapPool.create({ data: { tournamentId: tournament.id, name: p.name } });
     for (const [i, m] of p.maps.entries()) {
       await saveLeaderboard(m.leaderboardId);
-      await prisma.poolMap.create({ data: { poolId: pool.id, leaderboardId: m.leaderboardId, order: i } });
+      await prisma.poolMap.create({ data: { poolId: pool.id, leaderboardId: m.leaderboardId, order: i, category: TYPES[i % TYPES.length] } });
     }
     pools[p.name] = pool.id;
   }
   const firstPool = Object.values(pools)[0] ?? null;
+  for (const sc of scores) {
+    const board = await prisma.leaderboard.findUnique({ where: { id: sc.leaderboardId }, select: { maxScore: true } });
+    if (!board) continue;
+    const baseScore = sc.score ?? Math.round(sc.acc * board.maxScore);
+    await prisma.score.upsert({
+      where: { playerId_leaderboardId: { playerId: sc.playerId, leaderboardId: sc.leaderboardId } },
+      update: {},
+      create: {
+        playerId: sc.playerId, leaderboardId: sc.leaderboardId, beatLeaderScoreId: sc.scoreId, baseScore, modifiedScore: baseScore,
+        accuracy: sc.acc, fullCombo: sc.fullCombo, missedNotes: sc.misses,
+      },
+    });
+  }
+
+  // A second, 11-map pool with its own pick/ban order (6 picks, 4 bans), played from the second round on: the
+  // first pool's maps (the players have replays of those) filled up with popular ranked ones.
+  let finalsPool: string | null = null;
+  try {
+    const own = (src.pools[0]?.maps ?? []).map((m) => m.leaderboardId).slice(0, 11);
+    const ids = [...own, ...(await extraLeaderboards(11 - own.length, new Set(own)))];
+    if (ids.length < 11) throw new Error(`only ${ids.length} maps found`);
+    const name = pools['Finals'] ? 'Finals (11 maps)' : 'Finals';
+    const pool = await prisma.mapPool.create({ data: { tournamentId: tournament.id, name, pickBanSequence: FINALS_PICK_BAN_SEQUENCE } });
+    for (const [i, leaderboardId] of ids.entries()) {
+      await saveLeaderboard(leaderboardId);
+      await prisma.poolMap.create({ data: { poolId: pool.id, leaderboardId, order: i, category: TYPES[(i + 3) % TYPES.length] } });
+    }
+    pools[name] = finalsPool = pool.id;
+  } catch (e) {
+    console.warn(`mock: no 11-map finals pool (${(e as Error).message})`);
+  }
 
   // ---------------------------------------------------------------- brackets: same seeds, no results
   const brackets: { id: string; name: string; format: string; nodes: { key: string; section: string; round: number }[] }[] = [];
@@ -209,7 +259,13 @@ async function main() {
       data: {
         tournamentId: tournament.id, name: b.name, format: b.format, poolId: firstPool, order,
         entries: { create: seeded.map((teamId, i) => ({ teamId, seed: i + 1 })) },
-        nodes: { create: nodes.map((n) => ({ key: n.key, section: n.section, round: n.round, position: n.position, sources: { a: n.a, b: n.b } })) },
+        nodes: {
+          create: nodes.map((n) => ({
+            key: n.key, section: n.section, round: n.round, position: n.position, sources: { a: n.a, b: n.b },
+            // everything after the first round of each side plays the finals pool
+            poolId: finalsPool && (n.section === 'GF' || ((n.section === 'W' || n.section === 'L') && n.round >= 2)) ? finalsPool : null,
+          })),
+        },
       },
       include: { nodes: { select: { key: true, section: true, round: true } } },
     });
@@ -227,7 +283,7 @@ async function main() {
     source: base,
     tournament: { id: tournament.id, slug: tournament.slug, name: tournament.name },
     users: { admin: admin.id, organiser: organiser.id },
-    captains, teams, players, pools, keys, replays, playlist,
+    captains, teams, players, pools, finalsPool, keys, replays, playlist,
     bracket: brackets[0] ?? null,
     brackets,
   };

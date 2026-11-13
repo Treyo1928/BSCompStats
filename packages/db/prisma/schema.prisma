@@ -582,6 +582,10 @@ model TournamentPlayer {
   /// [{ ref, scoreId?, song?, mapper?, difficulty?, accuracy?, player? }].
   /// See packages/core/replays.
   replays  Json     @default("[]")
+  /// Their saber colours ("#rrggbb"), shown by replay viewers and on stream.
+  /// Null: the game's own colours. Both are set, or neither.
+  saberLeft  String?
+  saberRight String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -732,6 +736,11 @@ model MapPool {
   /// dates. Only the pool board and stats read either - never match pulls.
   scoresUntil DateTime?
 
+  /// This pool's own pick/ban order: [{ actor, action }], as in a format's
+  /// pickBanSequence. A bigger finals pool needs more bans than the
+  /// tournament's usual order has. Null plays the tournament's order.
+  pickBanSequence Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -753,7 +762,8 @@ model PoolMap {
   leaderboard   Leaderboard @relation(fields: [leaderboardId], references: [id], onDelete: Cascade)
 
   order Int @default(0)
-  /// Organiser's play-style tag: "True Acc", "Acc", "Tech", "Speed", ...
+  /// The map's type, typed in by an organiser: "True Acc", "Tech Acc",
+  /// "Midspeed", "Speed Tech", ... Shown on the site and on stream.
   category String?
   /// Overrides the leaderboard label on the board, e.g. "Safe Bet (Hard)".
   label    String?

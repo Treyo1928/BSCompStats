@@ -6,10 +6,10 @@ import { endOfDay, parseFormat, startOfDay } from '@bscs/core';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma, Prisma } from '@bscs/db';
-import { assertCan, can, isCaptainOf, ForbiddenError } from '@bscs/core/match';
+import { assertCan, can, isCaptainOf, ForbiddenError, parsePickBanSequence } from '@bscs/core/match';
 import { getActor, getActorOrAnonymous } from './session';
 import { importPool } from './pools';
-import { requestAttempts, requestRefresh } from '@/lib/redis';
+import { announceMatchChange, requestAttempts, requestRefresh } from '@/lib/redis';
 import { beatLeader, scoreSaber } from './pools';
 import { failBack } from './form-errors';
 import { parsePointsCurve, parseReplayCounting, parseScoringMode, DEFAULT_TOLERANCE_SECONDS } from '@bscs/core/match';
@@ -334,6 +334,69 @@ export async function setPoolMapPerfect(formData: FormData): Promise<void> {
   }
   await prisma.poolMap.update({ where: { id: poolMapId }, data: { perfectAcc } });
   revalidatePath('/t', 'layout');
+}
+
+/**
+ * A pool map's type ("Tech Acc", "Midspeed", "Speed Tech"...), typed in by an
+ * organiser. Shown beside the map on the site and on stream. Blank clears it.
+ */
+export async function setPoolMapType(formData: FormData): Promise<void> {
+  const poolMapId = String(formData.get('poolMapId'));
+  const poolMap = await prisma.poolMap.findUnique({
+    where: { id: poolMapId },
+    select: { poolId: true, pool: { select: { tournamentId: true } } },
+  });
+  if (!poolMap) throw new Error('No such map.');
+
+  const actor = await getActor(poolMap.pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+
+  const category = String(formData.get('type') ?? '').replace(/\s+/g, ' ').trim().slice(0, 24) || null;
+  await prisma.poolMap.update({ where: { id: poolMapId }, data: { category } });
+  // Matches being played on the pool show the type at once (overlays follow the match).
+  const live = await prisma.match.findMany({
+    where: { poolId: poolMap.poolId, state: { not: 'COMPLETE' } },
+    select: { id: true },
+  });
+  await Promise.all(live.map((m) => announceMatchChange(m.id)));
+  revalidatePath('/t', 'layout');
+}
+
+/**
+ * The pool's own pick/ban order, for matches set up on it from now on (a match
+ * already made keeps the order it started with). "steps" is a JSON list of
+ * { actor, action }; empty goes back to the tournament's order.
+ */
+export async function setPoolPickBan(formData: FormData): Promise<void> {
+  const poolId = String(formData.get('poolId'));
+  const pool = await prisma.mapPool.findUnique({
+    where: { id: poolId },
+    select: { tournamentId: true, tournament: { select: { slug: true } } },
+  });
+  if (!pool) throw new Error('No such pool.');
+  const actor = await getActor(pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+
+  const back = `/t/${pool.tournament.slug}/pool/${poolId}`;
+  const raw = String(formData.get('steps') ?? '').trim();
+  let sequence: Prisma.InputJsonValue | null = null;
+  if (raw && raw !== '[]') {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // falls through to the message below
+    }
+    const steps = parsePickBanSequence(parsed);
+    if (!steps) failBack(back, 'That pick and ban order could not be read.');
+    if (!steps.some((s) => s.action === 'PICK')) failBack(back, 'The order needs at least one pick.');
+    sequence = steps;
+  }
+  await prisma.mapPool.update({ where: { id: poolId }, data: { pickBanSequence: sequence ?? Prisma.DbNull } });
+  revalidatePath('/t', 'layout');
+  redirect(`${back}#order`);
 }
 
 /**

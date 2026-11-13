@@ -134,6 +134,64 @@ export const MSU_DUOS_LIVE_FORMAT: MatchFormat = matchFormatSchema.parse({
   playOrder: 'PLAY_EACH_PICK',
 });
 
+/**
+ * The finals order: the same back-and-forth carried on for an 11-map pool.
+ * Six picks and four bans leave one map as the tiebreaker, so a best of seven.
+ *
+ *   winner picks, loser picks, loser bans, winner bans, loser picks, winner picks,
+ *   winner bans, loser bans, winner picks, loser picks
+ */
+export const FINALS_PICK_BAN_SEQUENCE: PickBanStep[] = [
+  { actor: 'COIN_WINNER', action: 'PICK' },
+  { actor: 'COIN_LOSER', action: 'PICK' },
+  { actor: 'COIN_LOSER', action: 'BAN' },
+  { actor: 'COIN_WINNER', action: 'BAN' },
+  { actor: 'COIN_LOSER', action: 'PICK' },
+  { actor: 'COIN_WINNER', action: 'PICK' },
+  { actor: 'COIN_WINNER', action: 'BAN' },
+  { actor: 'COIN_LOSER', action: 'BAN' },
+  { actor: 'COIN_WINNER', action: 'PICK' },
+  { actor: 'COIN_LOSER', action: 'PICK' },
+];
+
+/** A pool's own pick/ban order as stored, or null where it has none (or what is stored is not one). */
+export function parsePickBanSequence(raw: unknown): PickBanStep[] | null {
+  if (raw == null) return null;
+  const parsed = z.array(pickBanStepSchema).min(1).max(40).safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/** "6 picks, 4 bans" */
+export function describeSequence(sequence: readonly PickBanStep[]): string {
+  const picks = sequence.filter((s) => s.action === 'PICK').length;
+  const bans = sequence.length - picks;
+  return `${picks} ${picks === 1 ? 'pick' : 'picks'}, ${bans} ${bans === 1 ? 'ban' : 'bans'}`;
+}
+
+/**
+ * A format played with another pick/ban order - a pool's own. Everything else
+ * stays the tournament's. The appearance limits were written for the format's
+ * own number of picked maps, so they are carried over in proportion: everyone
+ * twice across four maps is everyone three times across six.
+ */
+export function withPickBanSequence(format: MatchFormat, sequence: readonly PickBanStep[]): MatchFormat {
+  const picksOf = (steps: readonly PickBanStep[]) => steps.filter((s) => s.action === 'PICK').length;
+  const before = picksOf(format.pickBanSequence);
+  const picks = picksOf(sequence);
+  const rules = { ...format.rules };
+  if (before > 0 && picks !== before) {
+    if (rules.minAppearances != null) rules.minAppearances = Math.floor((rules.minAppearances * picks) / before);
+    if (rules.maxAppearances != null) rules.maxAppearances = Math.max(1, Math.ceil((rules.maxAppearances * picks) / before));
+  }
+  const tiebreaker = format.tiebreaker === 'NONE' ? '' : ' + tiebreaker';
+  return {
+    ...format,
+    name: `${picks} ${picks === 1 ? 'map' : 'maps'}${tiebreaker}, ${sequence.length - picks} bans`,
+    pickBanSequence: [...sequence],
+    rules,
+  };
+}
+
 /** Format presets offered when creating a tournament. */
 export const FORMAT_PRESETS: Record<string, MatchFormat> = {
   msuDuos: MSU_DUOS_FORMAT,

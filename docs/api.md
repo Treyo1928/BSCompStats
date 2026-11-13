@@ -44,7 +44,8 @@ The **match** object is what the match page shows:
   and `playersPerMap`.
 - `teamA`, `teamB`: names, colours, `logo`, rosters. `logo` is `null` (the default star), `"msu"` (the MSU Esports
   shield) or the path of an uploaded picture (`/api/img/<id>` on this site, public, cacheable for good). Each
-  player is `{ id, name, avatar, replays, beatLeaderId, taPlatformId }`. `name` and `avatar` are as the tournament
+  player is `{ id, name, avatar, replays, sabers, beatLeaderId, taPlatformId }`. `sabers` is `{ left, right }`
+  (`"#rrggbb"`) where the player chose saber colours for this tournament (Teams page, "On stream"), else `null`. `name` and `avatar` are as the tournament
   shows them: an organiser's nickname and uploaded picture where set (Teams page, "On stream"), else BeatLeader's;
   an uploaded `avatar` is a path like `logo`. `replays` are the replays the player chose to show on stream, as
   viewer links (`https://replay.beatleader.com/?scoreId=…`, or a `.bsor` address).
@@ -53,7 +54,11 @@ The **match** object is what the match page shows:
   another; it is `null` when unset. `coinFlipWinnerId`, `winnerId`.
 - `taMode`: the match runs through TournamentAssistant (see [TA mode](#ta-mode)). `ta`: `{ host, port, liveUrl }`
   for such a match when the tournament is connected to TA, else `null`.
-- `pool.maps[]`: every map, with name, cover, difficulty, category, max score, tiebreaker flag.
+- `pool.maps[]`: every map, with name, cover, difficulty, `category`, max score, tiebreaker flag. `category` is the
+  map's type as an organiser typed it on the pool page ("Tech Acc", "Midspeed", "Speed Tech"…), or `null`.
+- `format.pickBanSequence` is the order this match is picked and banned in. A pool may have its own (pool page,
+  "Picks and bans"): an 11-map finals pool with 6 picks and 4 bans is a best of 7, where the tournament's usual 7-map
+  order (4 picks, 2 bans) is a best of 5. A match keeps the order it was set up with.
 - `actions[]`: the pick/ban log. `pending`: the step due now (`type`, `teamId`, `availableMapIds`), with
   `waitingForPoolMapId` set while a picked map must be played first.
 - `plannedMaps[]`: the maps to play, in order. Each has `matchMapId`, `pickedByTeamId`, `isTiebreaker`,

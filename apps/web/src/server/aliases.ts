@@ -10,6 +10,8 @@ export interface PlayerAlias {
   nickname: string | null;
   avatar: string | null;
   replays: ShowcaseReplay[];
+  /** Their saber colours ("#rrggbb"), or null for the game's own. */
+  sabers: { left: string; right: string } | null;
 }
 
 export type Aliases = Map<string, PlayerAlias>;
@@ -17,9 +19,19 @@ export type Aliases = Map<string, PlayerAlias>;
 export async function tournamentAliases(tournamentId: string): Promise<Aliases> {
   const rows = await prisma.tournamentPlayer.findMany({
     where: { tournamentId },
-    select: { playerId: true, nickname: true, avatar: true, replays: true },
+    select: { playerId: true, nickname: true, avatar: true, replays: true, saberLeft: true, saberRight: true },
   });
-  return new Map(rows.map((r) => [r.playerId, { nickname: r.nickname, avatar: r.avatar, replays: parseShowcaseReplays(r.replays) }]));
+  return new Map(
+    rows.map((r) => [
+      r.playerId,
+      {
+        nickname: r.nickname,
+        avatar: r.avatar,
+        replays: parseShowcaseReplays(r.replays),
+        sabers: r.saberLeft && r.saberRight ? { left: r.saberLeft, right: r.saberRight } : null,
+      },
+    ]),
+  );
 }
 
 /** A player's name and picture as this tournament shows them. */

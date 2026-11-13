@@ -3,11 +3,11 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { can } from '@bscs/core/match';
-import { BRACKET_FORMAT_NAMES, parseBracketFormat } from '@bscs/core/bracket';
-import { Badge, Button, Empty, Field, FormError, PageHeader, Panel, inputClass, teamInk } from '@/components/ui';
+import { BRACKET_FORMAT_NAMES } from '@bscs/core/bracket';
+import { Badge, Empty, FormError, PageHeader, Panel, teamInk } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { createBracket } from '@/server/bracket-actions';
-import { loadBracket } from '@/server/brackets';
+import { finishingOrder, loadBracket } from '@/server/brackets';
+import { NewBracketForm } from '@/components/new-bracket-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,7 +43,10 @@ export default async function BracketsPage({
           teams: {
             where: { adHoc: false, playerPool: false },
             orderBy: { name: 'asc' },
-            select: { id: true, name: true, color: true, colorSecondary: true, _count: { select: { members: true } } },
+            select: {
+              id: true, name: true, color: true, colorSecondary: true, _count: { select: { members: true } },
+              members: { where: { available: true }, select: { player: { select: { pp: true } } } },
+            },
           },
         },
       },
@@ -56,6 +59,8 @@ export default async function BracketsPage({
 
   const brackets = (await Promise.all(tournament.brackets.map((b) => loadBracket(b.id)))).filter((b) => b != null);
   const teams = tournament.divisions.flatMap((d) => d.teams);
+  // Where a new bracket could take its teams from: each bracket's finishing order, once it has one.
+  const finished = staff ? await Promise.all(brackets.map((b) => finishingOrder(b.id))) : [];
 
   return (
     <div className="space-y-6">
@@ -117,129 +122,20 @@ export default async function BracketsPage({
           {teams.length < 2 && brackets.length === 0 ? (
             <Empty>A bracket needs at least two teams. Add them on the teams page first.</Empty>
           ) : (
-            <form action={createBracket} className="space-y-4">
-              <input type="hidden" name="tournamentId" value={tournament.id} />
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Field label="Name">
-                  <input name="name" className={inputClass} placeholder={brackets.length ? 'Finals' : 'Qualifiers'} />
-                </Field>
-                <Field label="Format">
-                  <select name="format" className={inputClass} defaultValue="SINGLE_ELIM">
-                    {(['ROUND_ROBIN', 'SINGLE_ELIM', 'DOUBLE_ELIM'] as const).map((f) => (
-                      // data-round-robin: what the form's CSS looks for to hide seeding (an underscore in
-                      // the value would not survive Tailwind's arbitrary-variant syntax).
-                      <option key={f} value={f} data-round-robin={f === 'ROUND_ROBIN' ? '' : undefined}>
-                        {BRACKET_FORMAT_NAMES[parseBracketFormat(f)]}
-                        {f === 'DOUBLE_ELIM' ? ' (with a losers bracket)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Map pool" hint="Its matches are played on this.">
-                  <select name="poolId" className={inputClass} defaultValue={tournament.pools[0]?.id ?? ''}>
-                    <option value="">Choose later</option>
-                    {tournament.pools.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-
-              <fieldset className="space-y-3 rounded-lg border border-edge p-3">
-                <legend className="px-1 text-xs font-medium uppercase tracking-wider text-faint">Who plays</legend>
-                <label className="flex items-start gap-2 text-sm">
-                  <input type="radio" name="entrants" value="TEAMS" defaultChecked className="mt-1" />
-                  <span>
-                    These teams
-                    <span className="block text-xs text-faint">Untick anyone not in it. Duos can be made from a player pool on the teams page.</span>
-                  </span>
-                </label>
-                <div className="ml-6 space-y-2">
-                  {/* Seeding is for elimination. In a round robin everyone plays everyone once, so
-                      it is hidden as soon as Round robin is chosen - in CSS, so it needs no script. */}
-                  <p className="hidden text-xs text-faint [form:has(option[data-round-robin]:checked)_&]:block">
-                    Round robin: every team plays every other team once, so there is no seeding.
-                  </p>
-                  <div className="[form:has(option[data-round-robin]:checked)_&]:hidden">
-                  <Field label="Seeding">
-                    <select name="seeding" className={inputClass} defaultValue="MANUAL">
-                      <option value="MANUAL">Custom seeding (the numbers below, 1 is the top seed)</option>
-                      <option value="RANDOM">At random</option>
-                      <option value="PP">By their players&apos; average BeatLeader pp</option>
-                    </select>
-                  </Field>
-                  </div>
-                  <div className="max-w-xl overflow-hidden rounded-lg border border-edge">
-                    <div className="grid grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 border-b border-edge bg-surface/60 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-faint [form:has(option[data-round-robin]:checked)_&]:grid-cols-[2.5rem_minmax(0,1fr)_5rem]">
-                      <span>In</span>
-                      <span className="[form:has(option[data-round-robin]:checked)_&]:hidden">Seed</span>
-                      <span>Team</span>
-                      <span className="text-right">Players</span>
-                    </div>
-                    <ul className="divide-y divide-edge">
-                      {teams.map((team, i) => (
-                        <li key={team.id}>
-                          {/* The whole row is the checkbox's label: tap anywhere on a team to include or drop it. */}
-                          <label
-                            className="grid cursor-pointer grid-cols-[2.5rem_4rem_minmax(0,1fr)_5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-raised/70 has-[:checked]:bg-raised/30 [form:has(option[data-round-robin]:checked)_&]:grid-cols-[2.5rem_minmax(0,1fr)_5rem]"
-                            style={{ borderLeft: `3px solid ${team.color}` }}
-                          >
-                            <input type="checkbox" name="teamId" value={team.id} defaultChecked className="h-4 w-4" />
-                            <input
-                              name={`seed:${team.id}`}
-                              inputMode="numeric"
-                              defaultValue={i + 1}
-                              aria-label={`${team.name}'s seed`}
-                              className="h-8 w-14 rounded-md border border-edge-strong bg-surface px-1 text-center text-sm tabular text-ink focus:border-accent focus:outline-none [form:has(option[data-round-robin]:checked)_&]:hidden"
-                            />
-                            <span
-                              className="truncate font-medium"
-                              style={{ color: teamInk(team.color, team.colorSecondary) }}
-                              title={team.name}
-                            >
-                              {team.name}
-                            </span>
-                            <span className="text-right text-xs tabular text-muted">{team._count.members}</span>
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <p className="text-xs text-faint [form:has(option[data-round-robin]:checked)_&]:hidden">Seed numbers are used with custom seeding.</p>
-                </div>
-
-                {brackets.length > 0 && (
-                  <>
-                    <label className="flex items-start gap-2 border-t border-edge pt-3 text-sm">
-                      <input type="radio" name="entrants" value="FROM_BRACKET" className="mt-1" />
-                      <span>
-                        The top of another bracket, seeded in the order they finished
-                        <span className="block text-xs text-faint">
-                          Round robin: its standings as they are. Elimination: once it has a winner.
-                        </span>
-                      </span>
-                    </label>
-                    <div className="ml-6 grid gap-3 sm:grid-cols-2">
-                      <Field label="From">
-                        <select name="fromBracketId" className={inputClass}>
-                          {brackets.map((b) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name}
-                            </option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label="Top">
-                        <input name="top" inputMode="numeric" defaultValue={4} className={`${inputClass} tabular`} />
-                      </Field>
-                    </div>
-                  </>
-                )}
-              </fieldset>
-              <Button type="submit">Create bracket</Button>
-            </form>
+            <NewBracketForm
+              tournamentId={tournament.id}
+              pools={tournament.pools}
+              teams={teams.map((t) => ({
+                id: t.id,
+                name: t.name,
+                color: t.color,
+                colorSecondary: t.colorSecondary,
+                members: t._count.members,
+                pp: t.members.length ? t.members.reduce((sum, m) => sum + m.player.pp, 0) / t.members.length : 0,
+              }))}
+              brackets={brackets.map((b, i) => ({ id: b.id, name: b.name, order: finished[i]?.order ?? null }))}
+              namePlaceholder={brackets.length ? 'Finals' : 'Qualifiers'}
+            />
           )}
         </Panel>
       )}

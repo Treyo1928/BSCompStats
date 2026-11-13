@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@bscs/db';
-import { can } from '@bscs/core/match';
+import { can, describeSequence, FINALS_PICK_BAN_SEQUENCE, MSU_DUOS_FORMAT, parseFormat, parsePickBanSequence } from '@bscs/core/match';
 import {
   Panel,
   PageHeader,
@@ -26,6 +26,8 @@ import { LiveBadge } from '@/components/live-badge';
 import { buildPoolBoard } from '@/server/board';
 import { getPoolSummary } from '@/server/summaries';
 import { PerfectAccForm } from '@/components/perfect-acc-form';
+import { MapTypeForm, MapTypeList } from '@/components/map-type-form';
+import { PickBanOrderForm, StepChip } from '@/components/pick-ban-order-form';
 import { ScoreDaysForm } from '@/components/score-days-form';
 import { RenameForm } from '@/components/rename-form';
 import { renamePool } from '@/server/rename-actions';
@@ -66,7 +68,8 @@ export default async function PoolPage({
     where: { id: poolId },
     select: {
       id: true,
-      tournament: { select: { id: true, name: true, slug: true, isPublic: true, perfectFromBeatLeader: true } },
+      pickBanSequence: true,
+      tournament: { select: { id: true, name: true, slug: true, isPublic: true, perfectFromBeatLeader: true, defaultFormat: true } },
       _count: { select: { matches: true } },
     },
   });
@@ -78,6 +81,14 @@ export default async function PoolPage({
   const board = await buildPoolBoard(poolId);
   if (!board) notFound();
   const scoreDays = describeDays(board.scoreDays);
+
+  // The order matches on this pool are picked and banned in: its own, or the tournament's.
+  const format = parseFormat(pool.tournament.defaultFormat);
+  const ownOrder = parsePickBanSequence(pool.pickBanSequence);
+  const order = ownOrder ?? format.pickBanSequence;
+  const leavesTiebreaker = format.tiebreaker === 'LAST_REMAINING';
+  const pickable = board.maps.filter((m) => !(format.tiebreaker === 'DESIGNATED' && m.isTiebreaker)).length;
+  const orderNeeds = order.length + (leavesTiebreaker ? 1 : 0);
 
   // The board is the tournament's teams. Match-only sides still playing are behind a tab, not in among them.
   const matchOnlyCount = board.teams.filter((t) => t.adHoc).length;
@@ -181,6 +192,7 @@ export default async function PoolPage({
                     </p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <DifficultyChip value={map.difficultyValue} label={map.difficultyLabel} />
+                      {map.category && <Badge tone="accent" title="Map type">{map.category}</Badge>}
                       {map.perfectAcc != null && (
                         <Badge title="What counts as a perfect score here, for match points">
                           perfect {pct(map.perfectAcc, 2)}
@@ -196,6 +208,7 @@ export default async function PoolPage({
                     </div>
                   )}
                 </a>
+                {can(actor, 'IMPORT_POOL') && <MapTypeForm poolMapId={map.poolMapId} type={map.category} />}
                 {can(actor, 'IMPORT_POOL') && (
                   <PerfectAccForm
                     poolMapId={map.poolMapId}
@@ -206,9 +219,10 @@ export default async function PoolPage({
               </li>
             ))}
           </ul>
+          {can(actor, 'IMPORT_POOL') && <MapTypeList />}
           {can(actor, 'IMPORT_POOL') && (
             <p className="mt-3 text-xs text-faint">
-              Perfect % is what counts as a perfect score on the map for match points: it sets how big a
+              Type shows beside the map here, on match pages and on stream. Perfect % is what counts as a perfect score on the map for match points: it sets how big a
               map&apos;s points are, never who wins it.
               {pool.tournament.perfectFromBeatLeader
                 ? " Left blank, BeatLeader's predicted accuracy for the map is used where it has one."
@@ -244,6 +258,48 @@ export default async function PoolPage({
               <p className="text-xs text-muted">Count scores set from / to (US Central, either may be blank):</p>
               <ScoreDaysForm poolId={poolId} from={board.scoreDays.from} to={board.scoreDays.to} />
             </div>
+          )}
+        </Panel>
+      </div>
+
+      <div id="order" className="scroll-mt-20">
+        <Panel
+          title="Picks and bans"
+          subtitle={`${describeSequence(order)}${leavesTiebreaker ? ', last map left is the tiebreaker' : ''} · ${
+            ownOrder ? "this pool's own order" : "the tournament's order"
+          }`}
+        >
+          {can(actor, 'IMPORT_POOL') ? (
+            <>
+              <PickBanOrderForm
+                key={JSON.stringify(order)}
+                poolId={poolId}
+                own={ownOrder}
+                tournament={format.pickBanSequence}
+                presets={[
+                  { label: '7 maps · 4 picks, 2 bans', steps: MSU_DUOS_FORMAT.pickBanSequence },
+                  { label: '11 maps · 6 picks, 4 bans', steps: FINALS_PICK_BAN_SEQUENCE },
+                ]}
+                mapCount={pickable}
+                hasTiebreaker={leavesTiebreaker}
+              />
+              <p className="mt-3 text-xs text-faint">
+                Winner and loser are of the coin flip. Matches already set up keep the order they started with.
+              </p>
+            </>
+          ) : (
+            <ol className="flex flex-wrap gap-1.5">
+              {order.map((step, i) => (
+                <li key={i}>
+                  <StepChip step={step} n={i + 1} />
+                </li>
+              ))}
+            </ol>
+          )}
+          {orderNeeds > pickable && (
+            <p className="mt-3 text-sm text-lose">
+              This order uses {orderNeeds} maps and the pool has {pickable}: matches cannot be set up on it yet.
+            </p>
           )}
         </Panel>
       </div>

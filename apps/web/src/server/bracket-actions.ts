@@ -293,6 +293,18 @@ export async function setRoundPool(formData: FormData): Promise<void> {
   if (poolId && !(await prisma.mapPool.findFirst({ where: { id: poolId, tournamentId: bracket.tournamentId } }))) {
     throw new Error('That pool is not in this tournament.');
   }
-  await prisma.bracketNode.updateMany({ where: { bracketId, section, round }, data: { poolId } });
+  // "onward": this round and everything after it. Later rounds of the same side of the bracket, and what both
+  // sides lead to: from a winners round on, the losers rounds its losers and later ones drop into are NOT included
+  // (set those from the losers round), but the grand final is.
+  const where = formData.get('onward') === 'on'
+    ? {
+        bracketId,
+        OR: [
+          { section, round: { gte: round } },
+          ...(section === 'W' || section === 'L' ? [{ section: 'GF' }] : []),
+        ],
+      }
+    : { bracketId, section, round };
+  await prisma.bracketNode.updateMany({ where, data: { poolId } });
   revalidatePath(`/t/${bracket.tournament.slug}/bracket/${bracketId}`);
 }

@@ -1,5 +1,6 @@
 import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
 import { shownAs, tournamentAliases } from './aliases';
+import { replayHref, type Sabers } from '@/lib/replay-viewer';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
@@ -25,8 +26,14 @@ export interface BoardCell {
   /** No Fail kicked in on this score: the player died partway and played on. */
   noFail: boolean;
   misses: number;
-  /** BeatLeader's web replay viewer for this score. Null when the score has no id. */
+  /** A link that plays this score: our own viewer where the site has one (with the player's saber colours), else BeatLeader's. Null when there is no replay. */
   replayUrl: string | null;
+  /**
+   * The replay is of another run than the score shown: the score is ScoreSaber's
+   * (which keeps no replays) and this is the player's BeatLeader run of the map,
+   * at this accuracy. Null where the replay is the score's own.
+   */
+  replayOfAcc: number | null;
   /** Where the score shown was set. Null when there is none. */
   platform: 'BL' | 'SS' | null;
   /** Rank within the column, 1-based. Null when unplayed. */
@@ -94,6 +101,8 @@ export interface BoardMap {
   maxScore: number;
   coverImage: string | null;
   isTiebreaker: boolean;
+  /** The map's type as the organisers typed it ("Tech Acc", "Speed"...), or null. */
+  category: string | null;
   /** What counts as a perfect score here, for match points: the organisers' figure. */
   perfectAcc: number | null;
   /** BeatLeader's predicted accuracy for the map, where it has one. */
@@ -102,6 +111,11 @@ export interface BoardMap {
   stars: number;
   /** Mean accuracy across everyone who played it - how hard it proved to be. */
   fieldMeanAcc: number | null;
+}
+
+/** A link that plays a score (by id) or a raw replay file: in our own viewer, with the player's saber colours, where the site has one. */
+function replayLink(scoreId: number | null | undefined, file: string | null | undefined, sabers?: Sabers | null): string | null {
+  return replayHref({ scoreId, file }, { sabers });
 }
 
 export interface PoolBoard {
@@ -206,6 +220,7 @@ export async function buildPoolBoard(
           id: true,
           leaderboardId: true,
           label: true,
+          category: true,
           isTiebreaker: true,
           perfectAcc: true,
           leaderboard: {
@@ -229,6 +244,7 @@ export async function buildPoolBoard(
   if (!pool) return null;
 
   const members = await loadBoardMembers(pool.tournamentId);
+  const sabersOf = new Map([...(await tournamentAliases(pool.tournamentId))].map(([playerId, alias]) => [playerId, alias.sabers]));
 
   const leaderboardIds = pool.maps.map((m) => m.leaderboardId);
   const playerIds = [...new Set(members.map((m) => m.player.id))];
@@ -276,6 +292,7 @@ export async function buildPoolBoard(
     maxScore: pm.leaderboard.maxScore,
     coverImage: pm.leaderboard.map.coverImage,
     isTiebreaker: pm.isTiebreaker,
+    category: pm.category,
     perfectAcc: pm.perfectAcc,
     blPredictedAcc: pm.leaderboard.predictedAcc > 0 ? pm.leaderboard.predictedAcc : null,
     ranked: pm.leaderboard.ranked,
@@ -303,10 +320,11 @@ export async function buildPoolBoard(
         platform: score?.platform ?? null,
         // The stored replayUrl is the raw .bsor file, which a browser downloads.
         // The viewer takes the score id and plays it.
-        replayUrl: score?.beatLeaderScoreId
-          ? `https://replay.beatleader.com/?scoreId=${score.beatLeaderScoreId}`
-          : (score?.replayUrl ?? bestTry?.replayUrl)
-            ? `https://replay.beatleader.com/?link=${encodeURIComponent((score?.replayUrl ?? bestTry?.replayUrl)!)}`
+        replayUrl: replayLink(score?.beatLeaderScoreId, score?.replayUrl ?? bestTry?.replayUrl, sabersOf.get(member.player.id))
+          ?? replayLink(score?.otherRun?.beatLeaderScoreId, score?.otherRun?.replayUrl, sabersOf.get(member.player.id)),
+        replayOfAcc:
+          score?.otherRun && !replayLink(score.beatLeaderScoreId, score.replayUrl) && replayLink(score.otherRun.beatLeaderScoreId, score.otherRun.replayUrl)
+            ? score.otherRun.accuracy
             : null,
         rank: rank && rank > 0 ? rank : null,
         runs,
