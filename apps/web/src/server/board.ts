@@ -4,7 +4,7 @@ import { replayHref, type Sabers } from '@/lib/replay-viewer';
 import { prisma } from '@bscs/db';
 import { difficultyLabel, displayDifficulty } from '@bscs/core/beatleader';
 import type { StatsScope } from '@bscs/core/stats';
-import { dayIn } from '@bscs/core';
+import { dayIn, teamSabers } from '@bscs/core';
 import { buildTournamentData, type TournamentData } from './stats';
 import { loadRuns, loadScores, poolCutoffs, type ScoreSource, type StoredRun } from './score-sources';
 
@@ -244,7 +244,8 @@ export async function buildPoolBoard(
   if (!pool) return null;
 
   const members = await loadBoardMembers(pool.tournamentId);
-  const sabersOf = new Map([...(await tournamentAliases(pool.tournamentId))].map(([playerId, alias]) => [playerId, alias.sabers]));
+  // a replay opened from the board is played with the player's team colours on the sabers
+  const sabersOf = new Map(members.map((m) => { const { left, right } = teamSabers(m.team.color, m.team.colorSecondary); return [m.player.id, { left, right }] as const; }));
 
   const leaderboardIds = pool.maps.map((m) => m.leaderboardId);
   const playerIds = [...new Set(members.map((m) => m.player.id))];

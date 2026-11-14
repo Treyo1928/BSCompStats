@@ -1,3 +1,4 @@
+import { teamSabers } from '@bscs/core';
 import { prisma } from '@bscs/db';
 import {
   parseFormat,
@@ -164,6 +165,7 @@ export interface TeamView {
     /** Replays they chose to show on stream (viewer links). */
     replays: string[];
     /** Their saber colours ("#rrggbb") where they chose any; null is the game's own. */
+    /** The team's colours, as sabers: left and right ("#rrggbb"). */
     sabers: { left: string; right: string } | null;
     /** Steam64 for Steam players (TA's platform id too); BeatLeader's own id for Quest players. */
     beatLeaderId: string;
@@ -445,6 +447,9 @@ function toTeamView(team: {
     player: { id: string; name: string; avatar: string | null; beatLeaderId: string; taPlatformId: string | null };
   }>;
 }, everyone: boolean, aliases: Aliases): TeamView {
+  // every player of a team is shown with the team's colours on their sabers (replay viewers, the stream)
+  const { left, right } = teamSabers(team.color, team.colorSecondary);
+  const sabers = { left, right };
   return {
     id: team.id,
     name: team.name,
@@ -459,7 +464,7 @@ function toTeamView(team: {
       .map((m) => ({
         ...shownAs({ id: m.player.id, name: m.player.name, avatar: m.player.avatar }, aliases),
         replays: (aliases.get(m.player.id)?.replays ?? []).map((r) => r.ref),
-        sabers: aliases.get(m.player.id)?.sabers ?? null,
+        sabers,
         beatLeaderId: m.player.beatLeaderId,
         taPlatformId: m.player.taPlatformId,
       })),

@@ -66,14 +66,8 @@ export async function SiteHeader() {
                   Link BeatLeader
                 </Link>
               )}
-              <Link
-                href="/account"
-                title="Your profile: your saber colours and the replays shown on stream"
-                className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-raised"
-              >
-                <Avatar src={user.image} name={user.name ?? '?'} size={26} />
-                <span className="hidden max-w-[10rem] truncate text-ink sm:inline">{user.name ?? 'Signed in'}</span>
-              </Link>
+              <Avatar src={user.image} name={user.name ?? '?'} size={26} />
+              <span className="hidden max-w-[10rem] truncate text-ink sm:inline">{user.name ?? 'Signed in'}</span>
               <button className="shrink-0 whitespace-nowrap rounded-lg px-2 py-1.5 hover:bg-raised hover:text-ink" type="submit">
                 Sign out
               </button>

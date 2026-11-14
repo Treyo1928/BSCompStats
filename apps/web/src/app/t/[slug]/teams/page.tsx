@@ -30,11 +30,9 @@ import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
 import { buildPoolBoard } from '@/server/board';
 import { tournamentAliases } from '@/server/aliases';
-import { setPlayerReplays, setPlayerShown, setReplayLock, setTeamLogo } from '@/server/team-media-actions';
+import { setPlayerReplays, setPlayerShown, setTeamLogo } from '@/server/team-media-actions';
 import { TeamLogo } from '@/components/team-logo';
-import { SaberColors } from '@/components/saber-colors';
-import { viewerBase } from '@/lib/replay-viewer';
-import { SHOWCASE_REPLAYS_MAX, SHOWCASE_REPLAYS_PER_PLAYER } from '@bscs/core';
+import { SHOWCASE_REPLAYS_MAX, teamSabers } from '@bscs/core';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,7 +71,6 @@ export default async function TeamsPage({
       name: true,
       slug: true,
       isPublic: true,
-      replaysLockedAt: true,
       pools: { select: { id: true, name: true } },
       captainsCreateMatches: true,
       matchScoring: true,
@@ -141,33 +138,6 @@ export default async function TeamsPage({
   // The pool's seeds start in BeatLeader pp order, or in order of accuracy on
   // one of the map pools: each player's mean over the maps they have played
   // there. Nobody with a score there goes after everyone who has one.
-  // What a saber colour preview can play: each player's own BeatLeader replays of this tournament's pool maps.
-  const viewer = viewerBase();
-  const poolReplays = new Map<string, Array<{ scoreId: number; label: string }>>();
-  if (actor.userId && viewer) {
-    const scores = await prisma.score.findMany({
-      where: {
-        beatLeaderScoreId: { not: null },
-        playerId: { in: teams.flatMap((t) => t.members.map((m) => m.player.id)) },
-        leaderboard: { poolMaps: { some: { pool: { tournamentId: tournament.id } } } },
-      },
-      orderBy: { accuracy: 'desc' },
-      select: {
-        playerId: true,
-        beatLeaderScoreId: true,
-        accuracy: true,
-        leaderboard: { select: { difficultyName: true, map: { select: { name: true } } } },
-      },
-    });
-    for (const s of scores) {
-      const list = poolReplays.get(s.playerId) ?? [];
-      list.push({
-        scoreId: s.beatLeaderScoreId!,
-        label: `${s.leaderboard.map.name} · ${s.leaderboard.difficultyName.replace('ExpertPlus', 'Expert+')} · ${(s.accuracy * 100).toFixed(2)}%`,
-      });
-      poolReplays.set(s.playerId, list);
-    }
-  }
 
   const seedPool = tournament.pools.find((p) => p.id === seedBy) ?? null;
   const seedBoard = seedPool && playerPool && playerPool.members.length > 0 ? await buildPoolBoard(seedPool.id) : null;
@@ -198,29 +168,6 @@ export default async function TeamsPage({
       />
 
       <FormError message={error} />
-      {(tournament.replaysLockedAt || can(actor, 'MANAGE_TOURNAMENT')) && showing === 'entered' && (
-        <div
-          className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-2.5 text-sm ${
-            tournament.replaysLockedAt ? 'border-amber-400/40 bg-amber-400/10' : 'border-edge bg-raised/40'
-          }`}
-        >
-          <span className="font-medium">{tournament.replaysLockedAt ? 'Replays are locked for the stream' : 'Replays on stream are open'}</span>
-          <span className="min-w-0 flex-1 text-xs text-muted">
-            {tournament.replaysLockedAt
-              ? 'Players and captains cannot change the replays shown for this tournament, and changing a profile does not change them either. Organisers still can, below.'
-              : 'Players can change their own replays, here or on their profile, and the stream follows. Lock them when the stream starts so nothing can be swapped at the last minute.'}
-          </span>
-          {can(actor, 'MANAGE_TOURNAMENT') && (
-            <form action={setReplayLock}>
-              <input type="hidden" name="tournamentId" value={tournament.id} />
-              <input type="hidden" name="on" value={tournament.replaysLockedAt ? '0' : '1'} />
-              <Button type="submit" variant={tournament.replaysLockedAt ? 'ghost' : 'primary'} className="h-8 text-xs">
-                {tournament.replaysLockedAt ? 'Unlock replays' : 'Lock replays for the stream'}
-              </Button>
-            </form>
-          )}
-        </div>
-      )}
 
       <TeamScopeTabs
         hrefs={{ entered: `/t/${slug}/teams`, adHoc: `/t/${slug}/teams?show=match-only` }}
@@ -284,7 +231,6 @@ export default async function TeamsPage({
                       // the name, picture, colours and replays set for them here are theirs already, team or no team
                       const alias = aliases.get(member.player.id);
                       const shownName = alias?.nickname || member.player.name;
-                      const isSelf = !!actor.userId && member.player.userId === actor.userId;
                       return (
                         <li key={member.id} className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm">
                           {canManage && <span className="w-5 shrink-0 text-right text-xs tabular text-faint">{i + 1}</span>}
@@ -318,13 +264,8 @@ export default async function TeamsPage({
                             member={member}
                             alias={alias}
                             canManage={canManage}
-                            maySet={canManage || isSelf}
-                            isSelf={isSelf}
-                            viewer={viewer}
-                            mapReplays={poolReplays.get(member.player.id) ?? []}
                             indent={canManage ? 'pl-7' : ''}
                             when="when they are about to play, once they are on a team"
-                            locked={!!tournament.replaysLockedAt}
                           />
                         </li>
                       );
@@ -419,8 +360,6 @@ export default async function TeamsPage({
                     const alias = aliases.get(member.player.id);
                     const shownName = alias?.nickname || member.player.name;
                     const replays = alias?.replays ?? [];
-                    const isSelf = !!actor.userId && member.player.userId === actor.userId;
-                    const maySetReplays = canManage || isSelf || isCaptainOf(actor, team.id);
                     return (
                     // On a phone the controls drop to their own line rather than squeezing the name out.
                     <li key={member.id} className="flex flex-wrap items-center justify-end gap-x-1">
@@ -486,13 +425,8 @@ export default async function TeamsPage({
                         member={member}
                         alias={alias}
                         canManage={canManage}
-                        maySet={maySetReplays}
-                        isSelf={isSelf}
-                        viewer={viewer}
-                        mapReplays={poolReplays.get(member.player.id) ?? []}
                         indent="pl-11 sm:pl-12"
                         when="while this team is up next"
-                        locked={!!tournament.replaysLockedAt}
                       />
                     </li>
                     );
@@ -533,6 +467,29 @@ export default async function TeamsPage({
                     <FieldAction>
                       <Button type="submit">Save</Button>
                     </FieldAction>
+                    {(() => {
+                      const sabers = teamSabers(team.color, team.colorSecondary);
+                      return (
+                        <p className="flex basis-full flex-wrap items-center gap-2 text-xs text-faint">
+                          <span>Sabers on stream and in replays, for every player of this team:</span>
+                          <span className="inline-flex items-center gap-1" title={`Left ${sabers.left}, right ${sabers.right}`}>
+                            <span className="h-3 w-10 rounded-full" style={{ background: sabers.left, boxShadow: `0 0 6px ${sabers.left}` }} />
+                            <span className="h-3 w-10 rounded-full" style={{ background: sabers.right, boxShadow: `0 0 6px ${sabers.right}` }} />
+                          </span>
+                          <span>
+                            left is the colour, right the second colour.
+                            {sabers.adjusted && (
+                              <span className="text-warn">
+                                {' '}
+                                These are not exactly the team&apos;s two colours: a colour too dark to see as a saber is brightened, and a second
+                                colour too close to the first to tell two sabers apart is replaced. Pick colours that are bright and clearly
+                                different to choose both yourself.
+                              </span>
+                            )}
+                          </span>
+                        </p>
+                      );
+                    })()}
                   </form>
                   <form action={setTeamLogo} className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2 border-t border-edge pt-3 text-xs">
                     <input type="hidden" name="teamId" value={team.id} />
@@ -646,29 +603,16 @@ function PlayerSettings({
   member,
   alias,
   canManage,
-  maySet,
-  isSelf,
-  viewer,
-  mapReplays,
   indent,
   when,
-  locked,
 }: {
   member: { id: string; player: { id: string; name: string; beatLeaderId: string; taPlatformId: string | null } };
   alias: Awaited<ReturnType<typeof tournamentAliases>> extends Map<string, infer A> ? A | undefined : never;
   canManage: boolean;
-  /** May set this player's replays and colours: an organiser, their captain, or the player. */
-  maySet: boolean;
-  isSelf: boolean;
-  viewer: string | null;
-  /** Their replays on the tournament's maps, for trying the colours on. */
-  mapReplays: React.ComponentProps<typeof SaberColors>['replays'];
   /** Lines these blocks up under the player's name in the row they belong to. */
   indent: string;
   /** When the replays are shown, for the hint: "while this team is up next". */
   when: string;
-  /** The tournament's replays are locked for the stream: only organisers change them now. */
-  locked: boolean;
 }) {
   const shownName = alias?.nickname || member.player.name;
   const replays = alias?.replays ?? [];
@@ -700,19 +644,12 @@ function PlayerSettings({
         </form>
       </details>
     )}
-    {(maySet || replays.length > 0) && (
+    {(canManage || replays.length > 0) && (
       <details className={`basis-full pb-1 text-xs ${indent}`}>
         <summary className="cursor-pointer text-faint hover:text-ink">
           On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
-            {locked ? ' · locked' : alias?.replaysFrom === 'profile' ? ' from their profile' : ''}
           {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
           {alias?.avatar ? ' · own picture' : ''}
-          {alias?.sabers && (
-            <span className="ml-1.5 inline-flex translate-y-px gap-0.5" title="Their saber colours">
-              <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.left }} />
-              <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.right }} />
-            </span>
-          )}
         </summary>
         {replays.length > 0 && (
           <ul className="mt-1.5 space-y-0.5">
@@ -730,19 +667,7 @@ function PlayerSettings({
             ))}
           </ul>
         )}
-        {isSelf && (
-          <p className="mt-1.5 text-faint">
-            Your replays and saber colours live on{' '}
-            <Link href="/account" className="text-ink underline decoration-faint underline-offset-2">
-              your profile
-            </Link>
-            : set them there once and every tournament uses them.
-          </p>
-        )}
-        {locked && maySet && !canManage && (
-          <p className="mt-1.5 text-warn">Locked for the stream: these cannot be changed now. Ask an organiser if one has to.</p>
-        )}
-        {maySet && (canManage || !locked) && (
+        {canManage && (
           <form action={setPlayerReplays} className="mt-1.5 space-y-1.5">
             <input type="hidden" name="memberId" value={member.id} />
             <textarea
@@ -758,32 +683,10 @@ function PlayerSettings({
                 Save replays
               </Button>
               <span className="text-faint">
-                {locked
-                  ? 'Locked for the stream: this is what is shown, whatever their profile says now. What you save here replaces it. '
-                  : alias?.replaysFrom === 'profile'
-                  ? `These are the ones on ${isSelf ? 'your' : `${member.player.name}'s`} profile, and follow it. Change the list to set others for this tournament only. `
-                  : alias?.replaysFrom === 'tournament' && alias.profile.replays.length > 0
-                    ? `Set for this tournament; ${isSelf ? 'your' : 'their'} profile has ${alias.profile.replays.length} of its own. Clear the list and save to go back to the profile's. `
-                    : ''}
-                Replays to play on stream {when}. One BeatLeader replay link per line,{' '}
-                {canManage
-                  ? `up to ${SHOWCASE_REPLAYS_MAX} (players and captains can add ${SHOWCASE_REPLAYS_PER_PLAYER} of their own).`
-                  : `up to ${SHOWCASE_REPLAYS_PER_PLAYER}, played by ${isSelf ? 'you' : member.player.name}.`}
+                Replays to play on stream {when}. One BeatLeader replay link per line, up to {SHOWCASE_REPLAYS_MAX}. Only organisers set these.
               </span>
             </div>
           </form>
-        )}
-        {maySet && (
-          <SaberColors
-            key={`${alias?.sabers?.left}:${alias?.sabers?.right}`}
-            memberId={member.id}
-            playerName={shownName}
-            sabers={alias?.sabers ?? null}
-            fromProfile={alias?.sabersFrom === 'profile'}
-            profileHasColours={!!alias?.profile.sabers}
-            replays={mapReplays}
-            viewer={viewer}
-          />
         )}
         {canManage && (
           <form action={setPlayerShown} className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-2">
