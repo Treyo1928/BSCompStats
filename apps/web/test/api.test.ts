@@ -111,6 +111,134 @@ describe('API keys', () => {
 });
 
 // ===========================================================================
+describe('keys for several tournaments', () => {
+  it('a key for two tournaments reads both and lists both', async () => {
+    expect((await api(K.organiserBoth!, 'GET', `/api/v1/tournaments/${F.tournament.slug}`)).status).toBe(200);
+    expect((await api(K.organiserBoth!, 'GET', `/api/v1/tournaments/${F.sideTournament.slug}`)).status).toBe(200);
+    expect((await api(K.organiserBoth!, 'GET', `/api/v1/tournaments/${F.privateTournament.slug}`)).status).toBe(404);
+    const list = await api(K.organiserBoth!, 'GET', '/api/v1/tournaments');
+    expect(list.status).toBe(200);
+    expect(list.json.tournaments.map((t: Json) => t.id).sort()).toEqual([F.tournament.id, F.sideTournament.id].sort());
+    const me = await api(K.organiserBoth!, 'GET', '/api/v1/me');
+    expect(me.json.key.tournamentIds.sort()).toEqual([F.tournament.id, F.sideTournament.id].sort());
+  });
+
+  it('a key for one tournament lists only that one, and reads no other', async () => {
+    const list = await api(K.organiser!, 'GET', '/api/v1/tournaments');
+    expect(list.json.tournaments.map((t: Json) => t.id)).toEqual([F.tournament.id]);
+    expect((await api(K.organiser!, 'GET', `/api/v1/tournaments/${F.sideTournament.slug}`)).status).toBe(404);
+  });
+
+  it('a key names no tournament its user cannot see, even one it was limited to', async () => {
+    // the organiser has no part in the Private Cup: a key of theirs limited to it reads nothing and lists nothing
+    expect((await api(K.organiserOtherTournament!, 'GET', `/api/v1/tournaments/${F.privateTournament.slug}`)).status).toBe(404);
+    expect((await api(K.organiserOtherTournament!, 'GET', '/api/v1/tournaments')).json.tournaments).toEqual([]);
+  });
+
+  it('a key for everything lists what its user owns or has a part in, and nothing for an outsider', async () => {
+    const mine = (await api(K.organiserEverywhere!, 'GET', '/api/v1/tournaments')).json.tournaments.map((t: Json) => t.id);
+    expect(mine.sort()).toEqual([F.tournament.id, F.sideTournament.id].sort());
+    expect((await api(K.outsider!, 'GET', '/api/v1/tournaments')).json.tournaments).toEqual([]);
+  });
+});
+
+describe('signing in to an app with a site account', () => {
+  const O = F.overlayKey as { id: string; signInUrl: string };
+  const back = `${O.signInUrl}/auth/callback`;
+  /** A signed-in browser: a session made straight in the database, as the site's own sign-in makes one. */
+  async function session(userId: string): Promise<string> {
+    const sessionToken = `test-${userId}-${Math.random().toString(36).slice(2)}`;
+    await prisma.session.create({ data: { sessionToken, userId, expires: new Date(Date.now() + 3_600_000) } });
+    return `authjs.session-token=${sessionToken}`;
+  }
+  /** Open the authorize page; answers where the browser is sent (null: it is shown a page) and the page's text. */
+  async function authorize(cookie: string | null, params: Record<string, string>): Promise<{ status: number; to: URL | null; text: string }> {
+    const res = await fetch(`${BASE}/connect/authorize?${new URLSearchParams(params)}`, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+    const text = await res.text();
+    // next dev answers a redirect made while rendering either with a 307 or inside the page it had begun to send
+    const inPage = text.match(/NEXT_REDIRECT;(?:replace|push);([^;"\\]+);/)?.[1] ?? text.match(/<meta[^>]+http-equiv="refresh"[^>]+url=([^"]+)"/i)?.[1];
+    const location = res.headers.get('location') ?? (inPage ? inPage.replace(/&amp;/g, '&') : null);
+    return { status: res.status, to: location ? new URL(location, BASE) : null, text };
+  }
+  const ask = { key: O.id, redirect_uri: back, state: 'abc123' };
+
+  it('sends someone who is not signed in to the sign-in page, and back here after', async () => {
+    const r = await authorize(null, ask);
+    expect(r.to?.pathname).toBe('/signin');
+    expect(r.to?.searchParams.get('next')).toContain('/connect/authorize?');
+    expect(r.to?.searchParams.get('next')).toContain(O.id);
+  });
+
+  it("signs the key's own user in: back to the app with a code that names them, once", async () => {
+    const r = await authorize(await session(F.users.organiser), ask);
+    expect(r.to?.origin + r.to!.pathname).toBe(back);
+    expect(r.to?.searchParams.get('state')).toBe('abc123');
+    const code = r.to!.searchParams.get('code')!;
+    expect(code.length).toBeGreaterThan(20);
+    const who = await api(K.overlay!, 'POST', '/api/v1/connect/token', { code });
+    expect(who.status, JSON.stringify(who.json)).toBe(200);
+    expect(who.json.user.id).toBe(F.users.organiser);
+    expect((await api(K.overlay!, 'POST', '/api/v1/connect/token', { code })).status).toBe(400);
+  });
+
+  it('signs an approved person in', async () => {
+    const r = await authorize(await session(F.users.captainMaroon), ask);
+    const who = await api(K.overlay!, 'POST', '/api/v1/connect/token', { code: r.to!.searchParams.get('code') });
+    expect(who.json.user.id).toBe(F.users.captainMaroon);
+  });
+
+  it('a code is only good for the key it was made for, and is spent by being tried', async () => {
+    const r = await authorize(await session(F.users.organiser), ask);
+    const code = r.to!.searchParams.get('code')!;
+    // another app (its own key, also one that signs people in) cannot use it…
+    expect((await api(K.otherApp!, 'POST', '/api/v1/connect/token', { code })).status).toBe(400);
+    // …and having been shown to the wrong app, it is no good to the right one either
+    expect((await api(K.overlay!, 'POST', '/api/v1/connect/token', { code })).status).toBe(400);
+  });
+
+  it('gives no code to someone who has only asked, or has not asked', async () => {
+    for (const userId of [F.users.captainWhite, F.users.viewer]) {
+      const r = await authorize(await session(userId), ask);
+      expect(r.to, `user ${userId} must not be sent anywhere`).toBeNull();
+      expect(r.text).not.toContain('code=');
+    }
+    expect((await authorize(await session(F.users.captainWhite), ask)).text).toMatch(/Waiting for/);
+    expect((await authorize(await session(F.users.viewer), ask)).text).toMatch(/let me in/);
+  });
+
+  it('never sends anyone to an address the key does not name', async () => {
+    const cookie = await session(F.users.organiser);
+    for (const redirect_uri of ['https://evil.example/auth/callback', `${O.signInUrl}.evil.example/x`, `http://127.0.0.1:9999/auth/callback`, 'javascript:alert(1)', '']) {
+      const r = await authorize(cookie, { ...ask, redirect_uri });
+      expect(r.to, redirect_uri).toBeNull();
+      expect(r.text).toMatch(/does not work/);
+    }
+  });
+
+  it('a key without a sign-in address, a revoked key and an unknown key sign nobody in', async () => {
+    const cookie = await session(F.users.organiser);
+    const plain = await prisma.apiKey.findFirstOrThrow({ where: { name: 'organiser' }, select: { id: true } });
+    const revoked = await prisma.apiKey.findFirstOrThrow({ where: { name: 'revoked' }, select: { id: true } });
+    for (const key of [plain.id, revoked.id, 'nosuchkey']) {
+      const r = await authorize(cookie, { ...ask, key });
+      expect(r.to, key).toBeNull();
+    }
+    expect((await api(K.organiser!, 'POST', '/api/v1/connect/token', { code: 'x' })).status).toBe(400);
+  });
+
+  it('tells the app who may sign in, and stops naming someone who was removed', async () => {
+    const people = await api(K.overlay!, 'GET', '/api/v1/connect/people');
+    expect(people.status).toBe(200);
+    expect(people.json.people.map((p: Json) => p.id).sort()).toEqual([F.users.organiser, F.users.captainMaroon].sort());
+    const r = await authorize(await session(F.users.captainMaroon), ask);
+    await prisma.apiKeyPerson.delete({ where: { keyId_userId: { keyId: O.id, userId: F.users.captainMaroon } } });
+    // removed between coming back and the app asking who it is: refused
+    expect((await api(K.overlay!, 'POST', '/api/v1/connect/token', { code: r.to!.searchParams.get('code') })).status).toBe(403);
+    expect((await api(K.overlay!, 'GET', '/api/v1/connect/people')).json.people.map((p: Json) => p.id)).toEqual([F.users.organiser]);
+    expect((await api(K.organiser!, 'GET', '/api/v1/connect/people')).json.people).toEqual([]);
+  });
+});
+
 describe('a full match, picks first', () => {
   let match: Json;
   const keyFor = (teamId: string) => (teamId === team('Maroon').id ? K.captainMaroon! : K.captainWhite!);

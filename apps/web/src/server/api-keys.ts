@@ -4,7 +4,16 @@ import type { SiteUser } from './session';
 
 export interface KeyHolder {
   user: SiteUser;
-  key: { id: string; tournamentId: string | null; canWrite: boolean };
+  key: {
+    id: string;
+    /** The tournaments the key works in; none: every tournament its user can act in. */
+    tournamentIds: string[];
+    /** The first of them (what a key had before it could have several); null where it has none. */
+    tournamentId: string | null;
+    canWrite: boolean;
+    /** Where people may sign in with this key's help; null: nowhere. */
+    signInUrl: string | null;
+  };
 }
 
 /**
@@ -18,7 +27,8 @@ export async function keyHolder(request: Request): Promise<KeyHolder | null> {
     where: { hash: hashApiKey(raw) },
     select: {
       id: true,
-      tournamentId: true,
+      tournaments: { select: { tournamentId: true }, orderBy: { tournamentId: 'asc' } },
+      signInUrl: true,
       canWrite: true,
       revokedAt: true,
       expiresAt: true,
@@ -33,6 +43,12 @@ export async function keyHolder(request: Request): Promise<KeyHolder | null> {
   }
   return {
     user: { id: key.user.id, name: key.user.name, image: key.user.image, role: key.user.role },
-    key: { id: key.id, tournamentId: key.tournamentId, canWrite: key.canWrite },
+    key: {
+      id: key.id,
+      tournamentIds: key.tournaments.map((t) => t.tournamentId),
+      tournamentId: key.tournaments[0]?.tournamentId ?? null,
+      canWrite: key.canWrite,
+      signInUrl: key.signInUrl,
+    },
   };
 }

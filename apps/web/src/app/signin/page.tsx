@@ -4,7 +4,11 @@ import { currentUser } from '@/server/session';
 import { env, hasBeatLeaderAuth, hasDiscordAuth } from '@/lib/env';
 import { Panel } from '@/components/ui';
 
-export default async function SignInPage() {
+/** Only a path on this site: "/x?y", never "//elsewhere" or "https://elsewhere". */
+const safeNext = (next: string | undefined) => (next && /^\/(?![\/\\])/.test(next) && !next.includes('\n') ? next : '/');
+
+export default async function SignInPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
+  const next = safeNext((await searchParams).next);
   const user = await currentUser();
   const none = !hasDiscordAuth && !hasBeatLeaderAuth;
 
@@ -46,7 +50,7 @@ export default async function SignInPage() {
               <form
                 action={async () => {
                   'use server';
-                  await signIn('beatleader', { redirectTo: '/' });
+                  await signIn('beatleader', { redirectTo: next });
                 }}
               >
                 <button
@@ -64,7 +68,7 @@ export default async function SignInPage() {
               <form
                 action={async () => {
                   'use server';
-                  await signIn('discord', { redirectTo: '/' });
+                  await signIn('discord', { redirectTo: next });
                 }}
               >
                 <button

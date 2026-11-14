@@ -24,7 +24,7 @@ export const json = (body: unknown, status = 200) =>
 
 /**
  * Run an API handler as the key's user. `write` handlers refuse read-only keys.
- * A key limited to one tournament is checked with `inTournament` by the handler.
+ * A key limited to some tournaments is checked with `inTournament` by the handler.
  */
 export async function apiRoute(
   request: Request,
@@ -35,7 +35,7 @@ export async function apiRoute(
   if (!holder) return json({ error: 'Send a valid API key: Authorization: Bearer bscs_…' }, 401);
   if (opts.write && !holder.key.canWrite) return json({ error: 'This key is read-only.' }, 403);
   const inTournament = (tournamentId: string) => {
-    if (holder.key.tournamentId && holder.key.tournamentId !== tournamentId) {
+    if (holder.key.tournamentIds.length && !holder.key.tournamentIds.includes(tournamentId)) {
       // Same answer as for something that does not exist: a scoped key learns nothing about other tournaments.
       throw new ApiError(404, 'Not found.');
     }

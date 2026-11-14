@@ -68,6 +68,9 @@ async function realLeaderboards(count: number): Promise<string[]> {
   }
 }
 
+/** Where the fixture's overlay key signs people in (nothing listens there: the tests only read the redirect). */
+const SIGN_IN_URL = 'http://127.0.0.1:8097';
+
 async function main() {
   const out = process.argv[2];
   if (!out) throw new Error('usage: fixture.ts <out.json>');
@@ -101,6 +104,11 @@ async function main() {
   });
   const privateCup = await prisma.tournament.create({
     data: { slug: 'private-cup', name: 'Private Cup', ownerId: admin.id, isPublic: false },
+  });
+
+  // A second tournament of the organiser's, for keys that work in more than one.
+  const sideCup = await prisma.tournament.create({
+    data: { slug: 'side-cup', name: 'Side Cup', ownerId: organiser.id, isPublic: false, members: { create: [{ userId: organiser.id, role: 'OWNER' }] } },
   });
 
   // A TournamentAssistant link for the local test stack (scripts/mock.sh sets these when a test TA server runs).
@@ -204,27 +212,46 @@ async function main() {
     outsider: fixedKey('outsider'),
     revoked: fixedKey('revoked'),
     expired: fixedKey('expired'),
+    organiserBoth: fixedKey('organiserbothtournaments'),
+    organiserEverywhere: fixedKey('organisereverywhere'),
+    overlay: fixedKey('overlaysignin'),
+    otherApp: fixedKey('otherappsignin'),
   };
-  const key = (name: string, userId: string, raw: string, extra: object = {}) =>
-    prisma.apiKey.create({ data: { name, userId, prefix: raw.slice(0, 11), hash: hashApiKey(raw), tournamentId: tournament.id, ...extra } });
+  // `in`: the tournaments the key works in (none: all of its user's); the fixture tournament unless said otherwise
+  const key = (name: string, userId: string, raw: string, { in: scope = [tournament.id], ...extra }: { in?: string[] } & Record<string, unknown> = {}) =>
+    prisma.apiKey.create({
+      data: { name, userId, prefix: raw.slice(0, 11), hash: hashApiKey(raw), tournamentId: scope[0] ?? null, tournaments: { create: scope.map((tournamentId) => ({ tournamentId })) }, ...extra },
+    });
   await key('organiser', organiser.id, keys.organiser);
   await key('organiser read-only', organiser.id, keys.organiserRead, { canWrite: false });
-  await key('organiser, other tournament', organiser.id, keys.organiserOtherTournament, { tournamentId: privateCup.id });
+  await key('organiser, other tournament', organiser.id, keys.organiserOtherTournament, { in: [privateCup.id] });
   await key('captain Maroon', captainMaroon.id, keys.captainMaroon);
   await key('captain White', captainWhite.id, keys.captainWhite);
   await key('viewer', viewer.id, keys.viewer);
-  await key('outsider', outsider.id, keys.outsider, { tournamentId: null });
+  await key('outsider', outsider.id, keys.outsider, { in: [] });
   await key('revoked', organiser.id, keys.revoked, { revokedAt: new Date() });
   await key('expired', organiser.id, keys.expired, { expiresAt: new Date(Date.now() - 86_400_000) });
+  await key('organiser, both tournaments', organiser.id, keys.organiserBoth, { in: [tournament.id, sideCup.id] });
+  await key('organiser, everywhere', organiser.id, keys.organiserEverywhere, { in: [] });
+  // An overlay's key: read-only, signs people in at SIGN_IN_URL. Captain Maroon was approved, captain White has asked.
+  const overlayKey = await key('overlay', organiser.id, keys.overlay, {
+    canWrite: false,
+    signInUrl: SIGN_IN_URL,
+    people: { create: [{ userId: captainMaroon.id, approvedAt: new Date() }, { userId: captainWhite.id }] },
+  });
+  // a second app's key, to show that a sign-in made for one app is no use to another
+  await key('other app', organiser.id, keys.otherApp, { canWrite: false, signInUrl: SIGN_IN_URL });
 
   const summary = {
     tournament: { id: tournament.id, slug: tournament.slug },
     privateTournament: { id: privateCup.id, slug: privateCup.slug },
+    sideTournament: { id: sideCup.id, slug: sideCup.slug },
     users: { admin: admin.id, organiser: organiser.id, captainMaroon: captainMaroon.id, captainWhite: captainWhite.id, viewer: viewer.id, outsider: outsider.id },
     teams,
     pools: { group: groupPool, playoffs: playoffPool, finals: finalsPool },
     bracket: { id: bracket.id, nodes: bracket.nodes },
     keys,
+    overlayKey: { id: overlayKey.id, signInUrl: SIGN_IN_URL },
   };
   writeFileSync(out, JSON.stringify(summary, null, 2));
   console.log(`fixture: ${TEAMS.length} teams, 3 pools, bracket ${bracket.nodes.length} slots, ${Object.keys(keys).length} keys -> ${out}`);

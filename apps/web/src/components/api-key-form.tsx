@@ -23,16 +23,9 @@ export function ApiKeyForm({ tournaments }: { tournaments: Array<{ id: string; n
         <Field label="Name" hint="What it is for, e.g. “Stream overlay”.">
           <input name="name" className={inputClass} placeholder="Stream overlay" maxLength={60} />
         </Field>
-        <Field label="Works in" hint="Limit it to one tournament unless it really needs all of yours.">
-          <select name="tournamentId" className={inputClass} defaultValue={tournaments[0]?.id ?? ''}>
-            {tournaments.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-            <option value="">Every tournament I can act in</option>
-          </select>
-        </Field>
+        <div className="sm:col-span-2">
+          <KeyScopeFields tournaments={tournaments} chosen={tournaments.slice(0, 1).map((t) => t.id)} everywhere={false} signInUrl="" />
+        </div>
         <Field label="Expires">
           <select name="expiresInDays" className={inputClass} defaultValue="90">
             <option value="7">In a week</option>
@@ -55,6 +48,51 @@ export function ApiKeyForm({ tournaments }: { tournaments: Array<{ id: string; n
           </Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/**
+ * Where a key works (some tournaments, or all of its user's) and where it signs people in. Shared by the new-key
+ * form and each key's own settings. Plain fields: ticking "every tournament" is read by the server as "all",
+ * whatever is ticked beside it.
+ */
+export function KeyScopeFields({
+  tournaments,
+  chosen,
+  everywhere,
+  signInUrl,
+}: {
+  tournaments: Array<{ id: string; name: string }>;
+  chosen: string[];
+  everywhere: boolean;
+  signInUrl: string;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <fieldset className="text-sm">
+        <legend className="mb-1 text-xs font-medium text-muted">Works in</legend>
+        <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-edge p-2">
+          {tournaments.map((t) => (
+            <label key={t.id} className="flex items-center gap-2">
+              <input type="checkbox" name="tournamentIds" value={t.id} defaultChecked={chosen.includes(t.id)} />
+              {t.name}
+            </label>
+          ))}
+          {tournaments.length === 0 && <p className="text-xs text-faint">You have no tournaments yet.</p>}
+          <label className="flex items-center gap-2 border-t border-edge pt-1 text-muted">
+            <input type="checkbox" name="everywhere" defaultChecked={everywhere} />
+            Every tournament I can act in, now and later
+          </label>
+        </div>
+        <p className="mt-1 text-xs text-faint">Tick only the tournaments the app needs.</p>
+      </fieldset>
+      <Field
+        label="Sign-in address (optional)"
+        hint="The app's own address, e.g. https://overlay.example. With it, you and the people you approve below can sign in to that app with a BSCompStats account. Empty: the key signs nobody in."
+      >
+        <input name="signInUrl" className={inputClass} defaultValue={signInUrl} placeholder="https://overlay.example" inputMode="url" maxLength={200} />
+      </Field>
     </div>
   );
 }

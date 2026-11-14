@@ -37,6 +37,7 @@ model User {
   accounts           Account[]
   sessions           Session[]
   apiKeys            ApiKey[]
+  apiKeyAccess       ApiKeyPerson[]
   players            Player[]
   tournamentMembers  TournamentMember[]
   ownedTournaments   Tournament[]       @relation("TournamentOwner")
@@ -520,6 +521,7 @@ model Tournament {
   uploads   Upload[]
   brackets  Bracket[]
   apiKeys   ApiKey[]
+  apiKeyScopes ApiKeyTournament[]
   taLink    TaLink?
 
   @@index([ownerId])
@@ -1178,9 +1180,17 @@ model ApiKey {
   prefix String
   /// SHA-256 of the whole key. The key itself is shown once and never stored.
   hash   String @unique
-  /// Limited to one tournament, or null for every tournament the user can act in.
+  /// The tournaments the key works in; none: every tournament its user can act in.
+  tournaments  ApiKeyTournament[]
+  /// The first of `tournaments`, kept in step with it only so that the app as it was before 2026-11-14 (which knew
+  /// one tournament per key) still limits a key if it is ever run on this database again. Nothing reads it now.
   tournamentId String?
   tournament   Tournament? @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  /// The address of the app this key is for ("https://overlay.example"), when people may sign in to that app with
+  /// their account here. Sign-ins are only ever sent back to this address. Null: the key signs nobody in.
+  signInUrl    String?
+  /// Who may sign in to that app, besides the key's own user: asked for by them, approved by the key's user.
+  people       ApiKeyPerson[]
   /// Off: the key can read (overlays) but not change anything.
   canWrite   Boolean   @default(true)
   createdAt  DateTime  @default(now())
@@ -1188,5 +1198,28 @@ model ApiKey {
   expiresAt  DateTime?
   revokedAt  DateTime?
 
+  @@index([userId])
+}
+
+model ApiKeyTournament {
+  keyId        String
+  key          ApiKey     @relation(fields: [keyId], references: [id], onDelete: Cascade)
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@id([keyId, tournamentId])
+  @@index([tournamentId])
+}
+
+/// Someone who asked to sign in to the app a key is for. They may once the key's user has approved them.
+model ApiKeyPerson {
+  keyId       String
+  key         ApiKey    @relation(fields: [keyId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestedAt DateTime  @default(now())
+  approvedAt  DateTime?
+
+  @@id([keyId, userId])
   @@index([userId])
 }
