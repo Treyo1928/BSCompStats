@@ -1,7 +1,9 @@
 'use client';
 
 import { useActionState } from 'react';
+import { addKeyPerson, searchKeyPeople } from '@/server/actions';
 import { createApiKey, type CreatedKey } from '@/server/api-key-actions';
+import { PlayerPicker } from './roster-controls';
 import { Button, Field, inputClass } from './ui';
 
 /** Create a key and show it once. */
@@ -94,5 +96,18 @@ export function KeyScopeFields({
         <input name="signInUrl" className={inputClass} defaultValue={signInUrl} placeholder="https://overlay.example" inputMode="url" maxLength={200} />
       </Field>
     </div>
+  );
+}
+
+/** Find someone the way rosters do and let them in to a key's app, before they have ever tried to sign in to it. */
+export function KeyPersonPicker({ keyId }: { keyId: string }) {
+  return (
+    <PlayerPicker
+      title="Let someone sign in"
+      label="Add someone"
+      takenLabel="Let in"
+      search={(query) => searchKeyPeople(keyId, query)}
+      add={(candidate) => addKeyPerson(keyId, candidate.beatLeaderId)}
+    />
   );
 }

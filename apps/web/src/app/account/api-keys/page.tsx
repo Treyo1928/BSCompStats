@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 import { prisma } from '@bscs/db';
 import { Avatar, Badge, Button, Empty, FormError, PageHeader, Panel } from '@/components/ui';
-import { ApiKeyForm, KeyScopeFields } from '@/components/api-key-form';
+import { ApiKeyForm, KeyPersonPicker, KeyScopeFields } from '@/components/api-key-form';
+import { addKeyUser } from '@/server/actions';
 import { revokeApiKey, setKeyPerson, updateApiKey } from '@/server/api-key-actions';
 import { realUser } from '@/server/session';
 
@@ -26,6 +27,8 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
     prisma.tournamentMember.findMany({ where: { userId: user.id }, select: { tournament: { select: { id: true, name: true } } } }),
     prisma.tournament.findMany({ where: { ownerId: user.id }, select: { id: true, name: true } }),
   ]);
+  // A site admin has the list of everyone who has signed in (Users page), so may pick from it here too.
+  const everyone = user.role === 'ADMIN' ? await prisma.user.findMany({ where: { id: { not: user.id } }, orderBy: { name: 'asc' }, select: { id: true, name: true } }) : [];
   const tournaments = [...new Map([...owned, ...memberships.map((m) => m.tournament)].map((t) => [t.id, t])).values()];
   const now = new Date();
 
@@ -82,9 +85,11 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
                           Save
                         </Button>
                       </form>
-                      {k.signInUrl && (
+                      {(
                         <div className="mt-3 border-t border-edge pt-2">
-                          <p className="text-xs font-medium text-muted">Who may sign in to {new URL(k.signInUrl).host}</p>
+                          <p className="text-xs font-medium text-muted">
+                            {k.signInUrl ? `Who may sign in to ${new URL(k.signInUrl).host}` : 'Who may sign in to its app (once the key has a sign-in address)'}
+                          </p>
                           <ul className="mt-1 space-y-1">
                             <li className="flex items-center gap-2 text-xs">
                               <Avatar src={user.image} name={user.name ?? 'You'} size={20} /> {user.name ?? 'You'} <span className="text-faint">(you: it is your key)</span>
@@ -115,9 +120,38 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
                               </li>
                             ))}
                           </ul>
+                          <div className="mt-2 flex flex-wrap items-end gap-3">
+                            <div className="min-w-[12rem] flex-1">
+                              <KeyPersonPicker keyId={k.id} />
+                            </div>
+                            {everyone.length > 0 && (
+                              <form action={addKeyUser} className="flex items-end gap-2">
+                                <input type="hidden" name="keyId" value={k.id} />
+                                <label className="flex flex-col gap-1 text-xs text-muted">
+                                  Or from everyone who has signed in
+                                  <select name="userId" className="h-9 rounded-lg border border-edge bg-surface px-2 text-sm text-ink" defaultValue="">
+                                    <option value="" disabled>
+                                      Choose an account
+                                    </option>
+                                    {everyone
+                                      .filter((u) => !k.people.some((p) => p.user.id === u.id && p.approvedAt))
+                                      .map((u) => (
+                                        <option key={u.id} value={u.id}>
+                                          {u.name ?? `No name (${u.id.slice(-6)})`}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </label>
+                                <Button type="submit" variant="ghost" className="h-9">
+                                  Let in
+                                </Button>
+                              </form>
+                            )}
+                          </div>
                           <p className="mt-2 text-xs text-faint">
-                            People are added by asking: they press &ldquo;Sign in with BSCompStats&rdquo; in the app, ask to be let in, and appear here for you to
-                            approve. Removing someone signs them out of the app within a minute.
+                            Add people here before they ever open the app, by their BeatLeader name or profile. Someone you have not added can still ask from
+                            the app&apos;s sign-in page; they appear above for you to let in or turn down. Removing someone signs them out of the app within a
+                            minute.
                           </p>
                         </div>
                       )}

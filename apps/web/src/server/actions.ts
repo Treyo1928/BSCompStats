@@ -7,7 +7,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { prisma, Prisma } from '@bscs/db';
 import { assertCan, can, isCaptainOf, ForbiddenError, parsePickBanSequence } from '@bscs/core/match';
-import { getActor, getActorOrAnonymous } from './session';
+import { getActor, getActorOrAnonymous, realUser } from './session';
 import { importPool } from './pools';
 import { announceMatchChange, requestAttempts, requestRefresh } from '@/lib/redis';
 import { beatLeader, scoreSaber } from './pools';
@@ -117,6 +117,67 @@ export async function searchPeopleCandidates(
     }
   }
   return found;
+}
+
+/**
+ * People who may sign in to the app an API key is for (the stream overlay), added ahead of time by the key's user:
+ * found the way tournament people are, and let in at once. Someone who has never signed in here cannot be added
+ * (there is no account to let in); they can sign in once, or ask from the app's sign-in page.
+ */
+async function ownKey(keyId: string) {
+  const user = await realUser();
+  if (!user) throw new Error('Sign in first.');
+  const key = await prisma.apiKey.findFirst({ where: { id: keyId, userId: user.id, revokedAt: null }, select: { id: true } });
+  if (!key) throw new Error('No such key.');
+  return user;
+}
+
+export async function searchKeyPeople(keyId: string, rawQuery: string): Promise<{ candidates: PlayerCandidate[]; error?: string }> {
+  const user = await ownKey(keyId);
+  const found = await findCandidates(rawQuery, user.role === 'ADMIN', null);
+  const ids = found.candidates.map((c) => c.beatLeaderId);
+  const players = await prisma.player.findMany({ where: { beatLeaderId: { in: ids }, userId: { not: null } }, select: { beatLeaderId: true, userId: true } });
+  const userOf = new Map(players.map((p) => [p.beatLeaderId, p.userId!]));
+  const listed = await prisma.apiKeyPerson.findMany({ where: { keyId, userId: { in: [...userOf.values()] } }, select: { userId: true, approvedAt: true } });
+  const approved = new Set(listed.filter((p) => p.approvedAt).map((p) => p.userId));
+  for (const c of found.candidates) {
+    const userId = userOf.get(c.beatLeaderId);
+    if (!userId) {
+      c.unavailable = 'No account';
+      c.note = 'Has not signed in here yet. They need to sign in once before they can be added.';
+    } else if (userId === user.id) c.unavailable = 'You';
+    else if (approved.has(userId)) c.unavailable = 'Let in';
+  }
+  return found;
+}
+
+export async function addKeyPerson(keyId: string, beatLeaderId: string): Promise<{ error?: string }> {
+  const user = await ownKey(keyId);
+  const player = await prisma.player.findUnique({ where: { beatLeaderId }, select: { userId: true } });
+  if (!player?.userId) return { error: 'They have not signed in here yet. They need to sign in once before they can be added.' };
+  if (player.userId === user.id) return { error: 'It is your key: you can already sign in with it.' };
+  await prisma.apiKeyPerson.upsert({
+    where: { keyId_userId: { keyId, userId: player.userId } },
+    create: { keyId, userId: player.userId, approvedAt: new Date() },
+    update: { approvedAt: new Date() },   // someone who had asked is let in by being added
+  });
+  revalidatePath('/account/api-keys');
+  return {};
+}
+
+/** The same, from the list of everyone who has signed in: for a site admin, who has that list anyway. */
+export async function addKeyUser(formData: FormData): Promise<void> {
+  const keyId = String(formData.get('keyId'));
+  const user = await ownKey(keyId);
+  if (user.role !== 'ADMIN') throw new Error('Only a site admin can pick from every account.');
+  const userId = String(formData.get('userId') ?? '');
+  if (!userId || userId === user.id || !(await prisma.user.findUnique({ where: { id: userId }, select: { id: true } }))) return;
+  await prisma.apiKeyPerson.upsert({
+    where: { keyId_userId: { keyId, userId } },
+    create: { keyId, userId, approvedAt: new Date() },
+    update: { approvedAt: new Date() },
+  });
+  revalidatePath('/account/api-keys');
 }
 
 export async function addTournamentPerson(
