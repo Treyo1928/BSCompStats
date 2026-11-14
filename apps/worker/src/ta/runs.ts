@@ -51,6 +51,13 @@ export function gameplayParams(options: TaOptions, map: { name: string; hash: st
       characteristic: { serializedName: map.characteristic, difficulties: [] },
       difficulty: map.difficulty,
     },
+    // Nothing of the player's own is replaced: not their settings, and not their colours.
+    //  - TA's protocol has no colours in it at all. The game plugin starts the song with the player's own colour
+    //    scheme when they have "override default colours" on in their in-game settings, the map's otherwise
+    //    (TournamentAssistant/PluginClient.cs, the play_song handler). Team colours are for the stream's replay
+    //    viewers only; they never go to a player's game.
+    //  - `options: NoPlayerOptions` is what keeps the rest of their settings (height, left-handed, HUD, trails,
+    //    jump distance): the plugin swaps in the numbers below only when some option here is set. Leave it so.
     playerSettings: {
       playerHeight: 0,
       sfxVolume: 0,
