@@ -199,8 +199,30 @@ export async function addTournamentPerson(
   if (!player?.userId) {
     return { error: 'They have not signed in here yet. They need to sign in once before they can be added.' };
   }
-  const userId = player.userId;
+  return setTournamentMember(tournamentId, player.userId, role, grantsAdmin);
+}
 
+/**
+ * The same, by account: for someone who signed in with Discord only and so has no BeatLeader profile to search
+ * for. Site admins only, who have the list of every account anyway (Users page).
+ */
+export async function addTournamentUser(tournamentId: string, userId: string, rawRole: string): Promise<{ error?: string }> {
+  const actor = await getActor(tournamentId);
+  if (!actor) return { error: 'Sign in first.' };
+  assertCan(actor, 'MANAGE_TOURNAMENT');
+  if (actor.globalRole !== 'ADMIN') return { error: 'Only a site admin can pick from every account.' };
+  if (!userId || !(await prisma.user.findUnique({ where: { id: userId }, select: { id: true } }))) {
+    return { error: 'That account no longer exists.' };
+  }
+  return setTournamentMember(tournamentId, userId, rawRole === 'ORGANIZER' ? 'ORGANIZER' : 'VIEWER', true);
+}
+
+async function setTournamentMember(
+  tournamentId: string,
+  userId: string,
+  role: 'ORGANIZER' | 'VIEWER',
+  grantsAdmin: boolean,
+): Promise<{ error?: string }> {
   const existing = await prisma.tournamentMember.findUnique({
     where: { tournamentId_userId: { tournamentId, userId } },
     select: { role: true },

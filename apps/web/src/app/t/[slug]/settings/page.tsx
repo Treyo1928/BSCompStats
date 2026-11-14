@@ -87,7 +87,7 @@ export default async function SettingsPage({
       },
       members: {
         orderBy: { createdAt: 'asc' },
-        select: { id: true, role: true, user: { select: { name: true, image: true } } },
+        select: { id: true, role: true, userId: true, user: { select: { name: true, image: true } } },
       },
     },
   });
@@ -96,6 +96,21 @@ export default async function SettingsPage({
   const actor = await getActorOrAnonymous(tournament.id);
   if (!can(actor, 'MANAGE_TOURNAMENT')) notFound();
   const grantsAdmin = actor.globalRole === 'ADMIN' || actor.tournamentRole === 'OWNER';
+  // A site admin has the list of every account (Users page), so may add staff from it: the only way to add someone
+  // who signed in with Discord alone, since the search finds BeatLeader profiles.
+  const everyone =
+    actor.globalRole === 'ADMIN'
+      ? (
+          await prisma.user.findMany({
+            where: { tournamentMembers: { none: { tournamentId: tournament.id } } },
+            orderBy: { name: 'asc' },
+            select: { id: true, name: true, accounts: { select: { provider: true } }, players: { select: { id: true }, take: 1 } },
+          })
+        ).map((u) => {
+          const via = [...new Set(u.accounts.map((a) => a.provider))].map((p) => (p === 'beatleader' ? 'BeatLeader' : p === 'discord' ? 'Discord' : p)).join(' and ');
+          return { id: u.id, label: `${u.name ?? `No name (${u.id.slice(-6)})`}${via ? ` · signed in with ${via}` : ''}${u.players.length ? '' : ' · no BeatLeader profile'}` };
+        })
+      : [];
   const visibility = !tournament.isPublic ? 'PRIVATE' : tournament.unlisted ? 'UNLISTED' : 'PUBLIC';
 
   const curve = parsePointsCurve(tournament.pointsCurve);
@@ -364,7 +379,7 @@ export default async function SettingsPage({
             </li>
           ))}
         </ul>
-        <AddPersonForm tournamentId={tournament.id} grantsAdmin={grantsAdmin} />
+        <AddPersonForm tournamentId={tournament.id} grantsAdmin={grantsAdmin} everyone={everyone} />
         <p className="mt-2 text-xs text-faint">
           Tournament admins can do everything inside this tournament. Viewers only matter while it is private.
           Being on a roster does not let anyone see a private tournament - only the people listed here can.
