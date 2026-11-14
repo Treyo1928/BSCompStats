@@ -1,7 +1,7 @@
 import { parseSongRef, taCountedScore, taHalvedByNoFail, type TaDifficulty, type TaOptions, type TaPlayerState, type TaRoom } from '@bscs/core/match';
 import { Push_SongFinished_CompletionType, Response_ResponseType, type GameplayParameters, type Push_SongFinished, type RealtimeScore } from 'moons-ta-client';
 import { log } from '../log.js';
-import { DIFFICULTY, gameplayParams } from './runs.js';
+import { DIFFICULTY, gameplayParams, markPlayed } from './runs.js';
 import type { TaSession } from './session.js';
 
 const LOAD_TIMEOUT_MS = 120_000;
@@ -223,6 +223,7 @@ export class FreeRoom {
     room.finished.clear();
     room.message = null;
     this.ta.playSong(this.session.taTournament, room.params, room.players.map((p) => p.guid));
+    markPlayed(room.players.map((p) => p.guid), room.params.beatmap!.levelId);
     room.startedAt = Date.now();
     room.phase = 'playing';
     this.watch();

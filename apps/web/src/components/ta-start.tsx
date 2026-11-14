@@ -208,6 +208,7 @@ export function TaStart({
           <span className="text-xs text-muted">Everyone has the map. Press when the players are in their headsets and ready.</span>
         </div>
       )}
+      {phase === 'ready' && status?.message && <p className="text-xs text-warn">{status.message}</p>}
       {phase === 'ready' && !staff && <p className="text-xs text-muted">Everyone has the map. An organiser starts the song.</p>}
       {phase === 'error' && <p className="text-xs text-lose">{status?.message || 'TournamentAssistant could not start the map.'}</p>}
       {phase === 'finished' && staff && (

@@ -75,6 +75,30 @@ export function gameplayParams(options: TaOptions, map: { name: string; hash: st
   };
 }
 
+/**
+ * Which maps each connected game has been started on, by its TA connection (a user's guid: new every time the player
+ * opens TA in game).
+ *
+ * A game that is started on a map it has already played on the same TA connection goes into the song and straight
+ * back out (seen 2026-11-13, a Quest player on TA 1.4.0, twice in a row). Closing and reopening TA in game clears it,
+ * and gives the player a new guid, so what is kept here goes stale exactly when the problem does.
+ */
+const playedOn = new Map<string, Set<string>>();
+export function markPlayed(guids: readonly string[], levelId: string): void {
+  for (const guid of guids) {
+    const set = playedOn.get(guid) ?? new Set<string>();
+    set.add(levelId);
+    playedOn.set(guid, set);
+  }
+}
+export const playedBefore = (guid: string | null, levelId: string): boolean => !!guid && !!playedOn.get(guid)?.has(levelId);
+/** What staff are told about players who would be started on a map again; null when there are none. */
+export function replayWarning(names: readonly string[]): string | null {
+  if (!names.length) return null;
+  const one = names.length === 1;
+  return `${names.join(', ')} already played this map since opening TournamentAssistant: ${one ? 'that game' : 'those games'} will drop straight back out of the song. Close and reopen TournamentAssistant in game first; the map loads again by itself once ${one ? 'the player is' : 'they are'} back.`;
+}
+
 /** One map being started for its lineups: from the request to the scores. */
 interface Run {
   /** Names the request: a restart is a new request, and a new run. */
@@ -386,7 +410,8 @@ export class MapRuns {
         await this.release(run, false);
       } else {
         run.phase = 'ready';
-        run.message = null;
+        run.message = replayWarning(run.slots.filter((s) => playedBefore(s.guid, run.params.beatmap!.levelId)).map((s) => s.name));
+        if (run.message) log.warn(`ta[${this.session.slug}]: ${run.matchName}: ${run.message}`);
         log.info(`ta[${this.session.slug}]: ${run.matchName}: ${run.mapName} loaded for ${run.slots.map((s) => s.name).join(', ')}`);
       }
       await this.report(run);
@@ -405,6 +430,7 @@ export class MapRuns {
     await prisma.matchMapAttempt.deleteMany({ where: { matchMapId: run.matchMapId, attempt: run.attempt, matchMap: { startRequestedAt: run.requestedAt } } });
     // One command to everyone, so they start together.
     this.ta.playSong(this.session.taTournament, run.params, run.slots.map((s) => s.guid!));
+    markPlayed(run.slots.map((s) => s.guid!), run.params.beatmap!.levelId);
     run.startedAt = Date.now();
     run.phase = 'playing';
     run.scores.clear();
