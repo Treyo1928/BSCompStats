@@ -18,6 +18,7 @@ import {
   setTournamentVisibility,
 } from '@/server/actions';
 import { updateTournamentDetails } from '@/server/rename-actions';
+import { duplicateTournament } from '@/server/duplicate-tournament';
 
 export const dynamic = 'force-dynamic';
 
@@ -307,6 +308,29 @@ export default async function SettingsPage({
           </form>
         </Panel>
       </div>
+
+      <Panel
+        title="Make a copy to practise on"
+        subtitle="A second, private tournament with the same teams, players, map pools, settings, staff and brackets, and nothing played in it."
+      >
+        <form action={duplicateTournament} className="flex flex-wrap items-end gap-3">
+          <input type="hidden" name="tournamentId" value={tournament.id} />
+          <div className="min-w-[16rem] flex-1">
+            <Field label="Name of the copy">
+              <input name="name" defaultValue={`${tournament.name} (test copy)`} maxLength={120} className={inputClass} required />
+            </Field>
+          </div>
+          <FieldAction>
+            <Button type="submit">Duplicate tournament</Button>
+          </FieldAction>
+          <p className="basis-full text-xs text-faint">
+            Copied: teams and rosters, the player pool, each player&apos;s nickname, picture, saber colours and replays, team logos, map pools with
+            their map types and pick/ban orders, scoring and format settings, staff and captains, and the brackets (empty of results). Not copied:
+            matches, the TournamentAssistant link and API keys. The copy is private and yours; this tournament is not changed. Scores on the maps
+            belong to the players, so the copy&apos;s pool boards fill in by themselves.
+          </p>
+        </form>
+      </Panel>
 
       <Panel
         title="Tournament staff and viewers"

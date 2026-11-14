@@ -257,17 +257,21 @@ export default async function TeamsPage({
                   <ul className="grid gap-1 sm:grid-cols-2 sm:gap-x-4">
                     {seededPool.map((member, i) => {
                       const acc = poolAcc.get(member.player.id);
+                      // the name, picture, colours and replays set for them here are theirs already, team or no team
+                      const alias = aliases.get(member.player.id);
+                      const shownName = alias?.nickname || member.player.name;
+                      const isSelf = !!actor.userId && member.player.userId === actor.userId;
                       return (
-                        <li key={member.id} className="flex min-w-0 items-center gap-2 text-sm">
+                        <li key={member.id} className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm">
                           {canManage && <span className="w-5 shrink-0 text-right text-xs tabular text-faint">{i + 1}</span>}
                           <PlayerLink
                             playerId={member.player.id}
                             name={member.player.name}
                             className="flex min-w-0 flex-1 items-center gap-2 hover:underline"
                           >
-                            <Avatar src={member.player.avatar} name={member.player.name} size={24} />
-                            <span className="truncate" title={member.player.name}>
-                              {member.player.name}
+                            <Avatar src={alias?.avatar || member.player.avatar} name={shownName} size={24} />
+                            <span className="truncate" title={alias?.nickname ? `${alias.nickname} (${member.player.name} on BeatLeader)` : member.player.name}>
+                              {shownName}
                             </span>
                           </PlayerLink>
                           <span
@@ -283,9 +287,20 @@ export default async function TeamsPage({
                                 : '—'}
                           </span>
                           {canManage && (
-                            // In the pool the only thing to do to a player is take them out of it.
+                            // Out of the pool; what is set for them below stays theirs, and is there again if they come back.
                             <RemoveFromPool memberId={member.id} playerName={member.player.name} />
                           )}
+                          <PlayerSettings
+                            member={member}
+                            alias={alias}
+                            canManage={canManage}
+                            maySet={canManage || isSelf}
+                            isSelf={isSelf}
+                            viewer={viewer}
+                            mapReplays={poolReplays.get(member.player.id) ?? []}
+                            indent={canManage ? 'pl-7' : ''}
+                            when="when they are about to play, once they are on a team"
+                          />
                         </li>
                       );
                     })}
@@ -442,128 +457,17 @@ export default async function TeamsPage({
                           canManage={canManage}
                         />
                       )}
-                      {canManage && (
-                        // TournamentAssistant finds players by platform id: Steam64 is the BeatLeader id, a Quest player's is not.
-                        <details className="basis-full pb-1 pl-11 text-xs sm:pl-12">
-                          <summary className="cursor-pointer text-faint hover:text-ink">
-                            TA id: {member.player.taPlatformId ?? `${member.player.beatLeaderId} (BeatLeader)`}
-                          </summary>
-                          <form action={setTaPlatformId} className="mt-1.5 flex flex-wrap items-center gap-2">
-                            <input type="hidden" name="memberId" value={member.id} />
-                            <input
-                              name="taPlatformId"
-                              defaultValue={member.player.taPlatformId ?? ''}
-                              placeholder={member.player.beatLeaderId}
-                              aria-label={`${member.player.name}'s TournamentAssistant platform id`}
-                              autoComplete="off"
-                              className={`${inputClass} h-8 w-52 tabular`}
-                            />
-                            <Button type="submit" variant="ghost" className="h-8 text-xs">
-                              Save
-                            </Button>
-                            <span className="text-faint">
-                              The id TournamentAssistant shows for them. Leave blank to use their BeatLeader id, which is right for
-                              Steam players.
-                            </span>
-                          </form>
-                        </details>
-                      )}
-                      {(maySetReplays || replays.length > 0) && (
-                        <details className="basis-full pb-1 pl-11 text-xs sm:pl-12">
-                          <summary className="cursor-pointer text-faint hover:text-ink">
-                            On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
-                            {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
-                            {alias?.avatar ? ' · own picture' : ''}
-                            {alias?.sabers && (
-                              <span className="ml-1.5 inline-flex translate-y-px gap-0.5" title="Their saber colours">
-                                <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.left }} />
-                                <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.right }} />
-                              </span>
-                            )}
-                          </summary>
-                          {replays.length > 0 && (
-                            <ul className="mt-1.5 space-y-0.5">
-                              {replays.map((r) => (
-                                <li key={r.ref} className="truncate">
-                                  <a href={r.ref} target="_blank" rel="noreferrer" className="text-ink hover:underline">
-                                    {r.song ?? r.ref}
-                                  </a>
-                                  <span className="text-faint">
-                                    {r.difficulty ? ` · ${r.difficulty}` : ''}
-                                    {r.accuracy != null ? ` · ${(r.accuracy * 100).toFixed(2)}%` : ''}
-                                    {r.player && r.player !== member.player.name ? ` · played by ${r.player}` : ''}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          {maySetReplays && (
-                            <form action={setPlayerReplays} className="mt-1.5 space-y-1.5">
-                              <input type="hidden" name="memberId" value={member.id} />
-                              <textarea
-                                name="replays"
-                                rows={Math.max(2, replays.length + 1)}
-                                defaultValue={replays.map((r) => r.ref).join('\n')}
-                                placeholder="https://replay.beatleader.com/?scoreId=..."
-                                aria-label={`${shownName}'s replays to show on stream, one link per line`}
-                                className={`${inputClass} h-auto py-1.5 font-mono text-xs`}
-                              />
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Button type="submit" variant="ghost" className="h-8 text-xs">
-                                  Save replays
-                                </Button>
-                                <span className="text-faint">
-                                  Replays to play on stream while this team is up next. One BeatLeader replay link per line,{' '}
-                                  {canManage
-                                    ? `up to ${SHOWCASE_REPLAYS_MAX} (players and captains can add ${SHOWCASE_REPLAYS_PER_PLAYER} of their own).`
-                                    : `up to ${SHOWCASE_REPLAYS_PER_PLAYER}, played by ${isSelf ? 'you' : member.player.name}.`}
-                                </span>
-                              </div>
-                            </form>
-                          )}
-                          {maySetReplays && (
-                            <SaberColors
-                              key={`${alias?.sabers?.left}:${alias?.sabers?.right}`}
-                              memberId={member.id}
-                              playerName={shownName}
-                              sabers={alias?.sabers ?? null}
-                              replays={poolReplays.get(member.player.id) ?? []}
-                              viewer={viewer}
-                            />
-                          )}
-                          {canManage && (
-                            <form action={setPlayerShown} className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-2">
-                              <input type="hidden" name="memberId" value={member.id} />
-                              <label className="space-y-1">
-                                <span className="block text-faint">Nickname in this tournament</span>
-                                <input
-                                  name="nickname"
-                                  defaultValue={alias?.nickname ?? ''}
-                                  placeholder={member.player.name}
-                                  maxLength={40}
-                                  autoComplete="off"
-                                  className={`${inputClass} h-8 w-48`}
-                                />
-                              </label>
-                              <label className="space-y-1">
-                                <span className="block text-faint">Picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most)</span>
-                                <input type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" className="block max-w-[15rem] text-xs" />
-                              </label>
-                              {alias?.avatar && (
-                                <label className="flex h-8 items-center gap-1.5">
-                                  <input type="checkbox" name="removeAvatar" /> Back to their BeatLeader picture
-                                </label>
-                              )}
-                              <Button type="submit" variant="ghost" className="h-8 text-xs">
-                                Save
-                              </Button>
-                              <span className="basis-full text-faint">
-                                Leave the nickname blank to use their BeatLeader name. Both apply to this tournament only: its match pages, boards and the stream overlay.
-                              </span>
-                            </form>
-                          )}
-                        </details>
-                      )}
+                      <PlayerSettings
+                        member={member}
+                        alias={alias}
+                        canManage={canManage}
+                        maySet={maySetReplays}
+                        isSelf={isSelf}
+                        viewer={viewer}
+                        mapReplays={poolReplays.get(member.player.id) ?? []}
+                        indent="pl-11 sm:pl-12"
+                        when="while this team is up next"
+                      />
                     </li>
                     );
                   })}
@@ -703,5 +607,166 @@ export default async function TeamsPage({
         }
       />
     </div>
+  );
+}
+
+/**
+ * What is set for a player in this tournament, whichever team they are on (or none yet: the player pool): the id
+ * TournamentAssistant knows them by, the replays to show on stream, their saber colours, and the name and picture
+ * they go by here. All of it is kept per player and tournament, so it stays with them when they are moved from the
+ * pool to a team, or taken off one team and added to another.
+ */
+function PlayerSettings({
+  member,
+  alias,
+  canManage,
+  maySet,
+  isSelf,
+  viewer,
+  mapReplays,
+  indent,
+  when,
+}: {
+  member: { id: string; player: { id: string; name: string; beatLeaderId: string; taPlatformId: string | null } };
+  alias: Awaited<ReturnType<typeof tournamentAliases>> extends Map<string, infer A> ? A | undefined : never;
+  canManage: boolean;
+  /** May set this player's replays and colours: an organiser, their captain, or the player. */
+  maySet: boolean;
+  isSelf: boolean;
+  viewer: string | null;
+  /** Their replays on the tournament's maps, for trying the colours on. */
+  mapReplays: React.ComponentProps<typeof SaberColors>['replays'];
+  /** Lines these blocks up under the player's name in the row they belong to. */
+  indent: string;
+  /** When the replays are shown, for the hint: "while this team is up next". */
+  when: string;
+}) {
+  const shownName = alias?.nickname || member.player.name;
+  const replays = alias?.replays ?? [];
+  return (
+    <>
+    {canManage && (
+      // TournamentAssistant finds players by platform id: Steam64 is the BeatLeader id, a Quest player's is not.
+      <details className={`basis-full pb-1 text-xs ${indent}`}>
+        <summary className="cursor-pointer text-faint hover:text-ink">
+          TA id: {member.player.taPlatformId ?? `${member.player.beatLeaderId} (BeatLeader)`}
+        </summary>
+        <form action={setTaPlatformId} className="mt-1.5 flex flex-wrap items-center gap-2">
+          <input type="hidden" name="memberId" value={member.id} />
+          <input
+            name="taPlatformId"
+            defaultValue={member.player.taPlatformId ?? ''}
+            placeholder={member.player.beatLeaderId}
+            aria-label={`${member.player.name}'s TournamentAssistant platform id`}
+            autoComplete="off"
+            className={`${inputClass} h-8 w-52 tabular`}
+          />
+          <Button type="submit" variant="ghost" className="h-8 text-xs">
+            Save
+          </Button>
+          <span className="text-faint">
+            The id TournamentAssistant shows for them. Leave blank to use their BeatLeader id, which is right for
+            Steam players.
+          </span>
+        </form>
+      </details>
+    )}
+    {(maySet || replays.length > 0) && (
+      <details className={`basis-full pb-1 text-xs ${indent}`}>
+        <summary className="cursor-pointer text-faint hover:text-ink">
+          On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
+          {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
+          {alias?.avatar ? ' · own picture' : ''}
+          {alias?.sabers && (
+            <span className="ml-1.5 inline-flex translate-y-px gap-0.5" title="Their saber colours">
+              <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.left }} />
+              <span className="h-2.5 w-4 rounded-sm" style={{ background: alias.sabers.right }} />
+            </span>
+          )}
+        </summary>
+        {replays.length > 0 && (
+          <ul className="mt-1.5 space-y-0.5">
+            {replays.map((r) => (
+              <li key={r.ref} className="truncate">
+                <a href={r.ref} target="_blank" rel="noreferrer" className="text-ink hover:underline">
+                  {r.song ?? r.ref}
+                </a>
+                <span className="text-faint">
+                  {r.difficulty ? ` · ${r.difficulty}` : ''}
+                  {r.accuracy != null ? ` · ${(r.accuracy * 100).toFixed(2)}%` : ''}
+                  {r.player && r.player !== member.player.name ? ` · played by ${r.player}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {maySet && (
+          <form action={setPlayerReplays} className="mt-1.5 space-y-1.5">
+            <input type="hidden" name="memberId" value={member.id} />
+            <textarea
+              name="replays"
+              rows={Math.max(2, replays.length + 1)}
+              defaultValue={replays.map((r) => r.ref).join('\n')}
+              placeholder="https://replay.beatleader.com/?scoreId=..."
+              aria-label={`${shownName}'s replays to show on stream, one link per line`}
+              className={`${inputClass} h-auto py-1.5 font-mono text-xs`}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="submit" variant="ghost" className="h-8 text-xs">
+                Save replays
+              </Button>
+              <span className="text-faint">
+                Replays to play on stream {when}. One BeatLeader replay link per line,{' '}
+                {canManage
+                  ? `up to ${SHOWCASE_REPLAYS_MAX} (players and captains can add ${SHOWCASE_REPLAYS_PER_PLAYER} of their own).`
+                  : `up to ${SHOWCASE_REPLAYS_PER_PLAYER}, played by ${isSelf ? 'you' : member.player.name}.`}
+              </span>
+            </div>
+          </form>
+        )}
+        {maySet && (
+          <SaberColors
+            key={`${alias?.sabers?.left}:${alias?.sabers?.right}`}
+            memberId={member.id}
+            playerName={shownName}
+            sabers={alias?.sabers ?? null}
+            replays={mapReplays}
+            viewer={viewer}
+          />
+        )}
+        {canManage && (
+          <form action={setPlayerShown} className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-2">
+            <input type="hidden" name="memberId" value={member.id} />
+            <label className="space-y-1">
+              <span className="block text-faint">Nickname in this tournament</span>
+              <input
+                name="nickname"
+                defaultValue={alias?.nickname ?? ''}
+                placeholder={member.player.name}
+                maxLength={40}
+                autoComplete="off"
+                className={`${inputClass} h-8 w-48`}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-faint">Picture (PNG, JPEG, WebP, GIF or SVG, 1 MB at most)</span>
+              <input type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" className="block max-w-[15rem] text-xs" />
+            </label>
+            {alias?.avatar && (
+              <label className="flex h-8 items-center gap-1.5">
+                <input type="checkbox" name="removeAvatar" /> Back to their BeatLeader picture
+              </label>
+            )}
+            <Button type="submit" variant="ghost" className="h-8 text-xs">
+              Save
+            </Button>
+            <span className="basis-full text-faint">
+              Leave the nickname blank to use their BeatLeader name. Both apply to this tournament only: its match pages, boards and the stream overlay.
+            </span>
+          </form>
+        )}
+      </details>
+    )}
+    </>
   );
 }
