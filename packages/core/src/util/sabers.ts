@@ -1,10 +1,10 @@
 /**
- * Saber colours come from the team: its first colour is the left saber, its second the right. Nobody picks sabers
- * by hand, so two things are taken care of here instead:
+ * Saber colours come from the team: its first colour is the left saber, its second the right.
  *
- *   - a team whose two colours are too alike (the default pair of a new team often was) would give two sabers a
- *     player cannot tell apart: the right one is then given a colour of its own, made from the first;
- *   - a very dark colour makes a saber that cannot be seen against the game: it is lifted until it can.
+ * What an organiser chose is used exactly as chosen, however alike the two are: that is their call (the Teams page
+ * tells them when two sabers will be hard to tell apart). Only a second colour that nobody chose is replaced: the
+ * one every new team is given, which is a pale tint of the first or a stock lilac and would make two sabers that
+ * look the same. The right saber then gets a colour of its own, clearly different from the left.
  *
  * Colours are "#rrggbb".
  */
@@ -63,14 +63,6 @@ export const SABERS_TOO_ALIKE = 40;
 
 export const tooAlike = (a: string, b: string) => colourDistance(a, b) < SABERS_TOO_ALIKE;
 
-/** Bright enough to be seen as a saber: a dark colour keeps its hue and is lifted. */
-export function visible(hex: string): string {
-  const c = rgb(hex);
-  if (!c) return '#ffffff';
-  const [h, s, l] = hsl(c);
-  return l >= 0.3 ? hex.toLowerCase() : fromHsl(h, s, 0.45);
-}
-
 /**
  * A second colour for a team that has only one to speak of: clearly not the first. Opposite hue, kept vivid; for a
  * grey (no hue to oppose) white or a mid grey, whichever is further away.
@@ -79,22 +71,42 @@ export function contrastingColour(first: string): string {
   const c = rgb(first);
   if (!c) return '#ffffff';
   const [h, s, l] = hsl(c);
-  if (s < 0.12) return l > 0.6 ? '#6b7280' : '#f5f5f5';
+  // a grey has no hue to oppose: whichever of a few plain, bright colours is furthest from it
+  const furthest = (options: string[]) => options.reduce((best, o) => (colourDistance(first, o) > colourDistance(first, best) ? o : best));
+  if (s < 0.2) return furthest(['#f5f5f5', '#ffd23f', '#4db8ff', '#ff5a6e']);
   for (const turn of [180, 150, 210, 120, 240]) {
     const other = fromHsl(h + turn, Math.max(0.65, s), l > 0.62 ? 0.42 : 0.6);
     if (!tooAlike(first, other)) return other;
   }
-  return l > 0.5 ? '#1f2937' : '#f5f5f5';
+  return furthest(['#f5f5f5', '#ffd23f', '#4db8ff', '#ff5a6e', '#1f2937']);
 }
 
 /**
- * The two sabers a team's players are shown with. `adjusted`: they are not exactly the team's own two colours (the
- * second was too like the first or missing, or one was too dark to see and was lifted).
+ * The second colours teams are given when they are made, never picked by anyone: the stock one for a new team or
+ * the player pool whatever its first colour, and the pale tint that goes with each colour the duo maker hands out.
+ * Kept here so that "was this chosen?" can be answered without another column: a team still on one of these has
+ * not had its second colour chosen.
+ */
+const STOCK_SECOND = new Set(['#a5b4fc', '#d1d5db']);
+const STOCK_PAIRS = new Set(
+  [
+    ['#ff4d5e', '#ffb3ba'], ['#3d9bff', '#b3d7ff'], ['#2ecc71', '#a9ebc4'], ['#f5a623', '#fbd79a'],
+    ['#a26bfa', '#d6c2fd'], ['#1abc9c', '#a3e4d7'], ['#ff7ac6', '#ffc9e8'], ['#e0e04a', '#f3f3b5'],
+  ].map(([a, b]) => `${a} ${b}`),
+);
+/** Whether a team's second colour is one somebody picked (and not what the team was made with). */
+export function secondColourChosen(first: string, second: string | null | undefined): boolean {
+  if (!second || !rgb(second)) return false;
+  const a = first.trim().toLowerCase(), b = second.trim().toLowerCase();
+  return !STOCK_SECOND.has(b) && !STOCK_PAIRS.has(`${a} ${b}`);
+}
+
+/**
+ * The two sabers a team's players are shown with: the team's own two colours. `adjusted`: the right one is not the
+ * team's second colour, because nobody has chosen one yet.
  */
 export function teamSabers(first: string, second: string | null | undefined): SaberPair & { adjusted: boolean } {
-  const given = rgb(first) ? first.toLowerCase() : null;
-  const left = visible(given ?? '#ff4d5e');
-  const own = second && rgb(second) ? visible(second) : null;
-  if (own && !tooAlike(left, own)) return { left, right: own, adjusted: left !== given || own !== second!.toLowerCase() };
+  const left = rgb(first) ? first.trim().toLowerCase() : '#ff4d5e';
+  if (secondColourChosen(first, second)) return { left, right: second!.trim().toLowerCase(), adjusted: false };
   return { left, right: contrastingColour(left), adjusted: true };
 }

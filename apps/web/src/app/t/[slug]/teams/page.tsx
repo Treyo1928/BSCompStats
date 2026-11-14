@@ -32,7 +32,7 @@ import { buildPoolBoard } from '@/server/board';
 import { tournamentAliases } from '@/server/aliases';
 import { setPlayerReplays, setPlayerShown, setTeamLogo } from '@/server/team-media-actions';
 import { TeamLogo } from '@/components/team-logo';
-import { SHOWCASE_REPLAYS_MAX, teamSabers } from '@bscs/core';
+import { SHOWCASE_REPLAYS_MAX, teamSabers, tooAlike } from '@bscs/core';
 
 export const dynamic = 'force-dynamic';
 
@@ -478,13 +478,19 @@ export default async function TeamsPage({
                           </span>
                           <span>
                             left is the colour, right the second colour.
-                            {sabers.adjusted && (
+                            {sabers.adjusted ? (
                               <span className="text-warn">
                                 {' '}
-                                These are not exactly the team&apos;s two colours: a colour too dark to see as a saber is brightened, and a second
-                                colour too close to the first to tell two sabers apart is replaced. Pick colours that are bright and clearly
-                                different to choose both yourself.
+                                Nobody has chosen this team&apos;s second colour yet (it is the one the team was made with), so the right saber
+                                uses the colour shown. Set a second colour and save to choose it yourself: it is then used exactly as you set it.
                               </span>
+                            ) : (
+                              tooAlike(sabers.left, sabers.right) && (
+                                <span className="text-warn">
+                                  {' '}
+                                  These two are close: the sabers may be hard to tell apart on stream. They are used as you set them.
+                                </span>
+                              )
                             )}
                           </span>
                         </p>
