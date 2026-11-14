@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { prisma, type Prisma } from '@bscs/db';
+import { prisma, Prisma } from '@bscs/db';
 import { can, isCaptainOf } from '@bscs/core/match';
 import {
   parseReplayRef,
@@ -13,7 +13,8 @@ import {
 } from '@bscs/core';
 import { getActor } from './session';
 import { failBack } from './form-errors';
-import { beatLeader } from './pools';
+import { hexColour, pastedLines, readReplayList } from './showcase';
+import { tournamentAliases } from './aliases';
 import { chosenFile, dropUpload, saveUpload, UploadError } from './uploads';
 
 /**
@@ -126,14 +127,14 @@ export async function setPlayerSabers(formData: FormData): Promise<void> {
   const own = !!actor.userId && member.player.userId === actor.userId;
   if (!can(actor, 'MANAGE_TEAMS') && !own && !isCaptainOf(actor, member.teamId)) throw new Error("You cannot set this player's colours.");
 
-  const hex = (name: string) => {
-    const value = String(formData.get(name) ?? '').trim().toLowerCase();
-    return /^#[0-9a-f]{6}$/.test(value) ? value : null;
-  };
   const clear = formData.get('clear') != null;
-  const left = clear ? null : hex('left');
-  const right = clear ? null : hex('right');
+  let left = clear ? null : hexColour(formData.get('left'));
+  let right = clear ? null : hexColour(formData.get('right'));
   if (!clear && (!left || !right)) failBack(back, 'Choose a colour for each saber.');
+  // The colours on their own profile, saved here: the tournament has none of its own, and goes on following the
+  // profile if the player changes them later.
+  const profile = await prisma.player.findUnique({ where: { id: member.playerId }, select: { saberLeft: true, saberRight: true } });
+  if (left && left === profile?.saberLeft && right === profile?.saberRight) left = right = null;
   const data = { saberLeft: left, saberRight: right };
   await prisma.tournamentPlayer.upsert({
     where: { tournamentId_playerId: { tournamentId: tournament.id, playerId: member.playerId } },
@@ -148,6 +149,9 @@ export async function setPlayerSabers(formData: FormData): Promise<void> {
  * themself (signed in with their BeatLeader profile) and their team's captain
  * may set up to SHOWCASE_REPLAYS_PER_PLAYER, and only replays that player
  * played; organisers may add more, of anything.
+ *
+ * This is the list for this tournament. Left empty (or saved as exactly what their profile has) the tournament has
+ * none of its own for them and shows their profile's, whatever those become.
  */
 export async function setPlayerReplays(formData: FormData): Promise<void> {
   const { member, tournament, actor, back } = await memberOf(formData);
@@ -155,64 +159,77 @@ export async function setPlayerReplays(formData: FormData): Promise<void> {
   const own = !!actor.userId && member.player.userId === actor.userId;
   if (!staff && !own && !isCaptainOf(actor, member.teamId)) throw new Error('You cannot set this player\'s replays.');
 
-  const lines = String(formData.get('replays') ?? '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const lock = await prisma.tournament.findUnique({ where: { id: tournament.id }, select: { replaysLockedAt: true } });
+  const locked = !!lock?.replaysLockedAt;
+  if (locked && !staff) failBack(back, 'The replays for this tournament are locked for the stream. Ask an organiser if one has to change.');
+
+  const lines = pastedLines(formData.get('replays'));
   const limit = staff ? SHOWCASE_REPLAYS_MAX : SHOWCASE_REPLAYS_PER_PLAYER;
   if (lines.length > limit) failBack(back, `That is ${lines.length} replays; ${limit} at most${staff ? '' : ' per player'}.`);
 
-  const existing = await prisma.tournamentPlayer.findUnique({
-    where: { tournamentId_playerId: { tournamentId: tournament.id, playerId: member.playerId } },
-    select: { replays: true },
-  });
-  const known = new Map(parseShowcaseReplays(existing?.replays).map((r) => [r.ref, r]));
-
-  const replays: ShowcaseReplay[] = [];
-  for (const line of lines) {
-    const parsed = parseReplayRef(line);
-    if (!parsed) {
-      failBack(back, `"${line.slice(0, 80)}" is not a replay link. Paste a BeatLeader replay link (replay.beatleader.com/?scoreId=...), a BeatLeader score id, or the address of a .bsor file.`);
-    }
-    if (replays.some((r) => r.ref === parsed.ref)) continue;
-    const kept = known.get(parsed.ref);
-    if (kept) {
-      replays.push(kept);
-      continue;
-    }
-    if (parsed.kind === 'file') {
-      if (!staff) failBack(back, 'Paste a BeatLeader replay link, so the site can tell whose replay it is.');
-      replays.push({ ref: parsed.ref });
-      continue;
-    }
-    // What BeatLeader says the replay is: for the list here, and so that a player's replays are their own.
-    const score = await beatLeader.getScore(parsed.scoreId).catch(() => undefined);
-    if (score === null) failBack(back, `BeatLeader has no score ${parsed.scoreId}.`);
-    if (score === undefined && !staff) failBack(back, 'BeatLeader could not be reached to check that replay. Try again in a moment.');
-    if (score && !score.replay) failBack(back, `BeatLeader no longer has the replay file for score ${parsed.scoreId} (${score.song?.name ?? 'unknown song'}).`);
-    if (score && !staff && String(score.playerId) !== member.player.beatLeaderId) {
-      failBack(back, `Score ${parsed.scoreId} was played by ${score.player?.name ?? 'someone else'}, not ${member.player.name}.`);
-    }
-    replays.push({
-      ref: parsed.ref,
-      scoreId: parsed.scoreId,
-      ...(score
-        ? {
-            song: score.song?.name ?? undefined,
-            mapper: score.song?.mapper ?? undefined,
-            difficulty: score.difficulty?.difficultyName ?? undefined,
-            accuracy: typeof score.accuracy === 'number' ? score.accuracy : undefined,
-            player: score.player?.name ?? undefined,
-          }
-        : {}),
-    });
-  }
-
-  const stored = replays as unknown as Prisma.InputJsonValue;
+  const [existing, profile] = await Promise.all([
+    prisma.tournamentPlayer.findUnique({
+      where: { tournamentId_playerId: { tournamentId: tournament.id, playerId: member.playerId } },
+      select: { replays: true },
+    }),
+    prisma.player.findUnique({ where: { id: member.playerId }, select: { replays: true } }),
+  ]);
+  const theirs = parseShowcaseReplays(profile?.replays);
+  const read = await readReplayList(lines, { anyones: staff, player: member.player, known: [...theirs, ...parseShowcaseReplays(existing?.replays)] });
+  if ('error' in read) failBack(back, read.error);
+  // exactly what their profile has: nothing of the tournament's own to keep
+  const same = read.replays.length === theirs.length && read.replays.every((r, i) => r.ref === theirs[i]!.ref);
+  const stored = (same ? [] : read.replays) as unknown as Prisma.InputJsonValue;
+  // While locked, what an organiser saves is what is shown from now on (an empty list: what the profile has now).
+  const kept = locked ? { lockedReplays: (read.replays.length ? read.replays : theirs) as unknown as Prisma.InputJsonValue } : {};
   await prisma.tournamentPlayer.upsert({
     where: { tournamentId_playerId: { tournamentId: tournament.id, playerId: member.playerId } },
-    create: { tournamentId: tournament.id, playerId: member.playerId, replays: stored },
-    update: { replays: stored },
+    create: { tournamentId: tournament.id, playerId: member.playerId, replays: stored, ...kept },
+    update: { replays: stored, ...kept },
   });
+  done(back);
+}
+
+/**
+ * Lock, or unlock, the replays this tournament shows on stream. For stream day: once on, players and captains can no
+ * longer change theirs here, and what every player has at this moment (set for the tournament, or taken from their
+ * profile) is kept, so changing a profile does not change the stream either. Organisers can still change a player's.
+ * Unlocking drops what was kept: everyone follows their profile again.
+ */
+export async function setReplayLock(formData: FormData): Promise<void> {
+  const tournamentId = String(formData.get('tournamentId'));
+  const actor = await getActor(tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  if (!can(actor, 'MANAGE_TOURNAMENT')) throw new Error('Only the tournament\'s organisers can lock its replays.');
+  const tournament = await prisma.tournament.findUnique({ where: { id: tournamentId }, select: { slug: true, replaysLockedAt: true } });
+  if (!tournament) throw new Error('No such tournament.');
+  const on = formData.get('on') === '1';
+  const back = `/t/${tournament.slug}/teams`;
+
+  if (!on) {
+    await prisma.$transaction([
+      prisma.tournamentPlayer.updateMany({ where: { tournamentId }, data: { lockedReplays: Prisma.DbNull } }),
+      prisma.tournament.update({ where: { id: tournamentId }, data: { replaysLockedAt: null } }),
+    ]);
+    done(back);
+  }
+  if (tournament.replaysLockedAt) done(back);       // already locked: what was kept then stays
+
+  // everyone on a team of it (the player pool too), with what they show right now
+  const [members, aliases] = await Promise.all([
+    prisma.teamMember.findMany({ where: { team: { division: { tournamentId } } }, select: { playerId: true }, distinct: ['playerId'] }),
+    tournamentAliases(tournamentId),
+  ]);
+  await prisma.$transaction([
+    ...members.map((m) => {
+      const lockedReplays = (aliases.get(m.playerId)?.replays ?? []) as unknown as Prisma.InputJsonValue;
+      return prisma.tournamentPlayer.upsert({
+        where: { tournamentId_playerId: { tournamentId, playerId: m.playerId } },
+        create: { tournamentId, playerId: m.playerId, lockedReplays },
+        update: { lockedReplays },
+      });
+    }),
+    prisma.tournament.update({ where: { id: tournamentId }, data: { replaysLockedAt: new Date() } }),
+  ]);
   done(back);
 }

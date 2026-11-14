@@ -30,7 +30,7 @@ import { PlayerLink } from '@/components/player-card';
 import { getTournamentSummary } from '@/server/summaries';
 import { buildPoolBoard } from '@/server/board';
 import { tournamentAliases } from '@/server/aliases';
-import { setPlayerReplays, setPlayerShown, setTeamLogo } from '@/server/team-media-actions';
+import { setPlayerReplays, setPlayerShown, setReplayLock, setTeamLogo } from '@/server/team-media-actions';
 import { TeamLogo } from '@/components/team-logo';
 import { SaberColors } from '@/components/saber-colors';
 import { viewerBase } from '@/lib/replay-viewer';
@@ -73,6 +73,7 @@ export default async function TeamsPage({
       name: true,
       slug: true,
       isPublic: true,
+      replaysLockedAt: true,
       pools: { select: { id: true, name: true } },
       captainsCreateMatches: true,
       matchScoring: true,
@@ -197,6 +198,29 @@ export default async function TeamsPage({
       />
 
       <FormError message={error} />
+      {(tournament.replaysLockedAt || can(actor, 'MANAGE_TOURNAMENT')) && showing === 'entered' && (
+        <div
+          className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-2.5 text-sm ${
+            tournament.replaysLockedAt ? 'border-amber-400/40 bg-amber-400/10' : 'border-edge bg-raised/40'
+          }`}
+        >
+          <span className="font-medium">{tournament.replaysLockedAt ? 'Replays are locked for the stream' : 'Replays on stream are open'}</span>
+          <span className="min-w-0 flex-1 text-xs text-muted">
+            {tournament.replaysLockedAt
+              ? 'Players and captains cannot change the replays shown for this tournament, and changing a profile does not change them either. Organisers still can, below.'
+              : 'Players can change their own replays, here or on their profile, and the stream follows. Lock them when the stream starts so nothing can be swapped at the last minute.'}
+          </span>
+          {can(actor, 'MANAGE_TOURNAMENT') && (
+            <form action={setReplayLock}>
+              <input type="hidden" name="tournamentId" value={tournament.id} />
+              <input type="hidden" name="on" value={tournament.replaysLockedAt ? '0' : '1'} />
+              <Button type="submit" variant={tournament.replaysLockedAt ? 'ghost' : 'primary'} className="h-8 text-xs">
+                {tournament.replaysLockedAt ? 'Unlock replays' : 'Lock replays for the stream'}
+              </Button>
+            </form>
+          )}
+        </div>
+      )}
 
       <TeamScopeTabs
         hrefs={{ entered: `/t/${slug}/teams`, adHoc: `/t/${slug}/teams?show=match-only` }}
@@ -300,6 +324,7 @@ export default async function TeamsPage({
                             mapReplays={poolReplays.get(member.player.id) ?? []}
                             indent={canManage ? 'pl-7' : ''}
                             when="when they are about to play, once they are on a team"
+                            locked={!!tournament.replaysLockedAt}
                           />
                         </li>
                       );
@@ -467,6 +492,7 @@ export default async function TeamsPage({
                         mapReplays={poolReplays.get(member.player.id) ?? []}
                         indent="pl-11 sm:pl-12"
                         when="while this team is up next"
+                        locked={!!tournament.replaysLockedAt}
                       />
                     </li>
                     );
@@ -626,6 +652,7 @@ function PlayerSettings({
   mapReplays,
   indent,
   when,
+  locked,
 }: {
   member: { id: string; player: { id: string; name: string; beatLeaderId: string; taPlatformId: string | null } };
   alias: Awaited<ReturnType<typeof tournamentAliases>> extends Map<string, infer A> ? A | undefined : never;
@@ -640,6 +667,8 @@ function PlayerSettings({
   indent: string;
   /** When the replays are shown, for the hint: "while this team is up next". */
   when: string;
+  /** The tournament's replays are locked for the stream: only organisers change them now. */
+  locked: boolean;
 }) {
   const shownName = alias?.nickname || member.player.name;
   const replays = alias?.replays ?? [];
@@ -675,6 +704,7 @@ function PlayerSettings({
       <details className={`basis-full pb-1 text-xs ${indent}`}>
         <summary className="cursor-pointer text-faint hover:text-ink">
           On stream: {replays.length === 0 ? 'no replays yet' : `${replays.length} replay${replays.length === 1 ? '' : 's'}`}
+            {locked ? ' · locked' : alias?.replaysFrom === 'profile' ? ' from their profile' : ''}
           {alias?.nickname ? ` · shown as ${alias.nickname}` : ''}
           {alias?.avatar ? ' · own picture' : ''}
           {alias?.sabers && (
@@ -700,7 +730,19 @@ function PlayerSettings({
             ))}
           </ul>
         )}
-        {maySet && (
+        {isSelf && (
+          <p className="mt-1.5 text-faint">
+            Your replays and saber colours live on{' '}
+            <Link href="/account" className="text-ink underline decoration-faint underline-offset-2">
+              your profile
+            </Link>
+            : set them there once and every tournament uses them.
+          </p>
+        )}
+        {locked && maySet && !canManage && (
+          <p className="mt-1.5 text-warn">Locked for the stream: these cannot be changed now. Ask an organiser if one has to.</p>
+        )}
+        {maySet && (canManage || !locked) && (
           <form action={setPlayerReplays} className="mt-1.5 space-y-1.5">
             <input type="hidden" name="memberId" value={member.id} />
             <textarea
@@ -716,6 +758,13 @@ function PlayerSettings({
                 Save replays
               </Button>
               <span className="text-faint">
+                {locked
+                  ? 'Locked for the stream: this is what is shown, whatever their profile says now. What you save here replaces it. '
+                  : alias?.replaysFrom === 'profile'
+                  ? `These are the ones on ${isSelf ? 'your' : `${member.player.name}'s`} profile, and follow it. Change the list to set others for this tournament only. `
+                  : alias?.replaysFrom === 'tournament' && alias.profile.replays.length > 0
+                    ? `Set for this tournament; ${isSelf ? 'your' : 'their'} profile has ${alias.profile.replays.length} of its own. Clear the list and save to go back to the profile's. `
+                    : ''}
                 Replays to play on stream {when}. One BeatLeader replay link per line,{' '}
                 {canManage
                   ? `up to ${SHOWCASE_REPLAYS_MAX} (players and captains can add ${SHOWCASE_REPLAYS_PER_PLAYER} of their own).`
@@ -730,6 +779,8 @@ function PlayerSettings({
             memberId={member.id}
             playerName={shownName}
             sabers={alias?.sabers ?? null}
+            fromProfile={alias?.sabersFrom === 'profile'}
+            profileHasColours={!!alias?.profile.sabers}
             replays={mapReplays}
             viewer={viewer}
           />

@@ -101,6 +101,14 @@ model Player {
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  /// What the player set on their own profile, used in every tournament unless
+  /// that tournament has its own for them (TournamentPlayer): their saber
+  /// colours ("#rrggbb"; both set, or neither) and the replays to show on
+  /// stream (the same shape as TournamentPlayer.replays).
+  saberLeft  String?
+  saberRight String?
+  replays    Json    @default("[]")
+
   // Cached BeatLeader headline figures, refreshed by the sync worker.
   pp        Float    @default(0)
   rank      Int      @default(0)
@@ -509,6 +517,13 @@ model Tournament {
   /// New matches run through TournamentAssistant unless whoever sets one up says otherwise.
   taModeDefault Boolean @default(false)
 
+  /// Set while the replays shown on stream are locked (stream day): players and
+  /// captains can no longer change theirs for this tournament, and what each
+  /// player had at that moment is kept in TournamentPlayer.lockedReplays, so a
+  /// change on their own profile does not reach the stream either. Organisers
+  /// still can. Null: not locked.
+  replaysLockedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -580,12 +595,18 @@ model TournamentPlayer {
   /// Shown instead of their BeatLeader picture: the path of an uploaded one
   /// ("/api/img/<Upload id>"). Null: the BeatLeader picture.
   avatar   String?
-  /// Replays to play on stream while their team is up next:
-  /// [{ ref, scoreId?, song?, mapper?, difficulty?, accuracy?, player? }].
+  /// Replays to play on stream while their team is up next, set for this
+  /// tournament: [{ ref, scoreId?, song?, mapper?, difficulty?, accuracy?, player? }].
+  /// Empty: the ones on the player's own profile (Player.replays).
   /// See packages/core/replays.
   replays  Json     @default("[]")
-  /// Their saber colours ("#rrggbb"), shown by replay viewers and on stream.
-  /// Null: the game's own colours. Both are set, or neither.
+  /// While the tournament's replays are locked: exactly what is shown for this
+  /// player, as it stood when they were locked (or as an organiser set it
+  /// since). Null while not locked, and for a player who joined afterwards.
+  lockedReplays Json?
+  /// Their saber colours ("#rrggbb") in this tournament, shown by replay viewers
+  /// and on stream. Null: the ones on the player's own profile, else the game's
+  /// own colours. Both are set, or neither.
   saberLeft  String?
   saberRight String?
 

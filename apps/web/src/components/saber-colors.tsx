@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { setPlayerSabers } from '@/server/team-media-actions';
+import { setProfileSabers } from '@/server/profile-actions';
 import { replayHref } from '@/lib/replay-viewer';
 import { Button } from './button';
 
@@ -16,15 +17,25 @@ const GAME = { left: '#c81414', right: '#288ed2' };
  */
 export function SaberColors({
   memberId,
+  profilePlayerId,
   playerName,
   sabers,
+  fromProfile = false,
+  profileHasColours = false,
   replays,
   viewer,
 }: {
-  memberId: string;
+  /** The player in one tournament (a roster entry): the colours are that tournament's. */
+  memberId?: string;
+  /** Or the player's own profile: the colours every tournament uses unless it has its own for them. */
+  profilePlayerId?: string;
   playerName: string;
-  /** What is saved, or null for the game's own. */
+  /** What is shown now, or null for the game's own. */
   sabers: { left: string; right: string } | null;
+  /** In a tournament: these are the ones from the player's profile, the tournament having none of its own. */
+  fromProfile?: boolean;
+  /** In a tournament: the player's profile has colours, so "clear" goes back to those and not to the game's. */
+  profileHasColours?: boolean;
   /** Their replays of pool maps: what Preview can play. */
   replays: Array<{ scoreId: number; label: string }>;
   /** The site's own replay viewer, or null where it has none (then there is no preview). */
@@ -47,8 +58,8 @@ export function SaberColors({
   );
 
   return (
-    <form action={setPlayerSabers} className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-edge pt-2">
-      <input type="hidden" name="memberId" value={memberId} />
+    <form action={profilePlayerId ? setProfileSabers : setPlayerSabers} className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-edge pt-2">
+      {profilePlayerId ? <input type="hidden" name="playerId" value={profilePlayerId} /> : <input type="hidden" name="memberId" value={memberId} />}
       <span className="text-faint">Saber colours</span>
       <label className="flex items-center gap-1.5" title="Left saber">
         <input type="color" name="left" value={left} onChange={(e) => setLeft(e.target.value)} aria-label={`${playerName}'s left saber colour`} className="h-7 w-9 cursor-pointer rounded border border-edge bg-transparent p-0" />
@@ -62,9 +73,16 @@ export function SaberColors({
         <Button type="submit" variant="ghost" className="h-8 text-xs" disabled={!changed && sabers != null}>
           {sabers == null && !changed ? 'Save these' : 'Save'}
         </Button>
-        {sabers != null && (
-          <Button type="submit" name="clear" value="1" variant="ghost" className="h-8 text-xs" title="Back to the game's own red and blue">
-            Game colours
+        {sabers != null && !fromProfile && (
+          <Button
+            type="submit"
+            name="clear"
+            value="1"
+            variant="ghost"
+            className="h-8 text-xs"
+            title={profileHasColours ? 'Drop the colours set for this tournament and use the ones on their profile' : "Back to the game's own red and blue"}
+          >
+            {profileHasColours ? 'Use their profile\u2019s' : 'Game colours'}
           </Button>
         )}
         <button
@@ -87,7 +105,11 @@ export function SaberColors({
         </button>
       </span>
       <span className="basis-full text-faint">
-        {sabers ? 'Shown' : 'Once saved, shown'} on stream and wherever this site plays {playerName}&apos;s replays, in this tournament.
+        {profilePlayerId
+          ? `${sabers ? 'Shown' : 'Once saved, shown'} on stream and wherever this site plays ${playerName === 'you' ? 'your' : `${playerName}'s`} replays, in every tournament whose organisers have not set other colours.`
+          : fromProfile
+            ? `From ${playerName}'s profile. Saving other colours here sets them for this tournament only.`
+            : `${sabers ? 'Shown' : 'Once saved, shown'} on stream and wherever this site plays ${playerName}'s replays, in this tournament.`}
       </span>
 
       <dialog
