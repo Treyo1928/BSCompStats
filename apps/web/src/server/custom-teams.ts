@@ -144,7 +144,7 @@ export async function openMatch(input: {
     }),
     prisma.team.findMany({
       where: { id: { in: [teamAId, teamBId] }, division: { tournamentId }, playerPool: false },
-      select: { id: true, name: true },
+      select: { id: true, name: true, _count: { select: { members: true } } },
     }),
   ]);
   if (!pool || !tournament || pool.tournamentId !== tournamentId) {
@@ -155,12 +155,17 @@ export async function openMatch(input: {
   if (!teamA || !teamB) throw new Error('Both teams must belong to this tournament.');
 
   const tournamentFormat = parseFormat(tournament.defaultFormat);
+  // A side cannot field more players than it has: two one-player teams in a duos tournament play a 1v1, with one
+  // player a side on every map (both sides field the same number, so the smaller roster decides). Without this the
+  // match waits for a second player who does not exist and no map can be started.
+  const fielded = Math.max(1, Math.min(tournamentFormat.playersPerMap, teamA._count.members || 1, teamB._count.members || 1));
+  const sized = fielded < tournamentFormat.playersPerMap;
   // A pool may have its own pick/ban order (a bigger finals pool has more bans); the rest is the tournament's.
   const poolSequence = parsePickBanSequence(pool.pickBanSequence);
   const poolFormat = poolSequence ? withPickBanSequence(tournamentFormat, poolSequence) : tournamentFormat;
   // A match that plays differently from the tournament keeps its own copy of the format.
-  const ownFormat = poolSequence || (input.playOrder && input.playOrder !== tournamentFormat.playOrder)
-    ? { ...poolFormat, playOrder: input.playOrder ?? poolFormat.playOrder }
+  const ownFormat = poolSequence || sized || (input.playOrder && input.playOrder !== tournamentFormat.playOrder)
+    ? { ...poolFormat, playersPerMap: fielded, playOrder: input.playOrder ?? poolFormat.playOrder }
     : null;
   const format = ownFormat ?? tournamentFormat;
   try {
