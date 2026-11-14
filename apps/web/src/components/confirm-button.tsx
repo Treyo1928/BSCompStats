@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { askThenSubmit } from '@/lib/ask';
 
 /** A submit button that asks first. For actions that cannot simply be retried. */
 export function ConfirmButton({
@@ -19,9 +20,7 @@ export function ConfirmButton({
       type="submit"
       title={title}
       className={className}
-      onClick={(event) => {
-        if (!window.confirm(question)) event.preventDefault();
-      }}
+      onClick={(event) => askThenSubmit(event, question)}
     >
       {children}
     </button>

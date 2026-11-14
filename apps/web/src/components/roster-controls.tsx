@@ -13,6 +13,7 @@ import {
   setTeamCaptain,
   type PlayerCandidate,
 } from '@/server/actions';
+import { ask, askThenSubmit } from '@/lib/ask';
 import { Avatar, Badge, Button, Field, FieldAction, inputClass } from './ui';
 
 const UNREACHABLE = 'The server could not be reached. Check your connection and try again.';
@@ -389,8 +390,9 @@ export function MemberControls({
             title={`Remove ${playerName} from ${teamName}`}
             aria-label={`Remove ${playerName} from ${teamName}`}
             onClick={() => {
-              if (!window.confirm(`Remove ${playerName} from ${teamName}?`)) return;
-              run(() => removePlayerFromTeam(memberId));
+              void ask(`Remove ${playerName} from ${teamName}?`, 'Remove').then((yes) => {
+                if (yes) run(() => removePlayerFromTeam(memberId));
+              });
             }}
             className={`${glyph} hover:bg-red-600/20 hover:text-lose ${failed ? 'text-warn' : 'text-faint'}`}
           >
@@ -413,14 +415,16 @@ export function RemoveFromPool({ memberId, playerName }: { memberId: string; pla
       title={failed ? UNREACHABLE : `Remove ${playerName} from the player pool`}
       aria-label={`Remove ${playerName} from the player pool`}
       onClick={() => {
-        if (!window.confirm(`Remove ${playerName} from the player pool?`)) return;
-        setFailed(false);
-        start(async () => {
-          try {
-            await removePlayerFromTeam(memberId);
-          } catch {
-            setFailed(true);
-          }
+        void ask(`Remove ${playerName} from the player pool?`, 'Remove').then((yes) => {
+          if (!yes) return;
+          setFailed(false);
+          start(async () => {
+            try {
+              await removePlayerFromTeam(memberId);
+            } catch {
+              setFailed(true);
+            }
+          });
         });
       }}
       className={`-mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[13px] leading-none transition hover:bg-red-600/20 hover:text-lose disabled:opacity-50 ${failed ? 'text-warn' : 'text-faint'}`}
@@ -442,9 +446,7 @@ export function ConfirmSubmit({
     <Button
       type="submit"
       variant="danger"
-      onClick={(event) => {
-        if (!window.confirm(question)) event.preventDefault();
-      }}
+      onClick={(event) => askThenSubmit(event, question)}
     >
       {children}
     </Button>

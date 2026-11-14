@@ -94,6 +94,7 @@ export default async function TeamsPage({
               logo: true,
               adHoc: true,
               playerPool: true,
+              _count: { select: { matchesAsA: true, matchesAsB: true } },
               members: {
                 orderBy: { order: 'asc' },
                 select: {
@@ -628,14 +629,24 @@ export default async function TeamsPage({
                       Shown beside the team&apos;s name here and on the stream overlay. A square PNG or SVG with a see-through background works best; 1 MB at most.
                     </span>
                   </form>
-                  <form action={deleteTeam} className="mt-3">
-                    <input type="hidden" name="teamId" value={team.id} />
-                    <ConfirmSubmit
-                      question={`Delete ${team.name} and its roster? This cannot be undone.`}
-                    >
-                      Delete team
-                    </ConfirmSubmit>
-                  </form>
+                  {team._count.matchesAsA + team._count.matchesAsB > 0 ? (
+                    // The action refuses these (a team is half of every match it played); say so here rather
+                    // than offer a button whose refusal lands at the top of the page, out of sight.
+                    <p className="mt-3 border-t border-edge pt-3 text-xs text-faint">
+                      {team.name} can&apos;t be deleted: it has{' '}
+                      {team._count.matchesAsA + team._count.matchesAsB === 1
+                        ? '1 match'
+                        : `${team._count.matchesAsA + team._count.matchesAsB} matches`}{' '}
+                      on record. Delete those matches first, or rename the team.
+                    </p>
+                  ) : (
+                    <form action={deleteTeam} className="mt-3">
+                      <input type="hidden" name="teamId" value={team.id} />
+                      <ConfirmSubmit question={`Delete ${team.name} and its roster? This cannot be undone.`}>
+                        Delete team
+                      </ConfirmSubmit>
+                    </form>
+                  )}
                 </details>
               )}
             </div>
