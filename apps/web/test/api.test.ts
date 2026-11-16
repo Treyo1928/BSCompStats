@@ -126,6 +126,13 @@ describe('players\' Discord accounts', () => {
     for (const key of [K.captainMaroon!, K.captainWhite!, K.viewer!]) {
       expect(roster(await get(key, id)).every((p) => !('discordId' in p)), 'not staff: no Discord ids').toBe(true);
     }
+    // an id an organiser set by hand comes first, and reaches players who never signed in
+    const trey = team('Maroon').players.Trey;
+    await prisma.player.update({ where: { id: erin }, data: { discordId: '999988887777666655' } });
+    await prisma.player.update({ where: { id: trey }, data: { discordId: '123456789012345678' } });
+    const after = roster(await get(K.organiserRead!, id));
+    expect([after.find((p) => p.id === erin)?.discordId, after.find((p) => p.id === trey)?.discordId]).toEqual(['999988887777666655', '123456789012345678']);
+    await prisma.player.updateMany({ where: { id: { in: [erin, trey] } }, data: { discordId: null } });
   });
 });
 

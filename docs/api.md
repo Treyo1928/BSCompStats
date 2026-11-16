@@ -45,8 +45,8 @@ The **match** object is what the match page shows:
 - `teamA`, `teamB`: names, colours, `logo`, rosters. `logo` is `null` (the default star), `"msu"` (the MSU Esports
   shield) or the path of an uploaded picture (`/api/img/<id>` on this site, public, cacheable for good). Each
   player is `{ id, name, avatar, replays, sabers, beatLeaderId, taPlatformId }`, and for a key whose owner runs the
-  tournament (owner, tournament admin, site admin) also `discordId`: the Discord account the player signs in to this
-  site with, or `null` (a stream's Discord bot uses it to deafen players in voice while they play). `sabers` is `{ left, right }`
+  tournament (owner, tournament admin, site admin) also `discordId`: the player's Discord user id as an organiser set it on the Teams page ("Discord id"), else
+  the account they sign in to this site with, or `null` (a stream's Discord bot uses it to deafen players in voice while they play). `sabers` is `{ left, right }`
   (`"#rrggbb"`) where the player chose saber colours for this tournament (Teams page, "On stream"), else `null`. `name` and `avatar` are as the tournament
   shows them: an organiser's nickname and uploaded picture where set (Teams page, "On stream"), else BeatLeader's;
   an uploaded `avatar` is a path like `logo`. `replays` are the replays the player chose to show on stream, as

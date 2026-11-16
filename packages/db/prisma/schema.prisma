@@ -162,6 +162,11 @@ model Player {
   /// BeatLeader's own for Quest/Oculus players. Null: use beatLeaderId.
   taPlatformId String?
 
+  /// Their Discord account (the user id, a long number), where an organiser set
+  /// it by hand: for a stream's Discord bot that acts on players in voice. Null:
+  /// the account they sign in here with, if they do.
+  discordId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

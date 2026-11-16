@@ -1114,6 +1114,22 @@ export async function setTaPlatformId(formData: FormData): Promise<void> {
   revalidatePath('/t', 'layout');
 }
 
+/**
+ * A player's Discord account, by hand: the user id a stream's Discord bot knows them by (it deafens players in
+ * voice while they play). Blank goes back to the account they sign in here with, if any. Organisers only.
+ */
+export async function setPlayerDiscordId(formData: FormData): Promise<void> {
+  const memberId = String(formData.get('memberId'));
+  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { teamId: true, playerId: true } });
+  if (!member) return;
+  await requireTeamManager(member.teamId);
+  const raw = String(formData.get('discordId') ?? '').trim();
+  // a user id is 17 to 20 digits; a name or a tag is not one
+  if (raw && !/^\d{15,22}$/.test(raw)) throw new Error('That is not a Discord user id: it is a long number (Discord → Settings → Advanced → Developer Mode, then right-click the person → Copy User ID).');
+  await prisma.player.update({ where: { id: member.playerId }, data: { discordId: raw || null } });
+  revalidatePath('/t', 'layout');
+}
+
 export async function createTeam(formData: FormData): Promise<void> {
   const tournamentId = String(formData.get('tournamentId'));
   const actor = await getActor(tournamentId);

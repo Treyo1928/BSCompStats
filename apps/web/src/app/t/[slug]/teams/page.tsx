@@ -19,7 +19,8 @@ import {
   TeamScopeTabs,
 } from '@/components/ui';
 import { getActorOrAnonymous } from '@/server/session';
-import { createTeam, deleteTeam, setTaPlatformId, updateTeam } from '@/server/actions';
+import { createTeam, deleteTeam, setPlayerDiscordId,
+  setTaPlatformId, updateTeam } from '@/server/actions';
 import { AddPlayerForm, ConfirmSubmit, LinkScoreSaber, MemberControls, RemoveFromPool } from '@/components/roster-controls';
 import { NewMatchForm } from '@/components/new-match-form';
 import { createPlayerPool } from '@/server/pool-actions';
@@ -110,6 +111,8 @@ export default async function TeamsPage({
                       userId: true,
                       scoreSaberId: true,
                       taPlatformId: true,
+                      discordId: true,
+                      user: { select: { accounts: { where: { provider: 'discord' }, select: { id: true }, take: 1 } } },
                     },
                   },
                 },
@@ -612,7 +615,10 @@ function PlayerSettings({
   indent,
   when,
 }: {
-  member: { id: string; player: { id: string; name: string; beatLeaderId: string; taPlatformId: string | null } };
+  member: {
+    id: string;
+    player: { id: string; name: string; beatLeaderId: string; taPlatformId: string | null; discordId: string | null; user: { accounts: { id: string }[] } | null };
+  };
   alias: Awaited<ReturnType<typeof tournamentAliases>> extends Map<string, infer A> ? A | undefined : never;
   canManage: boolean;
   /** Lines these blocks up under the player's name in the row they belong to. */
@@ -646,6 +652,43 @@ function PlayerSettings({
           <span className="text-faint">
             The id TournamentAssistant shows for them. Leave blank to use their BeatLeader id, which is right for
             Steam players.
+          </span>
+        </form>
+      </details>
+    )}
+    {canManage && (
+      // The stream's Discord bot finds players in voice by their Discord user id (it deafens them while they play).
+      <details className={`basis-full pb-1 text-xs ${indent}`}>
+        <summary className="cursor-pointer text-faint hover:text-ink">
+          Discord id:{' '}
+          {member.player.discordId
+            ? `${member.player.discordId} (set here)`
+            : member.player.user?.accounts.length
+              ? 'from their Discord sign-in'
+              : 'not set'}
+        </summary>
+        <form action={setPlayerDiscordId} className="mt-1.5 flex flex-wrap items-center gap-2">
+          <input type="hidden" name="memberId" value={member.id} />
+          <input
+            name="discordId"
+            defaultValue={member.player.discordId ?? ''}
+            placeholder="e.g. 123456789012345678"
+            inputMode="numeric"
+            pattern="[0-9]{15,22}"
+            title="A Discord user id: 15 to 22 digits"
+            aria-label={`${member.player.name}'s Discord user id`}
+            autoComplete="off"
+            className={`${inputClass} h-8 w-52 tabular`}
+          />
+          <Button type="submit" variant="ghost" className="h-8 text-xs">
+            Save
+          </Button>
+          <span className="text-faint">
+            Their Discord user id, for the stream&apos;s Discord bot (it deafens players in voice while they play). In
+            Discord: Settings → Advanced → Developer Mode, then right-click them → Copy User ID.{' '}
+            {member.player.user?.accounts.length
+              ? 'Leave blank to use the account they sign in here with.'
+              : 'They do not sign in here with Discord, so without one the bot cannot find them.'}
           </span>
         </form>
       </details>
