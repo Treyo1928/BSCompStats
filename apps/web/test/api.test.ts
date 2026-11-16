@@ -111,6 +111,24 @@ describe('API keys', () => {
 });
 
 // ===========================================================================
+describe('players\' Discord accounts', () => {
+  it('are given to the tournament\'s staff only', async () => {
+    const made = await api(K.organiser!, 'POST', `/api/v1/tournaments/${F.tournament.slug}/matches`, {
+      poolId: F.pools.group, teamAId: team('Maroon').id, teamBId: team('White').id, name: 'Discord ids',
+    });
+    expect(made.status).toBe(201);
+    const id = made.json.match.id;
+    const erin = team('Maroon').players.Erin;
+    const roster = (m: Json) => [...m.teamA.players, ...m.teamB.players] as Json[];
+    const staff = roster(await get(K.organiserRead!, id));
+    expect(staff.find((p) => p.id === erin)?.discordId).toBe('111122223333444455');
+    expect(staff.filter((p) => p.id !== erin).every((p) => p.discordId === null)).toBe(true);
+    for (const key of [K.captainMaroon!, K.captainWhite!, K.viewer!]) {
+      expect(roster(await get(key, id)).every((p) => !('discordId' in p)), 'not staff: no Discord ids').toBe(true);
+    }
+  });
+});
+
 describe('keys for several tournaments', () => {
   it('a key for two tournaments reads both and lists both', async () => {
     expect((await api(K.organiserBoth!, 'GET', `/api/v1/tournaments/${F.tournament.slug}`)).status).toBe(200);

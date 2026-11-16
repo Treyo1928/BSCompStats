@@ -126,6 +126,8 @@ async function main() {
     });
   }
   const division = await prisma.division.create({ data: { tournamentId: tournament.id, name: 'Main' } });
+  // Erin (the Maroon captain) signs in with Discord: the match API gives staff her Discord id
+  await prisma.account.create({ data: { userId: captainMaroon.id, type: 'oauth', provider: 'discord', providerAccountId: '111122223333444455' } });
 
   const teams: Record<string, { id: string; players: Record<string, string> }> = {};
   let bl = 76561190000000000n;

@@ -171,6 +171,8 @@ export interface TeamView {
     beatLeaderId: string;
     /** The id TournamentAssistant knows them by, where an organiser set one; else use beatLeaderId. */
     taPlatformId: string | null;
+    /** Their Discord account, where they sign in with one. Only the API gives it, and only to the tournament's staff. */
+    discordId?: string | null;
   }>;
 }
 

@@ -28,10 +28,10 @@ export async function matchForApi(matchId: string, actor: Actor): Promise<MatchV
   const canSee = (teamId: string) => revealed || (mySides.size > 0 ? mySides.has(teamId) : isStaff(actor));
 
   const hidden = sides.filter((id) => !canSee(id));
-  if (!hidden.length) return match;
+  if (!hidden.length) return withDiscordIds(match, actor);
   const strip = <T,>(record: Record<string, T>) =>
     Object.fromEntries(Object.entries(record).filter(([teamId]) => !hidden.includes(teamId))) as Record<string, T>;
-  return {
+  return withDiscordIds({
     ...match,
     plannedMaps: match.plannedMaps.map((pm) => ({
       ...pm,
@@ -43,7 +43,27 @@ export async function matchForApi(matchId: string, actor: Actor): Promise<MatchV
       runs: strip(pm.runs),
       ruleBreaks: strip(pm.ruleBreaks),
     })),
-  };
+  }, actor);
+}
+
+/**
+ * For the people running the tournament only: each player's Discord account id (`discordId`), where they sign in
+ * to this site with Discord. It is what a stream's Discord bot needs to act on the right person in a voice
+ * channel (deafening players while they play). Nobody else is given it, and no page shows it.
+ */
+async function withDiscordIds(match: MatchView, actor: Actor): Promise<MatchView> {
+  if (!isStaff(actor)) return match;
+  const ids = [...match.teamA.players, ...match.teamB.players].map((p) => p.id);
+  const rows = await prisma.player.findMany({
+    where: { id: { in: ids }, userId: { not: null } },
+    select: { id: true, user: { select: { accounts: { where: { provider: 'discord' }, select: { providerAccountId: true }, take: 1 } } } },
+  });
+  const discord = new Map(rows.map((r) => [r.id, r.user?.accounts[0]?.providerAccountId ?? null]));
+  const add = <T extends MatchView['teamA']>(team: T): T => ({
+    ...team,
+    players: team.players.map((p) => ({ ...p, discordId: discord.get(p.id) ?? null })),
+  });
+  return { ...match, teamA: add(match.teamA), teamB: add(match.teamB) };
 }
 
 /** Which tournament a match belongs to, for scoped keys (404 for unknown matches). */
