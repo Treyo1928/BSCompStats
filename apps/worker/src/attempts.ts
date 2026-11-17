@@ -111,6 +111,15 @@ export async function syncAttempts(
   return { players: synced, written, hidden };
 }
 
+/**
+ * BeatLeader leaves the modifiers off a run's record, and a run that never became a score may have no replay to
+ * read them from either. No Fail kicking in still shows: it is the one thing that halves the score, so a run
+ * whose counted score is half what its cuts were worth died on the way and played on.
+ */
+function halvedByNoFail(a: BLAttempt): string {
+  return a.baseScore > 0 && a.modifiedScore > 0 && Math.abs(a.modifiedScore * 2 - a.baseScore) <= 2 ? 'NF' : '';
+}
+
 async function storeAttempts(playerId: string, leaderboardId: string, attempts: BLAttempt[]): Promise<number> {
   if (attempts.length === 0) return 0;
   const rows = attempts
@@ -124,7 +133,7 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
       time: a.time,
       accuracy: a.accuracy,
       baseScore: a.baseScore,
-      modifiers: a.modifiers ?? '',
+      modifiers: a.modifiers || halvedByNoFail(a),
       missedNotes: a.missedNotes ?? 0,
       badCuts: a.badCuts ?? 0,
       fullCombo: typeof a.fullCombo === 'boolean' ? a.fullCombo : null,
@@ -138,6 +147,9 @@ async function storeAttempts(playerId: string, leaderboardId: string, attempts: 
     if (ids.length === 0) continue;
     await prisma.attempt.updateMany({ where: { beatLeaderAttemptId: { in: ids }, fullCombo: null }, data: { fullCombo } });
   }
+  // And No Fail read off the scores (see halvedByNoFail), on runs stored before that was done.
+  const noFail = rows.filter((r) => r.modifiers === 'NF').map((r) => r.beatLeaderAttemptId);
+  if (noFail.length > 0) await prisma.attempt.updateMany({ where: { beatLeaderAttemptId: { in: noFail }, modifiers: '' }, data: { modifiers: 'NF' } });
   // Likewise the score a clear became.
   const linked = rows.filter((r) => r.beatLeaderScoreId != null);
   if (linked.length > 0) {
