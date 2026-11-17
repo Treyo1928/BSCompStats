@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasScoreAlteringModifier, noFailTriggered } from './normalize';
+import { hasScoreAlteringModifier, modifierMarks, noFailTriggered } from './normalize';
 
 describe('which modifiers keep a run from counting', () => {
   it('lets through the ones that leave the score alone', () => {
@@ -18,5 +18,14 @@ describe('which modifiers keep a run from counting', () => {
   it('still marks a run where No Fail kicked in', () => {
     expect(noFailTriggered('PM,NF')).toBe(true);
     expect(noFailTriggered('PM,IF')).toBe(false);
+  });
+
+  it('names the modifiers to show beside a run, never No Fail', () => {
+    expect(modifierMarks('PM,IF').map((m) => m.mark)).toEqual(['PM', 'OL']);
+    expect(modifierMarks('nf, be ,pm').map((m) => `${m.mark}=${m.name}`)).toEqual(['4L=Four Lives', 'PM=Pro Mode']);
+    expect(modifierMarks('NF')).toEqual([]);
+    expect(modifierMarks('')).toEqual([]);
+    expect(modifierMarks(null)).toEqual([]);
+    expect(modifierMarks('XX')).toEqual([{ mark: 'XX', name: 'XX' }]);
   });
 });

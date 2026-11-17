@@ -1,4 +1,4 @@
-import { isBestRunCandidate, noFailTriggered, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
+import { isBestRunCandidate, modifierMarks, noFailTriggered, notesHit, pickBestRun, runProgress } from '@bscs/core/stats';
 import { shownAs, tournamentAliases } from './aliases';
 import { replayHref, type Sabers } from '@/lib/replay-viewer';
 import { prisma } from '@bscs/db';
@@ -25,6 +25,8 @@ export interface BoardCell {
   fullCombo: boolean;
   /** No Fail kicked in on this score: the player died partway and played on. */
   noFail: boolean;
+  /** The other modifiers the score was set with (Pro Mode, One Life...): a short mark and the name of each. */
+  modifiers: { mark: string; name: string }[];
   misses: number;
   /** A link that plays this score: our own viewer where the site has one (with the player's saber colours), else BeatLeader's. Null when there is no replay. */
   replayUrl: string | null;
@@ -317,6 +319,7 @@ export async function buildPoolBoard(
         acc: score?.accuracy ?? bestTry?.acc ?? null,
         fullCombo: score?.fullCombo ?? false,
         noFail: noFailTriggered(score?.modifiers),
+        modifiers: modifierMarks(score?.modifiers),
         misses: (score?.missedNotes ?? 0) + (score?.badCuts ?? 0),
         platform: score?.platform ?? null,
         // The stored replayUrl is the raw .bsor file, which a browser downloads.

@@ -356,6 +356,9 @@ function Legend() {
       <span title="No Fail kicked in: they died partway and played the rest of the map on. Matches are played with No Fail on, so this is a real result.">
         <span className="font-bold text-amber-300">NF</span> died, played on with No Fail
       </span>
+      <span title="The modifiers a score was set with: PM Pro Mode, OL One Life, 4L Four Lives, SA Strict Angles, SC Small Cubes, GN Ghost Notes, DA Disappearing Arrows, FS Faster Song, SF Super Fast Song. Hover a score for its own. None of these change what a score is worth; a run made easier (slower song, no bombs...) is not counted at all.">
+        <span className="font-bold text-sky-300">PM OL 4L</span> played with a modifier
+      </span>
       <span
         className="flex items-center gap-1.5"
         title="Never cleared, but BeatLeader saw them try: the accuracy of their longest run of ten notes or more (or the most accurate within a tenth of the song of it) stands as their number here, and in their average, until they clear it. Underneath is how far into the song it ended. Shown only for players who show their stats publicly on BeatLeader."

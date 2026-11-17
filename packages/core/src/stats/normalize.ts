@@ -57,6 +57,34 @@ export function noFailTriggered(raw: string | undefined): boolean {
   return parseModifiers(raw).includes('NF');
 }
 
+/** What each modifier is called, and the short mark for it on a board (BeatLeader's code, but for the lives). */
+const MODIFIER_NAMES: Record<string, { mark: string; name: string }> = {
+  PM: { mark: 'PM', name: 'Pro Mode' },
+  SC: { mark: 'SC', name: 'Small Cubes' },
+  SA: { mark: 'SA', name: 'Strict Angles' },
+  IF: { mark: 'OL', name: 'One Life' },
+  BE: { mark: '4L', name: 'Four Lives' },
+  GN: { mark: 'GN', name: 'Ghost Notes' },
+  DA: { mark: 'DA', name: 'Disappearing Arrows' },
+  FS: { mark: 'FS', name: 'Faster Song' },
+  SF: { mark: 'SF', name: 'Super Fast Song' },
+  SS: { mark: 'SS', name: 'Slower Song' },
+  NO: { mark: 'NO', name: 'No Obstacles' },
+  NB: { mark: 'NB', name: 'No Bombs' },
+  NA: { mark: 'NA', name: 'No Arrows' },
+  OP: { mark: 'OP', name: 'Outside Platform' },
+};
+
+/**
+ * The modifiers a run was played with, for showing beside it: a short mark and the full name each. No Fail is
+ * left out: it is on a run only where it kicked in, and that has a mark of its own (noFailTriggered).
+ */
+export function modifierMarks(raw: string | undefined | null): { mark: string; name: string }[] {
+  return [...new Set(parseModifiers(raw ?? undefined))]
+    .filter((m) => m !== 'NF')
+    .map((m) => MODIFIER_NAMES[m] ?? { mark: m, name: m });
+}
+
 export function hasScoreAlteringModifier(raw: string | undefined): boolean {
   return parseModifiers(raw).some((m) => SCORE_ALTERING_MODIFIERS.has(m));
 }

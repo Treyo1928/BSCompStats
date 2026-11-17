@@ -329,6 +329,9 @@ function Cell({
   const t =
     range && range.max > range.min ? (cell.acc - range.min) / (range.max - range.min) : 0.5;
 
+  // marks in the top left corner: two fit beside the number, and FC or NF takes one of the places
+  const modifierRoom = cell.fullCombo || cell.noFail || cell.modifiers.length > 2 ? 1 : 2;
+
   const inner = (
     <span className="relative flex h-[42px] flex-col items-center justify-center leading-tight">
       <span className="text-[13px] font-semibold tabular">{pct(cell.acc)}</span>
@@ -350,14 +353,26 @@ function Cell({
           SS
         </span>
       )}
-      {cell.fullCombo && (
-        <span className="absolute left-1 top-0.5 text-[8px] font-bold tracking-wide opacity-70">
-          FC
-        </span>
-      )}
-      {cell.noFail && (
-        <span className="absolute left-1 top-0.5 text-[8px] font-bold tracking-wide text-amber-300" aria-label="No Fail kicked in">
-          NF
+      {(cell.fullCombo || cell.noFail || cell.modifiers.length > 0) && (
+        // one line in the corner: full combo or No Fail kicking in, then the modifiers the run was played with
+        <span className="absolute left-1 top-0.5 flex gap-1 text-[8px] font-bold tracking-wide">
+          {cell.fullCombo && <span className="opacity-70">FC</span>}
+          {cell.noFail && (
+            <span className="text-amber-300" aria-label="No Fail kicked in">
+              NF
+            </span>
+          )}
+          {/* two marks fit beside the number: the rest are counted, and named when the score is hovered */}
+          {cell.modifiers.slice(0, modifierRoom).map((m) => (
+            <span key={m.mark} className="text-sky-300" aria-label={m.name}>
+              {m.mark}
+            </span>
+          ))}
+          {cell.modifiers.length > modifierRoom && (
+            <span className="text-sky-300" aria-label={`and ${cell.modifiers.length - modifierRoom} more`}>
+              +{cell.modifiers.length - modifierRoom}
+            </span>
+          )}
         </span>
       )}
       {cell.runs && cell.runs.total > 1 && (
@@ -383,6 +398,7 @@ function Cell({
           cell.platform === 'SS' ? 'Set on ScoreSaber - their best here across both platforms' : null,
           cell.replayOfAcc != null ? `The replay is their BeatLeader run (${pct(cell.replayOfAcc)}): ScoreSaber keeps none` : null,
           cell.noFail ? 'No Fail kicked in: they died partway and played the rest of the map on. The accuracy is without No Fail’s penalty.' : null,
+          cell.modifiers.length ? `Played with ${cell.modifiers.map((m) => `${m.name} (${m.mark})`).join(', ')}` : null,
           cell.fullCombo ? 'Full combo' : cell.misses ? `${cell.misses} misses` : null,
           cell.runs && cell.runs.total > 0
             ? `${cell.runs.total} ${cell.runs.total === 1 ? 'run' : 'runs'} recorded: ${cell.runs.finished} cleared, ${cell.runs.fails} failed` +
