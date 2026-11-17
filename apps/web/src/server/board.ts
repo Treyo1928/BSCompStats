@@ -128,6 +128,8 @@ export interface PoolBoard {
    * scores and runs set outside them are left out. Null leaves that end open.
    */
   scoreDays: { from: string | null; to: string | null };
+  /** Only finished runs count here: a longest unfinished run is not shown as anyone's number. */
+  clearsOnly: boolean;
   /** Players' bests on these maps left out for being set outside the dates. */
   leftOut: number;
   maps: BoardMap[];
@@ -216,6 +218,7 @@ export async function buildPoolBoard(
       tournamentId: true,
       scoresSince: true,
       scoresUntil: true,
+      clearsOnly: true,
       maps: {
         orderBy: { order: 'asc' },
         select: {
@@ -311,7 +314,8 @@ export async function buildPoolBoard(
       const runs = runsBy.get(`${member.player.id}::${leaderboardId}`) ?? null;
       // No clear, but a run of ten notes or more: its accuracy is their score
       // here, shown and counted like one.
-      const bestTry = !score && runs?.bestTry ? runs.bestTry : null;
+      // (not on a pool that counts finished runs only: there it stays a mark on an empty cell)
+      const bestTry = !score && runs?.bestTry && !pool.clearsOnly ? runs.bestTry : null;
 
       return {
         leaderboardId,
@@ -377,6 +381,7 @@ export async function buildPoolBoard(
       from: pool.scoresSince ? dayIn(pool.scoresSince) : null,
       to: pool.scoresUntil ? dayIn(pool.scoresUntil) : null,
     },
+    clearsOnly: pool.clearsOnly,
     leftOut: report.outside,
     maps,
     teams: teamOrder.map((key) => {

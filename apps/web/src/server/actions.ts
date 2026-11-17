@@ -516,6 +516,21 @@ export async function setPoolScoreDays(formData: FormData): Promise<void> {
 }
 
 /**
+ * Whether this pool's board counts finished runs only. Off (the default), a player with no clear on a map stands
+ * there by their longest unfinished run until they clear it. Organisers only.
+ */
+export async function setPoolClearsOnly(formData: FormData): Promise<void> {
+  const poolId = String(formData.get('poolId'));
+  const pool = await prisma.mapPool.findUnique({ where: { id: poolId }, select: { tournamentId: true } });
+  if (!pool) throw new Error('No such pool.');
+  const actor = await getActor(pool.tournamentId);
+  if (!actor) throw new Error('Sign in first.');
+  assertCan(actor, 'IMPORT_POOL');
+  await prisma.mapPool.update({ where: { id: poolId }, data: { clearsOnly: formData.get('clearsOnly') === 'on' } });
+  revalidatePath('/t', 'layout');
+}
+
+/**
  * Keep every player's wider BeatLeader history downloaded, so the player stats
  * pages can be looked at over ranked or all maps.
  */

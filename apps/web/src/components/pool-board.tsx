@@ -306,17 +306,21 @@ function Cell({
   // show, so the cell stays empty and the tries are a mark in the corner.
   const triesOnly = cell.acc == null && cell.runs != null && cell.runs.fails + cell.runs.falseStarts > 0;
   const tries = triesOnly ? cell.runs!.fails + cell.runs!.falseStarts : 0;
+  // On a pool that counts finished runs only, a run long enough to have been their number is left out as well.
+  const unfinished = cell.acc == null && cell.runs?.bestTry ? cell.runs.bestTry : null;
 
   // Not played: empty. What someone might score is not something we know.
   if (cell.acc == null) {
-    const triesNote = triesOnly
+    const triesNote = unfinished
+      ? `Tried ${tries} ${tries === 1 ? 'time' : 'times'}, never finished: their longest run was at ${pct(unfinished.acc)} when it ended ${clock(unfinished.seconds)} in. This pool counts finished runs only, so it is not their number here.`
+      : triesOnly
       ? ` They have tried it ${tries} ${tries === 1 ? 'time' : 'times'} without hitting ten notes: ${cell.runs!.fails} ${cell.runs!.fails === 1 ? 'fail' : 'fails'}, ${cell.runs!.falseStarts} ${cell.runs!.falseStarts === 1 ? 'false start' : 'false starts'}.`
       : '';
     return (
       <td className="p-[3px] text-center align-middle" title={triesOnly ? triesNote.trim() : 'Not played'}>
         <div className="relative flex h-[42px] items-center justify-center rounded-md border border-dashed border-edge">
           {triesOnly && (
-            <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300/90" aria-label={`${tries} tries, none hit ten notes`}>
+            <span className="absolute left-1 top-0.5 text-[9px] font-bold text-red-300/90" aria-label={unfinished ? `${tries} tries, none finished` : `${tries} tries, none hit ten notes`}>
               ✗{tries}
             </span>
           )}

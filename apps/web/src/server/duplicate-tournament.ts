@@ -86,6 +86,7 @@ export async function duplicateTournament(formData: FormData): Promise<void> {
             sourceType: pool.sourceType,
             sourceRef: pool.sourceRef,
             scoresSince: pool.scoresSince,
+            clearsOnly: pool.clearsOnly,
             scoresUntil: pool.scoresUntil,
             pickBanSequence: pool.pickBanSequence ?? Prisma.JsonNull,
           },

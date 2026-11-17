@@ -28,7 +28,7 @@ import { getPoolSummary } from '@/server/summaries';
 import { PerfectAccForm } from '@/components/perfect-acc-form';
 import { MapTypeForm, MapTypeList } from '@/components/map-type-form';
 import { PickBanOrderForm, StepChip } from '@/components/pick-ban-order-form';
-import { ScoreDaysForm } from '@/components/score-days-form';
+import { ClearsOnlyForm, ScoreDaysForm } from '@/components/score-days-form';
 import { RenameForm } from '@/components/rename-form';
 import { renamePool } from '@/server/rename-actions';
 import { getActorOrAnonymous } from '@/server/session';
@@ -257,6 +257,7 @@ export default async function PoolPage({
             <div className="mt-3 space-y-1.5">
               <p className="text-xs text-muted">Count scores set from / to (US Central, either may be blank):</p>
               <ScoreDaysForm poolId={poolId} from={board.scoreDays.from} to={board.scoreDays.to} />
+              <ClearsOnlyForm poolId={poolId} clearsOnly={board.clearsOnly} />
             </div>
           )}
         </Panel>

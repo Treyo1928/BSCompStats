@@ -763,6 +763,10 @@ model MapPool {
   /// And after this: the end of the window, for qualifiers held over set
   /// dates. Only the pool board and stats read either - never match pulls.
   scoresUntil DateTime?
+  /// Only finished runs count on this pool's board. False: a player with no
+  /// clear on a map is shown, ranked and averaged by their longest unfinished
+  /// run (a fail, a quit, a restart) until they clear it.
+  clearsOnly  Boolean   @default(false)
 
   /// This pool's own pick/ban order: [{ actor, action }], as in a format's
   /// pickBanSequence. A bigger finals pool needs more bans than the

@@ -1,7 +1,7 @@
 'use client';
 
 import { useFormStatus } from 'react-dom';
-import { setPoolScoreDays } from '@/server/actions';
+import { setPoolClearsOnly, setPoolScoreDays } from '@/server/actions';
 import { inputClass } from './ui';
 
 /**
@@ -19,6 +19,35 @@ export function ScoreDaysForm({ poolId, from, to }: { poolId: string; from: stri
       <input type="date" name="to" aria-label="Count scores set on or before" defaultValue={to ?? ''} className={dateClass} />
       <Submit label="Save" />
       {(from || to) && <Submit label="Count all" name="clear" />}
+    </form>
+  );
+}
+
+/**
+ * "Finished runs only" for a pool: ticked, a fail, quit or restart never stands as a player's number on the board.
+ * Saved as soon as it is ticked or unticked.
+ */
+export function ClearsOnlyForm({ poolId, clearsOnly }: { poolId: string; clearsOnly: boolean }) {
+  return (
+    <form action={setPoolClearsOnly}>
+      <input type="hidden" name="poolId" value={poolId} />
+      <label className="flex cursor-pointer items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          name="clearsOnly"
+          defaultChecked={clearsOnly}
+          onChange={(e) => e.currentTarget.form?.requestSubmit()}
+          className="mt-0.5 h-4 w-4 accent-current"
+        />
+        <span>
+          Count finished runs only
+          <span className="block text-xs text-muted">
+            {clearsOnly
+              ? 'On: a map someone has only failed, quit or restarted is empty for them and counts for nothing.'
+              : 'Off: someone with no clear on a map is shown, ranked and averaged by their longest unfinished run until they clear it.'}
+          </span>
+        </span>
+      </label>
     </form>
   );
 }
