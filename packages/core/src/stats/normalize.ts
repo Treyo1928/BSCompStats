@@ -28,15 +28,13 @@ export interface NormalizedScore {
 }
 
 /**
- * Modifiers that change the score enough that the run is not comparable with a
- * clean one. Anything here disqualifies a score from the skill model, though it
- * is still shown in the UI.
- */
-/**
- * Modifiers that make a score something other than a normal run of the map.
- * No Fail is not one: matches are always played with it on, it changes
- * nothing unless the player dies, and a run where it did kick in is still the
- * player's real result - it is marked, not dropped.
+ * Modifiers that make the map easier or slower, so that the score is not the one a normal run would give (the game
+ * itself cuts the score for each of these). A run with one of them does not count.
+ *
+ * Everything else is let through, because the notes and what each is worth are the same as in a normal run:
+ * Pro Mode (PM), Small Cubes (SC) and Strict Angles (SA) only make it harder to hit; One Life (IF) and Four Lives
+ * (BE) only change when the player fails; No Fail (NF) changes nothing unless the player dies, and a run where it
+ * did kick in is still the player's real result - it is marked, not dropped.
  */
 const SCORE_ALTERING_MODIFIERS = new Set([
   'SS', // Slower Song
@@ -44,8 +42,6 @@ const SCORE_ALTERING_MODIFIERS = new Set([
   'NO', // No Obstacles
   'NB', // No Bombs
   'NA', // No Arrows
-  'SC', // Small Cubes... scoring differs
-  'PM', // Pro Mode
 ]);
 
 export function parseModifiers(raw: string | undefined): string[] {

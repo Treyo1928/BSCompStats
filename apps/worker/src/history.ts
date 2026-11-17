@@ -1,6 +1,6 @@
 import { prisma } from '@bscs/db';
 import { toResolvedMap } from '@bscs/core/beatleader';
-import { statsScopeSchema } from '@bscs/core/stats';
+import { hasScoreAlteringModifier, noFailTriggered, statsScopeSchema } from '@bscs/core/stats';
 import { client, upsertScore } from './sync.js';
 import { log } from './log.js';
 
@@ -130,9 +130,10 @@ async function syncPlayerHistory(
         reachedCutoff = true;
         break;
       }
-      // A modified run (no-fail, slower song and so on) is not evidence of what
-      // the player scores in a match.
-      if (score.modifiers) continue;
+      // A run made easier (slower song, no bombs and so on), or one where No Fail kicked in, is not evidence of
+      // what the player scores in a match. Modifiers that leave the score alone (Pro Mode, One Life, Four Lives...)
+      // are let through, as everywhere else.
+      if (hasScoreAlteringModifier(score.modifiers) || noFailTriggered(score.modifiers)) continue;
 
       const info = score.leaderboard;
       if (!info?.song || !info.difficulty) continue;
